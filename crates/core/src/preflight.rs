@@ -21,7 +21,11 @@ pub struct Violation {
 
 /// Run the gate. `selected` is the set of package names the user chose to bump (empty when
 /// preflight runs before the prompt). Returns every violation found; an empty vec means pass.
-pub fn check(repo: &dyn RepoState, packages: &[Pkg], selected: &[String]) -> Result<Vec<Violation>> {
+pub fn check(
+    repo: &dyn RepoState,
+    packages: &[Pkg],
+    selected: &[String],
+) -> Result<Vec<Violation>> {
     let mut violations = Vec::new();
 
     for pkg in packages {
@@ -133,13 +137,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path();
         let packages = vec![
-            pkg(d, "core", true, Some(EMPTY)),     // tag + commits + empty -> commits violation
+            pkg(d, "core", true, Some(EMPTY)), // tag + commits + empty -> commits violation
             pkg(d, "utils", true, Some(WITH_NOTES)), // tag + commits + notes -> ok
-            pkg(d, "sdk", true, Some(EMPTY)),      // tag, no commits, empty, selected -> selected
-            pkg(d, "new", true, Some(EMPTY)),      // no tag, empty -> first-release violation
+            pkg(d, "sdk", true, Some(EMPTY)),  // tag, no commits, empty, selected -> selected
+            pkg(d, "new", true, Some(EMPTY)),  // no tag, empty -> first-release violation
             pkg(d, "newgood", true, Some(WITH_NOTES)), // no tag, notes -> ok
-            pkg(d, "miss", true, None),            // no tag, missing changelog -> first-release
-            pkg(d, "app", false, Some(EMPTY)),     // private -> skipped
+            pkg(d, "miss", true, None),        // no tag, missing changelog -> first-release
+            pkg(d, "app", false, Some(EMPTY)), // private -> skipped
         ];
 
         let repo = FakeRepo {

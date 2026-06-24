@@ -19,7 +19,7 @@ and module skeletons already exist (Phase 0 ✅); every command function is curr
 | 5 | `version` command | ✅ |
 | 6 | `publish` command | ✅ |
 | 7 | `init` command | ✅ |
-| 8 | Hardening: docs, tests, release-of-self | ⬜ |
+| 8 | Hardening: e2e, CI, fmt | ✅ |
 
 Dependency order: 1 → 2 → 3 → 4 → 5, then 6, then 7. (5 needs 1–4; 6 needs 1+3; 7 needs 1.)
 
@@ -238,12 +238,24 @@ Tasks:
 
 ---
 
-## Phase 8 — Hardening
+## Phase 8 — Hardening ✅ (core items)
 
-- End-to-end test on a sample monorepo fixture (version → simulated merge → publish).
-- Fill in module docs to match `docs/`; keep `docs/` and code in sync.
-- `otf-release` releasing **itself** as `@opentf/release` (dogfood).
-- CI for the tool's own repo (fmt, clippy, test).
+**Done:**
+- **End-to-end test** (`crates/cli/tests/e2e.rs`): `version` → simulated merge → `publish` on
+  one temp git+npm repo, proving the bumps `version` computes are exactly what `publish` ships,
+  in dependency order, with the private app excluded.
+- **CI** (`.github/workflows/ci.yml`): `cargo fmt --check`, `clippy --all-targets -D warnings`,
+  `cargo test --workspace`.
+- **Formatting**: whole tree is `rustfmt`-clean.
+- Module docs reference their `docs/` counterparts and stay in sync.
+
+**Deferred / N/A:**
+- **Dogfood self-release** — `otf-release` is a Rust binary, not an npm package, so releasing
+  *itself* through the npm adapter doesn't apply. Self-distribution (crates.io / GH release of
+  the binary) is its own future task, separate from the npm-publishing it provides.
+
+Test inventory: 27 core unit + 13 adapter unit + 5 CLI integration (version, dry-run, publish
+×2, e2e) = **45**.
 
 ---
 

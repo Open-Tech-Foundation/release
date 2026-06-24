@@ -39,7 +39,10 @@ impl Manifest {
     pub fn read(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("reading manifest {}", path.display()))?;
-        Ok(Self { path: path.to_path_buf(), content })
+        Ok(Self {
+            path: path.to_path_buf(),
+            content,
+        })
     }
 
     /// Construct from in-memory content (used in tests).

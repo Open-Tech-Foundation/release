@@ -35,7 +35,11 @@ impl<'a> Graph<'a> {
         for (i, p) in packages.iter().enumerate() {
             for dep in &p.internal_deps {
                 let j = *by_name.get(&dep.name).ok_or_else(|| {
-                    anyhow!("{} depends on unknown internal package {}", p.name, dep.name)
+                    anyhow!(
+                        "{} depends on unknown internal package {}",
+                        p.name,
+                        dep.name
+                    )
                 })?;
                 dependents.entry(j).or_default().push((i, dep.kind.clone()));
             }
@@ -248,7 +252,10 @@ mod tests {
     #[test]
     fn build_rejects_duplicate_names_and_unknown_edges() {
         let dup = vec![pkg("a", true, &[]), pkg("a", true, &[])];
-        assert!(Graph::build(&dup).unwrap_err().to_string().contains("duplicate"));
+        assert!(Graph::build(&dup)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate"));
 
         let unknown = vec![pkg("a", true, &[("ghost", DepKind::Dep)])];
         assert!(Graph::build(&unknown)

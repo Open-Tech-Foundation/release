@@ -29,7 +29,9 @@ impl PubRunner {
     fn new(fail_once: &[&str]) -> Self {
         Self {
             published: Arc::new(Mutex::new(HashSet::new())),
-            fail_once: Arc::new(Mutex::new(fail_once.iter().map(|s| s.to_string()).collect())),
+            fail_once: Arc::new(Mutex::new(
+                fail_once.iter().map(|s| s.to_string()).collect(),
+            )),
             publish_log: Arc::new(Mutex::new(Vec::new())),
             attempts: Arc::new(Mutex::new(Vec::new())),
         }

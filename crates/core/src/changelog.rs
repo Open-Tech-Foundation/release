@@ -69,7 +69,12 @@ fn extract_unreleased_body(content: &str) -> Option<String> {
     Some(content[start..end].to_string())
 }
 
-fn rewrite_release(content: &str, version: &str, date: &str, stub_if_empty: bool) -> Result<String> {
+fn rewrite_release(
+    content: &str,
+    version: &str,
+    date: &str,
+    stub_if_empty: bool,
+) -> Result<String> {
     let (body_start, body_end) =
         find_unreleased(content).ok_or_else(|| anyhow!("no `## [Unreleased]` section found"))?;
     let body = &content[body_start..body_end];
@@ -232,8 +237,13 @@ mod tests {
 
     #[test]
     fn rewrite_errors_without_unreleased() {
-        let err = rewrite_release("# Changelog\n\n## [1.0.0] - 2024-01-01\n", "1.1.0", "2026-06-24", false)
-            .unwrap_err();
+        let err = rewrite_release(
+            "# Changelog\n\n## [1.0.0] - 2024-01-01\n",
+            "1.1.0",
+            "2026-06-24",
+            false,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("[Unreleased]"));
     }
 

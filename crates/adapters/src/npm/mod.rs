@@ -92,7 +92,9 @@ impl NpmAdapter {
             let glob_str = joined
                 .to_str()
                 .ok_or_else(|| anyhow!("non-UTF-8 path in workspace pattern: {pattern}"))?;
-            for entry in glob(glob_str).with_context(|| format!("invalid workspace glob: {pattern}"))? {
+            for entry in
+                glob(glob_str).with_context(|| format!("invalid workspace glob: {pattern}"))?
+            {
                 let manifest_path = entry?;
                 if let Some(dir) = manifest_path.parent() {
                     dirs.insert(dir.to_path_buf());
@@ -113,10 +115,8 @@ impl Adapter for NpmAdapter {
             members.push((dir, manifest));
         }
 
-        let internal_names: HashSet<String> = members
-            .iter()
-            .filter_map(|(_, m)| m.name().ok())
-            .collect();
+        let internal_names: HashSet<String> =
+            members.iter().filter_map(|(_, m)| m.name().ok()).collect();
 
         // Second pass: build packages, keeping only edges that point at another member.
         let mut packages = Vec::with_capacity(members.len());
@@ -149,7 +149,10 @@ impl Adapter for NpmAdapter {
     fn write_version(&self, pkg: &Pkg, new: &str) -> Result<()> {
         let mut manifest = Manifest::read(&pkg.manifest_path)?;
         if !manifest.set_string(&["version"], new)? {
-            bail!("{}: no \"version\" field to write", pkg.manifest_path.display());
+            bail!(
+                "{}: no \"version\" field to write",
+                pkg.manifest_path.display()
+            );
         }
         manifest.save()
     }
@@ -236,10 +239,12 @@ impl Adapter for NpmAdapter {
     }
 
     fn publish(&self, pkg: &Pkg, staged_assets: Option<&Path>) -> Result<()> {
-        let pkg_dir = pkg
-            .manifest_path
-            .parent()
-            .ok_or_else(|| anyhow!("{}: manifest has no parent dir", pkg.manifest_path.display()))?;
+        let pkg_dir = pkg.manifest_path.parent().ok_or_else(|| {
+            anyhow!(
+                "{}: manifest has no parent dir",
+                pkg.manifest_path.display()
+            )
+        })?;
 
         // Attach staged binaries (if any) by copying them into the package before packing.
         if let Some(assets) = staged_assets {

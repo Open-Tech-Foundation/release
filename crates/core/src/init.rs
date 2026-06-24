@@ -163,7 +163,8 @@ impl InitPrompt for StdinInitPrompt {
         for (i, p) in publishable.iter().enumerate() {
             println!("  {}) {}", i + 1, p.name);
         }
-        let line = read_line("Which need binary artifacts built before publish? (e.g. 1,2 or 'none'): ")?;
+        let line =
+            read_line("Which need binary artifacts built before publish? (e.g. 1,2 or 'none'): ")?;
         if line.is_empty() || line.eq_ignore_ascii_case("none") {
             return Ok(Vec::new());
         }
@@ -180,9 +181,7 @@ impl InitPrompt for StdinInitPrompt {
 
     fn target_triples(&self, pkg_name: &str) -> Result<Vec<String>> {
         let defaults = DEFAULT_TARGETS.join(", ");
-        let line = read_line(&format!(
-            "Target triples for {pkg_name} [{defaults}]: "
-        ))?;
+        let line = read_line(&format!("Target triples for {pkg_name} [{defaults}]: "))?;
         if line.is_empty() {
             return Ok(DEFAULT_TARGETS.iter().map(|s| s.to_string()).collect());
         }
@@ -228,7 +227,11 @@ mod tests {
         fn update_lockfile(&self, _: &Path) -> Result<()> {
             unreachable!()
         }
-        fn dependent_bump(&self, _: crate::adapter::Bump, _: &crate::adapter::DepKind) -> crate::adapter::Bump {
+        fn dependent_bump(
+            &self,
+            _: crate::adapter::Bump,
+            _: &crate::adapter::DepKind,
+        ) -> crate::adapter::Bump {
             unreachable!()
         }
         fn is_published(&self, _: &Pkg, _: &str) -> Result<bool> {
@@ -305,8 +308,7 @@ mod tests {
             overwrite: true,
         };
         orchestrate(&adapter, &prompt, tmp.path(), &InitOptions::default()).unwrap();
-        let written =
-            fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
+        let written = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
         assert_eq!(written, LIBS_ONLY);
     }
 

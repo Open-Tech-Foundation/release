@@ -232,7 +232,10 @@ fn dry_run_prints_the_plan_and_writes_nothing() {
     .unwrap();
 
     // Still on main, no branch created, nothing written, no PR opened.
-    assert_eq!(capture(root, &["rev-parse", "--abbrev-ref", "HEAD"]), "main");
+    assert_eq!(
+        capture(root, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "main"
+    );
     assert!(read(root.join("packages/core/package.json")).contains("\"version\": \"1.0.0\""));
     assert!(read(root.join("packages/core/CHANGELOG.md")).contains("## [Unreleased]\n\n### Added"));
     assert!(capture(root, &["status", "--porcelain"]).is_empty());

@@ -52,10 +52,7 @@ impl RepoState for GitRepo {
             .to_str()
             .with_context(|| format!("non-UTF-8 package path: {}", rel.display()))?;
         let range = format!("{tag}..HEAD");
-        let stdout = run_git(
-            &self.root,
-            &["rev-list", "--count", &range, "--", pathspec],
-        )?;
+        let stdout = run_git(&self.root, &["rev-list", "--count", &range, "--", pathspec])?;
         Ok(stdout.trim().parse().unwrap_or(0))
     }
 }

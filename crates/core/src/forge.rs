@@ -26,7 +26,9 @@ impl GhForge {
 impl Forge for GhForge {
     fn open_pr(&self, branch: &str, title: &str, body: &str) -> Result<()> {
         let out = Command::new("gh")
-            .args(["pr", "create", "--head", branch, "--title", title, "--body", body])
+            .args([
+                "pr", "create", "--head", branch, "--title", title, "--body", body,
+            ])
             .current_dir(&self.root)
             .output()
             .context("failed to run `gh pr create`")?;

@@ -45,5 +45,8 @@ Reference docs live in [`docs/`](./docs/) — start at [`docs/README.md`](./docs
 
 ## Status
 
-v1 is in development. The Cargo workspace under `crates/` compiles and the CLI surface is
-wired up; command logic is being filled in per the [implementation plan](./docs/implementation-plan.md).
+v1 is **functionally complete**: all three commands (`version`, `publish`, `init`) and the npm
+adapter are implemented and tested (45 tests, CI on fmt + clippy + test). See the
+[implementation plan](./docs/implementation-plan.md) for the phase-by-phase breakdown. Other
+ecosystem adapters (cargo, PyPI), pre-releases, and a release-PR bot remain on the
+[roadmap](./docs/roadmap.md).
