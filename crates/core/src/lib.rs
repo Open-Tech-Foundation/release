@@ -19,6 +19,7 @@
 
 pub mod adapter;
 pub mod changelog;
+pub mod git;
 pub mod graph;
 pub mod init;
 pub mod preflight;

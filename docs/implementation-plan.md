@@ -15,7 +15,7 @@ and module skeletons already exist (Phase 0 ✅); every command function is curr
 | 1 | npm adapter | ✅ |
 | 2 | Changelog parser/rewriter | ✅ |
 | 3 | Graph: topo sort + cascade | ✅ |
-| 4 | Strict preflight | ⬜ |
+| 4 | Strict preflight | ✅ |
 | 5 | `version` command | ⬜ |
 | 6 | `publish` command | ⬜ |
 | 7 | `init` command | ⬜ |
@@ -123,10 +123,17 @@ Tasks:
 
 ---
 
-## Phase 4 — Strict preflight
+## Phase 4 — Strict preflight ✅
 
 **Goal:** the all-or-nothing gate.
-**Files:** `core/preflight.rs` (+ a small git helper).
+**Files:** `core/preflight.rs`, `core/git.rs`.
+
+**Done.** Repo access is behind a `RepoState` trait (`git.rs`): `GitRepo` resolves the highest
+`name@x.y.z` tag (numeric semver order) and counts commits since it **scoped to the package
+dir** (`rev-list --count <tag>..HEAD -- <relpath>`). `preflight::check` applies the rule table,
+collects all violations, treats a missing changelog as empty, and skips private packages;
+`format_violations` renders the abort block. Tested with a fake `RepoState` for the rule engine
+plus a **real-git** test proving path scoping (root lockfile change ⇒ 0 commits). 4 unit tests.
 
 Tasks:
 1. Resolve each non-private package's last tag `name@x.y.z`.
