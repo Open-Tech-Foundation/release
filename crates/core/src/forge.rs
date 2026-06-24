@@ -6,9 +6,10 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-/// A code-hosting forge that can open a pull request for a pushed branch.
+/// A code-hosting forge that can open a pull request and publish a release.
 pub trait Forge {
     fn open_pr(&self, branch: &str, title: &str, body: &str) -> Result<()>;
+    fn create_release(&self, tag: &str, title: &str, notes: &str) -> Result<()>;
 }
 
 /// GitHub via the `gh` CLI.
@@ -32,6 +33,21 @@ impl Forge for GhForge {
         if !out.status.success() {
             bail!(
                 "`gh pr create` failed:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        Ok(())
+    }
+
+    fn create_release(&self, tag: &str, title: &str, notes: &str) -> Result<()> {
+        let out = Command::new("gh")
+            .args(["release", "create", tag, "--title", title, "--notes", notes])
+            .current_dir(&self.root)
+            .output()
+            .context("failed to run `gh release create`")?;
+        if !out.status.success() {
+            bail!(
+                "`gh release create` failed:\n{}",
                 String::from_utf8_lossy(&out.stderr)
             );
         }

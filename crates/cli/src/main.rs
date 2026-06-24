@@ -73,6 +73,7 @@ fn main() -> Result<()> {
             dry_run,
         } => publish::run(
             &adapter,
+            &root,
             &publish::PublishOptions {
                 artifacts_dir,
                 dry_run,

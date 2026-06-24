@@ -55,6 +55,9 @@ impl Forge for CaptureForge {
             .push((branch.to_string(), title.to_string()));
         Ok(())
     }
+    fn create_release(&self, _tag: &str, _title: &str, _notes: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 fn git(dir: &Path, args: &[&str]) {

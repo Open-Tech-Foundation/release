@@ -68,6 +68,8 @@ pub trait GitOps {
     fn add_all(&self) -> Result<()>;
     fn commit(&self, message: &str) -> Result<()>;
     fn push_branch(&self, name: &str) -> Result<()>;
+    fn create_tag(&self, name: &str) -> Result<()>;
+    fn push_tag(&self, name: &str) -> Result<()>;
 }
 
 impl GitOps for GitRepo {
@@ -97,6 +99,15 @@ impl GitOps for GitRepo {
 
     fn push_branch(&self, name: &str) -> Result<()> {
         run_git(&self.root, &["push", "--set-upstream", "origin", name]).map(|_| ())
+    }
+
+    fn create_tag(&self, name: &str) -> Result<()> {
+        run_git(&self.root, &["tag", name]).map(|_| ())
+    }
+
+    fn push_tag(&self, name: &str) -> Result<()> {
+        let refspec = format!("refs/tags/{name}");
+        run_git(&self.root, &["push", "origin", &refspec]).map(|_| ())
     }
 }
 

@@ -17,7 +17,7 @@ and module skeletons already exist (Phase 0 ✅); every command function is curr
 | 3 | Graph: topo sort + cascade | ✅ |
 | 4 | Strict preflight | ✅ |
 | 5 | `version` command | ✅ |
-| 6 | `publish` command | ⬜ |
+| 6 | `publish` command | ✅ |
 | 7 | `init` command | ⬜ |
 | 8 | Hardening: docs, tests, release-of-self | ⬜ |
 
@@ -182,10 +182,19 @@ Tasks:
 
 ---
 
-## Phase 6 — `publish` command
+## Phase 6 — `publish` command ✅
 
 **Goal:** CI publish, stateless and resumable.
-**Files:** `core/publish.rs`, CLI wiring.
+**Files:** `core/publish.rs`, `core/git.rs` (tag ops), `core/forge.rs` (release), CLI wiring.
+
+**Done.** `publish::orchestrate` discovers, topo-sorts, filters to publishable & not-already-
+published, then per package: `resolve_workspace_links` → `publish` (staged assets attached
+only if `<artifacts-dir>/<pkg>/` exists on disk) → `create_tag`/`push_tag` → optional
+`create_release` from the dated changelog section. First failure propagates and halts (no
+rollback); a re-run skips already-published via `is_published` and resumes. `GitOps` gained
+`create_tag`/`push_tag`; `Forge` gained `create_release`. Two CLI integration tests with a
+registry-modelling fake runner prove topo order + idempotency and halt-on-failure +
+forward-resume (dependent of the failed package is never attempted).
 
 Tasks:
 1. Discover → filter (`publishable` && !`is_published`) → `topo_order`.
