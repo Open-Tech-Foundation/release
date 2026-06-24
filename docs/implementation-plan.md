@@ -12,7 +12,7 @@ and module skeletons already exist (Phase 0 ✅); every command function is curr
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 0 | Workspace scaffold + types + CLI surface | ✅ |
-| 1 | npm adapter | ⬜ |
+| 1 | npm adapter | ✅ |
 | 2 | Changelog parser/rewriter | ⬜ |
 | 3 | Graph: topo sort + cascade | ⬜ |
 | 4 | Strict preflight | ⬜ |
@@ -33,10 +33,19 @@ build` and `otf-release --help` both work.
 
 ---
 
-## Phase 1 — npm adapter
+## Phase 1 — npm adapter ✅
 
 **Goal:** a fully working `Adapter` impl so every later phase has real data.
-**Files:** `adapters/npm.rs` (+ small helpers as needed).
+**Files:** `adapters/npm/mod.rs`, `adapters/npm/manifest.rs`.
+
+**Done.** All eight `Adapter` methods implemented, 13 unit tests green. Two design choices
+worth noting for later phases:
+- **Format-preserving edits** (`manifest.rs`) — a small JSON span locator rewrites only the
+  target value's bytes, so manifests stay byte-stable except the intended change. Reads use
+  `serde_json`.
+- **`CommandRunner` seam** (`mod.rs`) — `is_published` / `publish` / `update_lockfile` shell
+  out through a trait, so they're tested with a fake runner (no live npm/registry). Phases 5–6
+  can reuse this seam for `git` / `gh`.
 
 Tasks:
 1. `discover_packages` — read workspace globs from the root `package.json`, parse each member's
