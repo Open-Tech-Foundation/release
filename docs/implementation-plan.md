@@ -16,7 +16,7 @@ and module skeletons already exist (Phase 0 ✅); every command function is curr
 | 2 | Changelog parser/rewriter | ✅ |
 | 3 | Graph: topo sort + cascade | ✅ |
 | 4 | Strict preflight | ✅ |
-| 5 | `version` command | ⬜ |
+| 5 | `version` command | ✅ |
 | 6 | `publish` command | ⬜ |
 | 7 | `init` command | ⬜ |
 | 8 | Hardening: docs, tests, release-of-self | ⬜ |
@@ -149,10 +149,21 @@ Tasks:
 
 ---
 
-## Phase 5 — `version` command
+## Phase 5 — `version` command ✅
 
 **Goal:** the full local flow end to end.
-**Files:** `core/version.rs`, `core/summary.rs`, prompt + git helpers, CLI wiring.
+**Files:** `core/version.rs`, `core/summary.rs`, `core/prompt.rs`, `core/forge.rs`,
+`core/date.rs`, `core/git.rs` (GitOps), CLI wiring.
+
+**Done.** `version::orchestrate` is the testable core; side effects are injected as traits
+(`Prompt`, `GitOps`, `Forge`) and `today` is injected for determinism. `run` wires the real
+`StdinPrompt`/`GitRepo`/`GhForge`. Flow: discover → preflight → pending → select+bump →
+cascade → compute versions/ranges → `summary::render` → dry-run/confirm → branch guard
+(clean + on `main`) → apply (versions, ranges incl. private apps, changelogs, lockfile) →
+commit → push → `gh` PR. Covered by core unit tests (apply_bump, change_note, summary) plus
+two CLI integration tests on a real temp git+npm repo (npm runner faked, push to a local bare
+remote): a full release landing on `release/*` with main untouched, and a dry-run that writes
+nothing.
 
 Tasks:
 1. Orchestrate: discover → preflight → prompt (multi-select + per-pkg bump) → cascade → compute

@@ -2,10 +2,25 @@
 //!
 //! Produces a release PR; never publishes, never writes to `main`. See
 //! `docs/commands/version.md` for the full step sequence.
+//!
+//! The orchestration is split so the side effects (prompts, git mutations, the forge) are
+//! injected as traits — [`orchestrate`] is the testable core; [`run`] wires up the real
+//! implementations.
 
-use anyhow::Result;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
-use crate::adapter::Adapter;
+use anyhow::{anyhow, bail, Result};
+
+use crate::adapter::{Adapter, Bump, DepKind, Pkg};
+use crate::changelog;
+use crate::date;
+use crate::forge::{Forge, GhForge};
+use crate::git::{GitOps, GitRepo, RepoState};
+use crate::graph::Graph;
+use crate::preflight;
+use crate::prompt::{Prompt, StdinPrompt};
+use crate::summary::{self, Plan, RangeUpdate, VersionChange};
 
 /// Options for a `version` run (wired up by the CLI crate).
 #[derive(Debug, Clone, Default)]
@@ -16,9 +31,260 @@ pub struct VersionOptions {
     pub first_release: bool,
 }
 
-/// Run the interactive version flow:
-/// discover -> preflight -> prompt -> cascade -> summary/confirm -> branch -> apply ->
-/// lockfile -> commit -> push -> open PR.
-pub fn run(adapter: &dyn Adapter, opts: &VersionOptions) -> Result<()> {
-    todo!("orchestrate the version flow (see docs/commands/version.md)")
+/// Wire up the real adapter/git/forge/prompt and run the flow.
+pub fn run(adapter: &dyn Adapter, root: &Path, opts: &VersionOptions) -> Result<()> {
+    let repo = GitRepo::new(root);
+    let forge = GhForge::new(root);
+    let prompt = StdinPrompt;
+    let today = date::today();
+    orchestrate(adapter, &repo, &repo, &forge, &prompt, root, &today, opts)
+}
+
+/// The testable core of the `version` flow. `today` is injected for deterministic output.
+#[allow(clippy::too_many_arguments)]
+pub fn orchestrate(
+    adapter: &dyn Adapter,
+    repo: &dyn RepoState,
+    git: &dyn GitOps,
+    forge: &dyn Forge,
+    prompt: &dyn Prompt,
+    root: &Path,
+    today: &str,
+    opts: &VersionOptions,
+) -> Result<()> {
+    let packages = adapter.discover_packages()?;
+
+    // 1. Strict preflight — abort before any prompt or mutation.
+    let violations = preflight::check(repo, &packages, &[])?;
+    if !violations.is_empty() {
+        bail!("{}", preflight::format_violations(&violations));
+    }
+
+    // 2. Pending = publishable packages that carry curated [Unreleased] notes.
+    let mut empties: HashMap<&str, bool> = HashMap::new();
+    for p in &packages {
+        empties.insert(p.name.as_str(), unreleased_is_empty(&p.changelog_path)?);
+    }
+    let pending: Vec<&Pkg> = packages
+        .iter()
+        .filter(|p| p.publishable && !empties[p.name.as_str()])
+        .collect();
+    if pending.is_empty() {
+        println!("Nothing to release: no package has [Unreleased] notes.");
+        return Ok(());
+    }
+
+    // 3. Prompt: multi-select, then a bump per selected package.
+    let selected_names = prompt.select_packages(&pending)?;
+    if selected_names.is_empty() {
+        println!("Nothing selected.");
+        return Ok(());
+    }
+    let pending_names: HashSet<&str> = pending.iter().map(|p| p.name.as_str()).collect();
+    let mut selected: HashMap<String, Bump> = HashMap::new();
+    for name in &selected_names {
+        if !pending_names.contains(name.as_str()) {
+            bail!("selected package is not in the pending list: {name}");
+        }
+        selected.insert(name.clone(), prompt.choose_bump(name)?);
+    }
+
+    // 4. Cascade through dependents (private leaves excluded).
+    let graph = Graph::build(&packages)?;
+    let bumps = graph.cascade(adapter, &selected)?;
+
+    // 5. Compute new versions.
+    let by_name: HashMap<&str, &Pkg> = packages.iter().map(|p| (p.name.as_str(), p)).collect();
+    let mut new_versions: HashMap<String, String> = HashMap::new();
+    for (name, &bump) in &bumps {
+        let pkg = by_name[name.as_str()];
+        new_versions.insert(name.clone(), apply_bump(&pkg.version, bump)?);
+    }
+
+    // 6. Build the summary plan.
+    let mut changes: Vec<VersionChange> = bumps
+        .iter()
+        .map(|(name, &bump)| {
+            let pkg = by_name[name.as_str()];
+            let is_selected = selected.contains_key(name);
+            VersionChange {
+                name: name.clone(),
+                old_version: pkg.version.clone(),
+                new_version: new_versions[name].clone(),
+                selected: is_selected,
+                note: change_note(pkg, bump, is_selected, &new_versions),
+            }
+        })
+        .collect();
+    changes.sort_by(|a, b| b.selected.cmp(&a.selected).then(a.name.cmp(&b.name)));
+
+    let mut range_updates: Vec<RangeUpdate> = Vec::new();
+    for p in &packages {
+        for dep in &p.internal_deps {
+            if let Some(new_dep_ver) = new_versions.get(&dep.name) {
+                range_updates.push(RangeUpdate {
+                    consumer: p.name.clone(),
+                    dep: dep.name.clone(),
+                    old_range: dep.range.clone(),
+                    new_range: adapter.format_range(new_dep_ver),
+                    consumer_private: !p.publishable,
+                });
+            }
+        }
+    }
+    range_updates.sort_by(|a, b| a.consumer.cmp(&b.consumer).then(a.dep.cmp(&b.dep)));
+
+    let plan = Plan {
+        changes,
+        range_updates,
+    };
+    let summary_text = summary::render(&plan);
+
+    // 7. Dry run: print the plan and stop, writing nothing.
+    if opts.dry_run {
+        print!("{summary_text}");
+        return Ok(());
+    }
+
+    // 8. Confirm. On cancel, write nothing.
+    if !prompt.confirm(&summary_text)? {
+        println!("Cancelled. Nothing written.");
+        return Ok(());
+    }
+
+    // 9. Branch guard: clean tree, on `main`, then cut release/*.
+    if !git.is_clean()? {
+        bail!("working tree is not clean; commit or stash first");
+    }
+    let branch = git.current_branch()?;
+    if branch != "main" {
+        bail!("must be on `main` to start a release (currently on `{branch}`)");
+    }
+    let release_branch = format!("release/{today}");
+    git.create_branch(&release_branch)?;
+
+    // 10. Apply: versions, then internal ranges, then changelogs, then the lockfile.
+    for (name, new_ver) in &new_versions {
+        adapter.write_version(by_name[name.as_str()], new_ver)?;
+    }
+    for r in &plan.range_updates {
+        adapter.update_dep_range(by_name[r.consumer.as_str()], &r.dep, &new_versions[&r.dep])?;
+    }
+    for (name, new_ver) in &new_versions {
+        let pkg = by_name[name.as_str()];
+        // Auto-bumped-only packages (empty [Unreleased]) get the stub.
+        changelog::release_unreleased(&pkg.changelog_path, new_ver, today, empties[name.as_str()])?;
+    }
+    adapter.update_lockfile(root)?;
+
+    // 11. Commit, push, open the PR.
+    let mut titles: Vec<String> = selected
+        .keys()
+        .map(|n| format!("{n}@{}", new_versions[n]))
+        .collect();
+    titles.sort();
+    let commit_title = format!("chore(release): {}", titles.join(", "));
+    git.add_all()?;
+    git.commit(&commit_title)?;
+    git.push_branch(&release_branch)?;
+    forge.open_pr(&release_branch, &commit_title, &summary_text)?;
+
+    println!("Opened release PR from `{release_branch}`.");
+    Ok(())
+}
+
+/// Apply a bump to an `x.y.z` version (pre-release/build metadata is dropped; v1 has none).
+fn apply_bump(version: &str, bump: Bump) -> Result<String> {
+    let core = version.split(['-', '+']).next().unwrap_or(version);
+    let mut parts = core.split('.');
+    let mut next = || -> Result<u64> {
+        parts
+            .next()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| anyhow!("not a valid x.y.z version: {version}"))
+    };
+    let (major, minor, patch) = (next()?, next()?, next()?);
+    let (a, b, c) = match bump {
+        Bump::Major => (major + 1, 0, 0),
+        Bump::Minor => (major, minor + 1, 0),
+        Bump::Patch => (major, minor, patch + 1),
+    };
+    Ok(format!("{a}.{b}.{c}"))
+}
+
+/// The parenthetical reason shown in the summary for one change.
+fn change_note(
+    pkg: &Pkg,
+    bump: Bump,
+    selected: bool,
+    new_versions: &HashMap<String, String>,
+) -> String {
+    if selected {
+        return format!("{}, selected", bump_word(bump));
+    }
+    match pkg
+        .internal_deps
+        .iter()
+        .find(|d| new_versions.contains_key(&d.name))
+    {
+        Some(dep) if dep.kind == DepKind::PeerDep => {
+            format!("mirror {} — peerDep on {}", bump_word(bump), dep.name)
+        }
+        Some(dep) => format!("{} — depends on {}", bump_word(bump), dep.name),
+        None => bump_word(bump).to_string(),
+    }
+}
+
+fn bump_word(bump: Bump) -> &'static str {
+    match bump {
+        Bump::Major => "major",
+        Bump::Minor => "minor",
+        Bump::Patch => "patch",
+    }
+}
+
+fn unreleased_is_empty(changelog_path: &Path) -> Result<bool> {
+    if !changelog_path.exists() {
+        return Ok(true);
+    }
+    Ok(changelog::parse_unreleased(changelog_path)?.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_bump_increments_and_resets() {
+        assert_eq!(apply_bump("1.2.3", Bump::Major).unwrap(), "2.0.0");
+        assert_eq!(apply_bump("1.2.3", Bump::Minor).unwrap(), "1.3.0");
+        assert_eq!(apply_bump("1.2.3", Bump::Patch).unwrap(), "1.2.4");
+        assert_eq!(apply_bump("0.1.0-next.1", Bump::Patch).unwrap(), "0.1.1");
+        assert!(apply_bump("nope", Bump::Patch).is_err());
+    }
+
+    #[test]
+    fn change_note_explains_cascade_reason() {
+        let pkg = Pkg {
+            name: "sdk".into(),
+            version: "1.0.0".into(),
+            manifest_path: "sdk/package.json".into(),
+            changelog_path: "sdk/CHANGELOG.md".into(),
+            publishable: true,
+            internal_deps: vec![crate::adapter::InternalDep {
+                name: "core".into(),
+                kind: DepKind::PeerDep,
+                range: "^1.0.0".into(),
+            }],
+        };
+        let new_versions = HashMap::from([("core".to_string(), "2.0.0".to_string())]);
+        assert_eq!(
+            change_note(&pkg, Bump::Major, false, &new_versions),
+            "mirror major — peerDep on core"
+        );
+        assert_eq!(
+            change_note(&pkg, Bump::Major, true, &new_versions),
+            "major, selected"
+        );
+    }
 }

@@ -54,7 +54,7 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let root = cli.root.unwrap_or_else(|| PathBuf::from("."));
-    let adapter = NpmAdapter::new(root);
+    let adapter = NpmAdapter::new(root.clone());
 
     match cli.command {
         Command::Version {
@@ -62,6 +62,7 @@ fn main() -> Result<()> {
             first_release,
         } => version::run(
             &adapter,
+            &root,
             &version::VersionOptions {
                 dry_run,
                 first_release,

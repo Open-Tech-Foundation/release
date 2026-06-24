@@ -60,6 +60,46 @@ impl RepoState for GitRepo {
     }
 }
 
+/// Mutating git operations used by the `version` command's branch/commit/push flow.
+pub trait GitOps {
+    fn is_clean(&self) -> Result<bool>;
+    fn current_branch(&self) -> Result<String>;
+    fn create_branch(&self, name: &str) -> Result<()>;
+    fn add_all(&self) -> Result<()>;
+    fn commit(&self, message: &str) -> Result<()>;
+    fn push_branch(&self, name: &str) -> Result<()>;
+}
+
+impl GitOps for GitRepo {
+    fn is_clean(&self) -> Result<bool> {
+        Ok(run_git(&self.root, &["status", "--porcelain"])?
+            .trim()
+            .is_empty())
+    }
+
+    fn current_branch(&self) -> Result<String> {
+        Ok(run_git(&self.root, &["rev-parse", "--abbrev-ref", "HEAD"])?
+            .trim()
+            .to_string())
+    }
+
+    fn create_branch(&self, name: &str) -> Result<()> {
+        run_git(&self.root, &["checkout", "-b", name]).map(|_| ())
+    }
+
+    fn add_all(&self) -> Result<()> {
+        run_git(&self.root, &["add", "-A"]).map(|_| ())
+    }
+
+    fn commit(&self, message: &str) -> Result<()> {
+        run_git(&self.root, &["commit", "-q", "-m", message]).map(|_| ())
+    }
+
+    fn push_branch(&self, name: &str) -> Result<()> {
+        run_git(&self.root, &["push", "--set-upstream", "origin", name]).map(|_| ())
+    }
+}
+
 fn run_git(root: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
         .args(args)

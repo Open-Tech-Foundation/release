@@ -19,10 +19,13 @@
 
 pub mod adapter;
 pub mod changelog;
+pub mod date;
+pub mod forge;
 pub mod git;
 pub mod graph;
 pub mod init;
 pub mod preflight;
+pub mod prompt;
 pub mod publish;
 pub mod summary;
 pub mod version;
