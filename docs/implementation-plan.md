@@ -18,7 +18,7 @@ and module skeletons already exist (Phase 0 ✅); every command function is curr
 | 4 | Strict preflight | ✅ |
 | 5 | `version` command | ✅ |
 | 6 | `publish` command | ✅ |
-| 7 | `init` command | ⬜ |
+| 7 | `init` command | ✅ |
 | 8 | Hardening: docs, tests, release-of-self | ⬜ |
 
 Dependency order: 1 → 2 → 3 → 4 → 5, then 6, then 7. (5 needs 1–4; 6 needs 1+3; 7 needs 1.)
@@ -212,10 +212,18 @@ Tasks:
 
 ---
 
-## Phase 7 — `init` command
+## Phase 7 — `init` command ✅
 
 **Goal:** generate the single `release.yml`.
-**Files:** `core/init.rs`, an embedded YAML template.
+**Files:** `core/init.rs`.
+
+**Done.** `render_workflow` is a pure function (golden-tested): a `build-matrix` job is emitted
+only when asset packages are selected, and the `publish` job then `needs` it, downloads
+artifacts to `.artifacts/`, and runs `otf-release publish --artifacts-dir .artifacts`; the
+libs-only form runs plain `otf-release publish`. Matrix triples carry `# edit me` markers.
+Choices go through an `InitPrompt` trait (`StdinInitPrompt` real impl, `DEFAULT_TARGETS`
+defaults). Overwrite is guarded (warn unless `--force`). 4 unit tests (two golden renders,
+libs-only orchestrate, overwrite guard) plus a real-binary smoke test.
 
 Tasks:
 1. Detect ecosystems (npm).

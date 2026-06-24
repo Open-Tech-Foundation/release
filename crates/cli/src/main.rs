@@ -79,6 +79,6 @@ fn main() -> Result<()> {
                 dry_run,
             },
         ),
-        Command::Init { force } => init::run(&adapter, &init::InitOptions { force }),
+        Command::Init { force } => init::run(&adapter, &root, &init::InitOptions { force }),
     }
 }
