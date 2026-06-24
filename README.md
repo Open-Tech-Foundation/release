@@ -33,3 +33,17 @@ adapter-based: **npm today, cargo and others later**.
 - **Stateless & config-light.** The generated `release.yml` is the single source of truth.
 - **Dependency-correct.** peerDep dependents mirror the bump; encapsulated ones get a patch.
   Private apps stay buildable but are never published.
+
+## Documentation
+
+Reference docs live in [`docs/`](./docs/) — start at [`docs/README.md`](./docs/README.md).
+
+- [Architecture](./docs/architecture.md) · [Adapters](./docs/adapters/overview.md) ([npm](./docs/adapters/npm.md))
+- Commands: [version](./docs/commands/version.md) · [publish](./docs/commands/publish.md) · [init](./docs/commands/init.md)
+- [Changelog format](./docs/changelog-format.md) · [Preflight gate](./docs/preflight.md) · [CI workflow](./docs/ci-workflow.md)
+- [Implementation plan](./docs/implementation-plan.md) · [Roadmap](./docs/roadmap.md)
+
+## Status
+
+v1 is in development. The Cargo workspace under `crates/` compiles and the CLI surface is
+wired up; command logic is being filled in per the [implementation plan](./docs/implementation-plan.md).

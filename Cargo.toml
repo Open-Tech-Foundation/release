@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/adapters",
+    "crates/cli",
+]
+
+# Shared metadata + dependency versions for every crate in the workspace.
+# Individual crates inherit these with `field.workspace = true`.
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/opentf/release"
+rust-version = "1.80"
+authors = ["OpenTF"]
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+# Internal crates, referenced by path so the workspace builds standalone.
+opentf-release-core = { path = "crates/core" }
+opentf-release-adapters = { path = "crates/adapters" }

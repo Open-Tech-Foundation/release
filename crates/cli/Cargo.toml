@@ -1,0 +1,20 @@
+[package]
+name = "opentf-release"
+description = "Curated-changelog, manual-bump release CLI for polyglot monorepos."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+# The published crate is `opentf-release`; the binary on PATH is `otf-release`.
+[[bin]]
+name = "otf-release"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+opentf-release-core.workspace = true
+opentf-release-adapters.workspace = true
