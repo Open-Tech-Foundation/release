@@ -17,7 +17,6 @@ mod manifest;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 use glob::glob;
@@ -25,39 +24,10 @@ use serde_json::Value;
 
 use opentf_release_core::adapter::{Adapter, Bump, DepKind, InternalDep, Pkg};
 
+// Re-exported so existing `opentf_release_adapters::npm::{CommandRunner, ...}` paths still work.
+pub use crate::command::{CommandOutput, CommandRunner, SystemRunner};
+
 use manifest::{Manifest, DEP_SECTIONS};
-
-/// Result of running an external command, normalized for both the real and faked runners.
-#[derive(Debug, Clone)]
-pub struct CommandOutput {
-    pub success: bool,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-/// Seam over external process execution so registry/publish calls are testable without a
-/// live `npm` or network.
-pub trait CommandRunner: Send + Sync {
-    fn run(&self, program: &str, args: &[&str], cwd: &Path) -> Result<CommandOutput>;
-}
-
-/// The production runner — shells out for real.
-pub struct SystemRunner;
-
-impl CommandRunner for SystemRunner {
-    fn run(&self, program: &str, args: &[&str], cwd: &Path) -> Result<CommandOutput> {
-        let out = Command::new(program)
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .with_context(|| format!("failed to spawn `{program}`"))?;
-        Ok(CommandOutput {
-            success: out.status.success(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        })
-    }
-}
 
 /// npm-backed adapter. Rooted at the workspace directory.
 pub struct NpmAdapter {

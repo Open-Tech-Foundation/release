@@ -4,19 +4,22 @@ v1 is deliberately narrow: **npm only**, hand-curated notes, local `version` →
 items below are explicitly out of scope now. The architecture leaves room for them; none are
 implemented.
 
-## Additional adapters (interface only, no impl)
+## Additional adapters
 
-The [`Adapter`](./adapters/overview.md) trait isolates ecosystems, but only npm exists. Known
-constraints for the next likely adapter, **cargo**:
+The [`Adapter`](./adapters/overview.md) trait isolates ecosystems. **npm** and **cargo** are
+implemented (see [adapters/cargo.md](./adapters/cargo.md)); **PyPI** and others are further out.
+
+The cargo adapter is an **initial** implementation with one known gap still open:
 
 - `version.workspace = true` (inherited versions) **breaks independent per-package
-  versioning** — the adapter must either forbid it or accept lockstep versioning for Rust.
-- `cargo publish` **requires a concrete `version`** on path dependencies (mirrors npm's
-  `resolve_workspace_links`).
-- Cargo has **no peerDep concept**, so the cascade rule (`dependent_bump`) likely makes **all**
-  internal dependents `Patch`.
+  versioning**. The adapter reads inherited versions but **refuses to write** them — independent
+  bumps need a concrete `[package] version`. **Lockstep** workspace versioning (bump the whole
+  workspace together) is the deferred follow-up, needed before the tool can release *its own*
+  crates, which currently inherit their version.
 
-PyPI and others are further out.
+Already handled: `cargo publish` needs a concrete `version` on path deps (done in
+`resolve_workspace_links`); cargo has no peerDep concept so all internal dependents take a
+`Patch`; crates.io is source-only so staged binaries are ignored on publish.
 
 ## Pre-releases / snapshots
 

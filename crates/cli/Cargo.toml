@@ -7,6 +7,8 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+keywords = ["release", "monorepo", "changelog", "publishing", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 # The published crate is `opentf-release`; the binary on PATH is `otf-release`.
 [[bin]]

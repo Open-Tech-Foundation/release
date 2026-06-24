@@ -1,15 +1,23 @@
 //! `otf-release` — the CLI entry point.
 //!
-//! Wires command-line arguments to the orchestration in `opentf-release-core`, using the
-//! npm adapter from `opentf-release-adapters` (the only adapter in v1).
+//! Wires command-line arguments to the orchestration in `opentf-release-core`, selecting an
+//! ecosystem adapter (`npm` or `cargo`) from `opentf-release-adapters`.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
-use opentf_release_adapters::npm::NpmAdapter;
+use opentf_release_core::adapter::Adapter;
 use opentf_release_core::{init, publish, version};
+
+/// Which ecosystem adapter to use. A repo can have several; `init` bakes the choice into the
+/// generated workflow, which passes `--adapter` explicitly.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum AdapterKind {
+    Npm,
+    Cargo,
+}
 
 /// Curated-changelog, manual-bump release CLI for polyglot monorepos.
 #[derive(Debug, Parser)]
@@ -18,6 +26,10 @@ struct Cli {
     /// Workspace root (defaults to the current directory).
     #[arg(long, global = true)]
     root: Option<PathBuf>,
+
+    /// Ecosystem adapter to use.
+    #[arg(long, global = true, value_enum, default_value = "npm")]
+    adapter: AdapterKind,
 
     #[command(subcommand)]
     command: Command,
@@ -54,14 +66,20 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let root = cli.root.unwrap_or_else(|| PathBuf::from("."));
-    let adapter = NpmAdapter::new(root.clone());
+    let adapter: Box<dyn Adapter> = match cli.adapter {
+        AdapterKind::Npm => Box::new(opentf_release_adapters::npm::NpmAdapter::new(root.clone())),
+        AdapterKind::Cargo => Box::new(opentf_release_adapters::cargo::CargoAdapter::new(
+            root.clone(),
+        )),
+    };
+    let adapter = adapter.as_ref();
 
     match cli.command {
         Command::Version {
             dry_run,
             first_release,
         } => version::run(
-            &adapter,
+            adapter,
             &root,
             &version::VersionOptions {
                 dry_run,
@@ -72,13 +90,13 @@ fn main() -> Result<()> {
             artifacts_dir,
             dry_run,
         } => publish::run(
-            &adapter,
+            adapter,
             &root,
             &publish::PublishOptions {
                 artifacts_dir,
                 dry_run,
             },
         ),
-        Command::Init { force } => init::run(&adapter, &root, &init::InitOptions { force }),
+        Command::Init { force } => init::run(adapter, &root, &init::InitOptions { force }),
     }
 }

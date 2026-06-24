@@ -13,7 +13,7 @@ publishing, and a matrix-gated GitHub release in one `release.yml`.
 
 Unlike commit-driven tools, your hand-written `[Unreleased]` notes are the source of
 truth — never inferred from commits. Unlike npm-locked tools, the publishing backend is
-adapter-based: **npm today, cargo and others later**.
+adapter-based: **npm and cargo today, others later**.
 
 ## What it does
 
