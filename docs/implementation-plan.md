@@ -13,7 +13,7 @@ and module skeletons already exist (Phase 0 ✅); every command function is curr
 | --- | --- | --- |
 | 0 | Workspace scaffold + types + CLI surface | ✅ |
 | 1 | npm adapter | ✅ |
-| 2 | Changelog parser/rewriter | ⬜ |
+| 2 | Changelog parser/rewriter | ✅ |
 | 3 | Graph: topo sort + cascade | ⬜ |
 | 4 | Strict preflight | ⬜ |
 | 5 | `version` command | ⬜ |
@@ -72,10 +72,15 @@ Tasks:
 
 ---
 
-## Phase 2 — Changelog parser/rewriter
+## Phase 2 — Changelog parser/rewriter ✅
 
 **Goal:** read and rewrite Keep a Changelog files.
 **Files:** `core/changelog.rs`.
+
+**Done.** Parse/rewrite logic is pure (`&str → String`) so golden tests need no file IO; the
+public `parse_unreleased` / `release_unreleased` / `dated_section_notes` are thin file
+wrappers. Section boundaries are level-≤2 ATX headings, so `### Added`/`### Fixed` stay inside
+the body. `is_empty` ignores whitespace **and** HTML comments. 8 unit tests green.
 
 Tasks:
 1. `parse_unreleased` — capture the body between `## [Unreleased]` and the next `## ` heading;
