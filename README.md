@@ -38,15 +38,17 @@ adapter-based: **npm and cargo today, others later**.
 
 Reference docs live in [`docs/`](./docs/) — start at [`docs/README.md`](./docs/README.md).
 
-- [Architecture](./docs/architecture.md) · [Adapters](./docs/adapters/overview.md) ([npm](./docs/adapters/npm.md))
+- [Architecture](./docs/architecture.md) · [Adapters](./docs/adapters/overview.md) ([npm](./docs/adapters/npm.md) · [cargo](./docs/adapters/cargo.md))
 - Commands: [version](./docs/commands/version.md) · [publish](./docs/commands/publish.md) · [init](./docs/commands/init.md)
 - [Changelog format](./docs/changelog-format.md) · [Preflight gate](./docs/preflight.md) · [CI workflow](./docs/ci-workflow.md)
 - [Implementation plan](./docs/implementation-plan.md) · [Roadmap](./docs/roadmap.md)
 
 ## Status
 
-v1 is **functionally complete**: all three commands (`version`, `publish`, `init`) and the npm
-adapter are implemented and tested (45 tests, CI on fmt + clippy + test). See the
-[implementation plan](./docs/implementation-plan.md) for the phase-by-phase breakdown. Other
-ecosystem adapters (cargo, PyPI), pre-releases, and a release-PR bot remain on the
+v1 is **functionally complete**: all three commands (`version`, `publish`, `init`) and the **npm**
+and **cargo** adapters are implemented and tested (CI on fmt + clippy + test). The cargo adapter
+supports **lockstep** workspaces and a **GitHub-Release binary** distribution (cross-OS artifacts,
+no crates.io) — which is how `otf-release` ships itself. See the
+[implementation plan](./docs/implementation-plan.md) for the phase-by-phase breakdown. Further
+ecosystem adapters (PyPI), pre-releases, and a release-PR bot remain on the
 [roadmap](./docs/roadmap.md).

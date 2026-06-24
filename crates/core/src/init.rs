@@ -21,6 +21,28 @@ pub const DEFAULT_TARGETS: [&str; 3] = [
     "x86_64-pc-windows-msvc",
 ];
 
+/// Which ecosystem the generated workflow targets. Picked by the CLI's `--adapter`.
+///
+/// The shape differs fundamentally: **npm** publishes to a registry (`otf-release publish`),
+/// while **cargo** here builds cross-OS binaries and ships them on a **GitHub Release** — no
+/// registry — so the artifacts can be downloaded to install the binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ecosystem {
+    Npm,
+    Cargo,
+}
+
+/// Map a target triple to a sensible default GitHub-hosted runner.
+fn runner_os(target: &str) -> &'static str {
+    if target.contains("windows") {
+        "windows-latest"
+    } else if target.contains("apple") || target.contains("darwin") {
+        "macos-latest"
+    } else {
+        "ubuntu-latest"
+    }
+}
+
 /// Options for an `init` run.
 #[derive(Debug, Clone, Default)]
 pub struct InitOptions {
@@ -46,13 +68,19 @@ pub trait InitPrompt {
 }
 
 /// Wire up the real prompt and run the generator.
-pub fn run(adapter: &dyn Adapter, root: &Path, opts: &InitOptions) -> Result<()> {
-    orchestrate(adapter, &StdinInitPrompt, root, opts)
+pub fn run(
+    adapter: &dyn Adapter,
+    ecosystem: Ecosystem,
+    root: &Path,
+    opts: &InitOptions,
+) -> Result<()> {
+    orchestrate(adapter, ecosystem, &StdinInitPrompt, root, opts)
 }
 
 /// The testable core of `init`.
 pub fn orchestrate(
     adapter: &dyn Adapter,
+    ecosystem: Ecosystem,
     prompt: &dyn InitPrompt,
     root: &Path,
     opts: &InitOptions,
@@ -69,7 +97,7 @@ pub fn orchestrate(
         });
     }
 
-    let yaml = render_workflow(&assets);
+    let yaml = render_workflow(ecosystem, &assets);
     let path = root.join(".github/workflows/release.yml");
 
     if path.exists() && !opts.force && !prompt.confirm_overwrite(&path)? {
@@ -84,9 +112,17 @@ pub fn orchestrate(
     Ok(())
 }
 
-/// Render the single `release.yml`. A `build-matrix` job is emitted only when there are asset
-/// packages; the `publish` job then `needs` it and downloads artifacts to `.artifacts/`.
-pub fn render_workflow(assets: &[AssetPackage]) -> String {
+/// Render the single `release.yml` for the chosen ecosystem.
+pub fn render_workflow(ecosystem: Ecosystem, assets: &[AssetPackage]) -> String {
+    match ecosystem {
+        Ecosystem::Npm => render_npm_workflow(assets),
+        Ecosystem::Cargo => render_cargo_workflow(assets),
+    }
+}
+
+/// The npm workflow: a `build-matrix` job (asset packages only) feeds a registry `publish` job
+/// that runs `otf-release publish` and downloads staged artifacts to `.artifacts/`.
+fn render_npm_workflow(assets: &[AssetPackage]) -> String {
     let has_assets = !assets.is_empty();
     let mut s = String::from("name: Release\n\non:\n  push:\n    branches: [main]\n\njobs:\n");
 
@@ -143,6 +179,85 @@ pub fn render_workflow(assets: &[AssetPackage]) -> String {
     s.push_str("        env:\n");
     s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}\n");
     s.push_str("          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
+    s
+}
+
+/// The cargo workflow: cross-compile a binary matrix, upload the artifacts, then create a
+/// **GitHub Release** tagged `vX.Y.Z` (read from `[workspace.package] version`) with those
+/// binaries attached. There is **no crates.io publish** — the release artifacts are how users
+/// install the binary for each OS. The release step is idempotent (skips an existing tag).
+fn render_cargo_workflow(assets: &[AssetPackage]) -> String {
+    let has_assets = !assets.is_empty();
+    let mut s = String::from(
+        "name: Release\n\non:\n  push:\n    branches: [main]\n\n\
+         permissions:\n  contents: write  # create tags and GitHub Releases\n\njobs:\n",
+    );
+
+    if has_assets {
+        s.push_str("  build-matrix:\n");
+        s.push_str("    runs-on: ${{ matrix.os }}\n");
+        s.push_str("    strategy:\n      matrix:\n        include:\n");
+        for asset in assets {
+            for target in &asset.targets {
+                s.push_str(&format!(
+                    "          - {{ package: \"{}\", target: \"{}\", os: \"{}\" }}  # edit me\n",
+                    asset.name,
+                    target,
+                    runner_os(target)
+                ));
+            }
+        }
+        s.push_str("    steps:\n");
+        s.push_str("      - uses: actions/checkout@v4\n");
+        s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
+        s.push_str("        with:\n");
+        s.push_str("          targets: ${{ matrix.target }}\n");
+        s.push_str("      - name: Build ${{ matrix.package }} for ${{ matrix.target }}\n");
+        s.push_str(
+            "        run: cargo build --release -p ${{ matrix.package }} --target ${{ matrix.target }}\n",
+        );
+        s.push_str("      - uses: actions/upload-artifact@v4\n");
+        s.push_str("        with:\n");
+        s.push_str("          name: ${{ matrix.package }}-${{ matrix.target }}\n");
+        s.push_str(
+            "          path: target/${{ matrix.target }}/release/  # edit me: narrow to the built binary\n",
+        );
+        s.push('\n');
+    }
+
+    s.push_str("  release:\n");
+    if has_assets {
+        s.push_str("    needs: build-matrix\n");
+    }
+    s.push_str("    runs-on: ubuntu-latest\n");
+    s.push_str("    steps:\n");
+    s.push_str("      - uses: actions/checkout@v4\n");
+    s.push_str("        with:\n");
+    s.push_str("          fetch-depth: 0\n");
+    if has_assets {
+        s.push_str("      - uses: actions/download-artifact@v4\n");
+        s.push_str("        with:\n");
+        s.push_str("          path: .artifacts\n");
+    }
+    s.push_str("      - name: Create GitHub Release\n");
+    s.push_str("        env:\n");
+    s.push_str("          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
+    s.push_str("        run: |\n");
+    s.push_str(
+        "          version=\"$(grep -m1 '^version' Cargo.toml | cut -d'\"' -f2)\"  # edit me: [workspace.package] version\n",
+    );
+    s.push_str("          tag=\"v$version\"\n");
+    s.push_str("          if gh release view \"$tag\" >/dev/null 2>&1; then\n");
+    s.push_str("            echo \"Release $tag already exists; nothing to do.\"\n");
+    s.push_str("            exit 0\n");
+    s.push_str("          fi\n");
+    if has_assets {
+        s.push_str(
+            "          gh release create \"$tag\" --title \"$tag\" --generate-notes .artifacts/**/*\n",
+        );
+    } else {
+        s.push_str("          gh release create \"$tag\" --title \"$tag\" --generate-notes\n");
+    }
     s
 }
 
@@ -272,7 +387,7 @@ mod tests {
 
     #[test]
     fn renders_libs_only_workflow() {
-        assert_eq!(render_workflow(&[]), LIBS_ONLY);
+        assert_eq!(render_workflow(Ecosystem::Npm, &[]), LIBS_ONLY);
     }
 
     #[test]
@@ -284,7 +399,7 @@ mod tests {
                 "aarch64-apple-darwin".into(),
             ],
         }];
-        let out = render_workflow(&assets);
+        let out = render_workflow(Ecosystem::Npm, &assets);
         assert!(out.contains("  build-matrix:\n"));
         assert!(out.contains(
             "          - { package: \"@x/cli\", target: \"x86_64-unknown-linux-gnu\" }  # edit me\n"
@@ -294,6 +409,32 @@ mod tests {
         assert!(out.contains("        run: otf-release publish --artifacts-dir .artifacts\n"));
         // No matrix means no asset wiring in the libs-only output.
         assert!(!LIBS_ONLY.contains("build-matrix"));
+    }
+
+    #[test]
+    fn renders_cargo_binary_release_with_github_release_no_registry() {
+        let assets = vec![AssetPackage {
+            name: "opentf-release".into(),
+            targets: vec![
+                "x86_64-unknown-linux-gnu".into(),
+                "x86_64-pc-windows-msvc".into(),
+            ],
+        }];
+        let out = render_workflow(Ecosystem::Cargo, &assets);
+        // Cross-compile matrix with per-target runners.
+        assert!(out.contains("    runs-on: ${{ matrix.os }}\n"));
+        assert!(out.contains(
+            "          - { package: \"opentf-release\", target: \"x86_64-pc-windows-msvc\", os: \"windows-latest\" }  # edit me\n"
+        ));
+        assert!(out
+            .contains("        run: cargo build --release -p ${{ matrix.package }} --target ${{ matrix.target }}\n"));
+        // Ships via a GitHub Release, idempotently — and never touches a registry.
+        assert!(out.contains("      - name: Create GitHub Release\n"));
+        assert!(out.contains("          if gh release view \"$tag\" >/dev/null 2>&1; then\n"));
+        assert!(out.contains("          gh release create \"$tag\""));
+        assert!(!out.contains("cargo publish"));
+        assert!(!out.contains("crates.io"));
+        assert!(!out.contains("registry-url"));
     }
 
     #[test]
@@ -307,7 +448,14 @@ mod tests {
             targets: vec![],
             overwrite: true,
         };
-        orchestrate(&adapter, &prompt, tmp.path(), &InitOptions::default()).unwrap();
+        orchestrate(
+            &adapter,
+            Ecosystem::Npm,
+            &prompt,
+            tmp.path(),
+            &InitOptions::default(),
+        )
+        .unwrap();
         let written = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
         assert_eq!(written, LIBS_ONLY);
     }
@@ -329,11 +477,25 @@ mod tests {
             targets: vec![],
             overwrite: false,
         };
-        orchestrate(&adapter, &decline, tmp.path(), &InitOptions::default()).unwrap();
+        orchestrate(
+            &adapter,
+            Ecosystem::Npm,
+            &decline,
+            tmp.path(),
+            &InitOptions::default(),
+        )
+        .unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "SENTINEL");
 
         // Forced => overwritten without asking.
-        orchestrate(&adapter, &decline, tmp.path(), &InitOptions { force: true }).unwrap();
+        orchestrate(
+            &adapter,
+            Ecosystem::Npm,
+            &decline,
+            tmp.path(),
+            &InitOptions { force: true },
+        )
+        .unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), LIBS_ONLY);
     }
 }

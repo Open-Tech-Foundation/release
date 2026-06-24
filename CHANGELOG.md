@@ -14,13 +14,19 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   dependency ranges), `workspace:` link resolution, lockfile refresh, and `is_published` /
   `publish` behind a testable command runner. Keeps the npm gotchas: `--access public`,
   `--no-workspaces`, idempotent `npm view`.
-- **cargo adapter (initial)** — `Cargo.toml` discovery and format-preserving edits via
-  `toml_edit`, `resolve_workspace_links` that injects concrete versions onto path deps for
-  publish, `cargo update --workspace` lockfile refresh, and `cargo info` / `cargo publish -p`
-  registry calls. Cargo has no peerDep concept, so internal dependents take a patch. Crates
-  that inherit `version.workspace = true` are read but not written (independent versioning
-  requires a concrete `[package] version`; lockstep is deferred). crates.io is source-only, so
-  staged binaries are ignored on publish.
+- **cargo adapter** — `Cargo.toml` discovery and format-preserving edits via `toml_edit`,
+  `resolve_workspace_links` that injects concrete versions onto path deps for publish,
+  `cargo update --workspace` lockfile refresh, and `cargo info` / `cargo publish -p` registry
+  calls. Cargo has no peerDep concept, so internal dependents take a patch.
+- **Lockstep workspace versioning (cargo)** — crates that inherit `version.workspace = true` are
+  bumped by writing the shared `[workspace.package] version` in the root manifest (every
+  inheriting crate moves together) and share a **single root `CHANGELOG.md`**. Crates with a
+  concrete `[package] version` are still versioned independently.
+- **cargo binary-release workflow** — `init --adapter cargo` generates a workflow that
+  cross-compiles a target matrix (each on a matching runner) and attaches the binaries to a
+  **GitHub Release** `vX.Y.Z`, idempotently — **no crates.io**. This is how `otf-release` ships
+  itself; `crates/core` and `crates/adapters` are marked `publish = false` so only the binary is
+  released.
 - **`--adapter npm|cargo`** selector on the CLI (the `init`-generated workflow passes it
   explicitly; a repo can use both ecosystems).
 - **Changelog engine** — Keep a Changelog parser/rewriter: read `[Unreleased]`, move it under a
@@ -38,9 +44,10 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 - **`publish` command** — non-interactive CI flow: topological, idempotent (`is_published`
   skip), halt-on-failure with forward-resume; tags and optional GitHub Releases from the dated
   changelog section. Staged binaries attached only when `<artifacts-dir>/<pkg>/` exists.
-- **`init` command** — generates a single `.github/workflows/release.yml`; a `build-matrix` job
-  appears only when asset packages are selected, and the `publish` job then downloads artifacts
-  and runs `otf-release publish --artifacts-dir .artifacts`. Overwrite guarded by `--force`.
+- **`init` command** — generates a single `.github/workflows/release.yml`, adapter-aware: the
+  **npm** shape feeds a registry `publish` job, the **cargo** shape feeds a GitHub-Release job.
+  A `build-matrix` job appears only when asset packages are selected. Overwrite guarded by
+  `--force`.
 - **Docs** — `docs/` reference tree (architecture, commands, adapters, changelog format,
   preflight, CI workflow, roadmap) and a phased implementation plan.
 - **CI** — `.github/workflows/ci.yml` running `cargo fmt --check`, `clippy -D warnings`, and the
@@ -49,5 +56,6 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ### Notes
 
 - Nothing has been released yet; the first tagged release will move these notes into a dated
-  section. Releasing the tool's own crates to crates.io (via the cargo adapter) is the next
-  step — see [docs/roadmap.md](docs/roadmap.md).
+  section. The tool ships **its own binary** via a GitHub Release (cross-OS artifacts), generated
+  by `init --adapter cargo` and tagged on merge — **not** published to crates.io. See
+  [docs/ci-workflow.md](docs/ci-workflow.md).

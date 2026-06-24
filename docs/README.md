@@ -3,9 +3,10 @@
 Reference documentation for `otf-release`, the curated-changelog, manual-bump release CLI
 for the OpenTF monorepo.
 
-> **Status:** v1 design + scaffold. The Cargo workspace under `crates/` compiles but the
-> command logic is stubbed (`todo!()`). These docs describe the **intended v1 behavior**;
-> [`implementation-plan.md`](./implementation-plan.md) tracks what is built.
+> **Status:** v1 is implemented and tested — `version`, `publish`, and `init`, with the **npm**
+> and **cargo** adapters. The cargo path supports lockstep workspaces and a GitHub-Release binary
+> distribution (how `otf-release` ships itself). [`implementation-plan.md`](./implementation-plan.md)
+> tracks the phase-by-phase build.
 
 ## Start here
 

@@ -9,6 +9,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use opentf_release_core::adapter::Adapter;
+use opentf_release_core::init::Ecosystem;
 use opentf_release_core::{init, publish, version};
 
 /// Which ecosystem adapter to use. A repo can have several; `init` bakes the choice into the
@@ -66,11 +67,17 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let root = cli.root.unwrap_or_else(|| PathBuf::from("."));
-    let adapter: Box<dyn Adapter> = match cli.adapter {
-        AdapterKind::Npm => Box::new(opentf_release_adapters::npm::NpmAdapter::new(root.clone())),
-        AdapterKind::Cargo => Box::new(opentf_release_adapters::cargo::CargoAdapter::new(
-            root.clone(),
-        )),
+    let (adapter, ecosystem): (Box<dyn Adapter>, Ecosystem) = match cli.adapter {
+        AdapterKind::Npm => (
+            Box::new(opentf_release_adapters::npm::NpmAdapter::new(root.clone())),
+            Ecosystem::Npm,
+        ),
+        AdapterKind::Cargo => (
+            Box::new(opentf_release_adapters::cargo::CargoAdapter::new(
+                root.clone(),
+            )),
+            Ecosystem::Cargo,
+        ),
     };
     let adapter = adapter.as_ref();
 
@@ -97,6 +104,8 @@ fn main() -> Result<()> {
                 dry_run,
             },
         ),
-        Command::Init { force } => init::run(adapter, &root, &init::InitOptions { force }),
+        Command::Init { force } => {
+            init::run(adapter, ecosystem, &root, &init::InitOptions { force })
+        }
     }
 }

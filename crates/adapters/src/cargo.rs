@@ -4,10 +4,11 @@
 //! Cargo differs from npm in ways the roadmap calls out (see `docs/roadmap.md`):
 //!
 //! - **No peerDep concept** → every internal dependent takes a `Patch` (`dependent_bump`).
-//! - **`version.workspace = true`** (inherited versions) breaks independent per-package
-//!   versioning. This adapter *reads* inherited versions (so discovery works) but **refuses to
-//!   write** them — independent bumps require a concrete `version` in `[package]`. Lockstep
-//!   workspace versioning is a deferred follow-up.
+//! - **`version.workspace = true`** (inherited versions) is handled as **lockstep** versioning:
+//!   a crate that inherits its version is bumped by writing the shared `[workspace.package]`
+//!   version in the root manifest, so every inheriting crate moves together. Such crates also
+//!   share a single root `CHANGELOG.md`. Crates with a concrete `[package] version` are still
+//!   versioned independently.
 //! - **`cargo publish` needs a concrete `version` on path dependencies** → `resolve_workspace_links`
 //!   injects them before publishing.
 //! - **crates.io is source-only** → `publish` ignores any staged binary `staged_assets`
@@ -142,19 +143,29 @@ impl CargoManifest {
     }
 
     fn set_package_version(&mut self, new: &str) -> Result<()> {
-        if self.version_is_inherited() {
-            bail!(
-                "{}: version is inherited from [workspace.package]; independent versioning needs a \
-                 concrete `version` in [package] (lockstep workspace versioning is not yet supported)",
-                self.path.display()
-            );
-        }
         let pkg = self
             .doc
             .get_mut("package")
             .and_then(Item::as_table_like_mut)
             .ok_or_else(|| anyhow!("{}: no [package] table", self.path.display()))?;
         pkg.insert("version", value(new));
+        Ok(())
+    }
+
+    /// Write the shared `[workspace.package] version` (lockstep bump for inheriting crates).
+    fn set_workspace_version(&mut self, new: &str) -> Result<()> {
+        let ws = self
+            .doc
+            .get_mut("workspace")
+            .and_then(|w| w.get_mut("package"))
+            .and_then(Item::as_table_like_mut)
+            .ok_or_else(|| {
+                anyhow!(
+                    "{}: no [workspace.package] table to write a lockstep version",
+                    self.path.display()
+                )
+            })?;
+        ws.insert("version", value(new));
         Ok(())
     }
 
@@ -221,6 +232,9 @@ impl Adapter for CargoAdapter {
     fn discover_packages(&self) -> Result<Vec<Pkg>> {
         let root = CargoManifest::read(&self.root.join("Cargo.toml"))?;
         let workspace_version = root.workspace_version();
+        // A workspace that declares a shared `[workspace.package] version` versions its
+        // inheriting crates in lockstep against a single root CHANGELOG.md.
+        let lockstep = workspace_version.is_some();
 
         let mut members: Vec<(PathBuf, CargoManifest)> = Vec::new();
         for dir in self.member_dirs()? {
@@ -252,11 +266,18 @@ impl Adapter for CargoAdapter {
                     range: d.version_req.unwrap_or_default(),
                 })
                 .collect();
+            // Inheriting crates in a lockstep workspace share the root CHANGELOG.md; crates with
+            // their own concrete version keep a per-crate changelog.
+            let changelog_path = if lockstep && manifest.version_is_inherited() {
+                self.root.join("CHANGELOG.md")
+            } else {
+                dir.join("CHANGELOG.md")
+            };
             packages.push(Pkg {
                 name,
                 version,
                 manifest_path: dir.join("Cargo.toml"),
-                changelog_path: dir.join("CHANGELOG.md"),
+                changelog_path,
                 publishable: manifest.is_publishable(),
                 internal_deps,
             });
@@ -267,9 +288,18 @@ impl Adapter for CargoAdapter {
     }
 
     fn write_version(&self, pkg: &Pkg, new: &str) -> Result<()> {
-        let mut manifest = CargoManifest::read(&pkg.manifest_path)?;
-        manifest.set_package_version(new)?;
-        manifest.save()
+        let manifest = CargoManifest::read(&pkg.manifest_path)?;
+        if manifest.version_is_inherited() {
+            // Lockstep: the crate inherits `version.workspace = true`, so bump the shared
+            // `[workspace.package] version` in the root manifest. Every inheriting crate follows.
+            let mut root = CargoManifest::read(&self.root.join("Cargo.toml"))?;
+            root.set_workspace_version(new)?;
+            root.save()
+        } else {
+            let mut manifest = manifest;
+            manifest.set_package_version(new)?;
+            manifest.save()
+        }
     }
 
     fn update_dep_range(&self, pkg: &Pkg, dep: &str, new_dep_version: &str) -> Result<()> {
@@ -484,17 +514,37 @@ mod tests {
     }
 
     #[test]
-    fn write_version_refuses_inherited_version() {
+    fn write_version_lockstep_bumps_workspace_and_shares_root_changelog() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("Cargo.toml");
+        let root = tmp.path();
         write(
-            path.clone(),
-            "[package]\nname = \"d\"\nversion = { workspace = true }\n",
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\nversion = \"1.2.3\"\n",
         );
-        let adapter = CargoAdapter::new(tmp.path());
-        let pkg = dummy_pkg("d", &path);
-        let err = adapter.write_version(&pkg, "1.0.0").unwrap_err();
-        assert!(err.to_string().contains("inherited"), "got: {err}");
+        write(
+            root.join("crates/cli/Cargo.toml"),
+            "[package]\nname = \"tool\"\nversion.workspace = true\n",
+        );
+        let adapter = CargoAdapter::new(root);
+
+        // Discovery resolves the inherited version and points the changelog at the root.
+        let pkgs = adapter.discover_packages().unwrap();
+        let tool = pkgs.iter().find(|p| p.name == "tool").unwrap();
+        assert_eq!(tool.version, "1.2.3");
+        assert_eq!(tool.changelog_path, root.join("CHANGELOG.md"));
+
+        // Writing the version bumps the shared [workspace.package] version, not the crate.
+        adapter.write_version(tool, "1.3.0").unwrap();
+        let root_toml = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+        assert!(
+            root_toml.contains("version = \"1.3.0\""),
+            "got: {root_toml}"
+        );
+        let crate_toml = fs::read_to_string(root.join("crates/cli/Cargo.toml")).unwrap();
+        assert!(
+            crate_toml.contains("version.workspace = true"),
+            "crate manifest must stay inherited: {crate_toml}"
+        );
     }
 
     #[test]

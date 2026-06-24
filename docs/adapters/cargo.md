@@ -1,9 +1,9 @@
 # cargo adapter
 
-The Rust / crates.io adapter. Implemented in `crates/adapters/src/cargo.rs`, mirroring the
+The Rust adapter. Implemented in `crates/adapters/src/cargo.rs`, mirroring the
 [npm adapter](./npm.md) over `Cargo.toml` and using `toml_edit` for **format-preserving** edits.
-This is an **initial** implementation — usable for crates with concrete versions; see
-[limitations](#limitations).
+It supports both independent (concrete-version) crates and **lockstep workspaces** (see
+[versioning](#versioning--lockstep)).
 
 ## Cascade rule (`dependent_bump`)
 
@@ -61,13 +61,32 @@ version string (`1.2.3`), not `^1.2.3`.
 - **Edits** (`write_version`, `update_dep_range`) go through `toml_edit`, preserving comments,
   key order, and spacing.
 
-## Limitations
+## Versioning — lockstep
 
-- **Inherited versions.** A crate using `version.workspace = true` is **read** (discovery resolves
-  it from `[workspace.package] version`) but **cannot be written** — `write_version` errors,
-  because independent per-package versioning needs a concrete `[package] version`. **Lockstep**
-  workspace versioning is a deferred follow-up. This is exactly why the tool can't yet release
-  its *own* crates (they inherit their version) — see [roadmap](../roadmap.md).
+A workspace that declares a shared `[workspace.package] version` and whose crates inherit it
+with `version.workspace = true` is versioned in **lockstep**:
+
+- **Discovery** resolves each inheriting crate's version from `[workspace.package] version`, and
+  points its changelog at a **single root `CHANGELOG.md`** (not per-crate).
+- **`write_version`** on an inheriting crate bumps the shared `[workspace.package] version` in
+  the root manifest, so every inheriting crate moves together. A crate with its own concrete
+  `[package] version` is still bumped independently in its own manifest.
+
+This is how the tool releases **its own** binary: `crates/core` and `crates/adapters` are marked
+`publish = false` (internal libraries), leaving `opentf-release` as the single publishable
+package, and a `version` bump rolls the whole workspace from a root `CHANGELOG.md`.
+
+> If two *publishable* crates both inherit the workspace version but are bumped to different
+> versions in one run, the last write wins — lockstep assumes they move together. Give a crate a
+> concrete `[package] version` to opt it out.
+
+## Binary distribution (no crates.io)
+
+`cargo publish -p <name>` ships **source** to crates.io and is used when a repo opts into a
+registry. For a **binary** tool, [`init --adapter cargo`](../commands/init.md) instead generates a
+workflow that cross-compiles a target matrix and attaches the binaries to a **GitHub Release**
+tagged `vX.Y.Z` — no registry involved. That is how `otf-release` itself is distributed: download
+the artifact for your OS. See [ci-workflow.md](../ci-workflow.md).
 
 ## See also
 

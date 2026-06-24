@@ -28,9 +28,28 @@ Trigger: a merge to `main` (i.e. merging a release PR produced by
 | **No guard hack** | Asset packages are first-class publishable packages with a binary target. No `private:true`, no flip-off step. |
 | **Stateless** | `publish` reads what to attach from `.artifacts/<pkg>/` on disk — nothing persisted. |
 
+## cargo (binary release) shape
+
+`init --adapter cargo` generates a different shape — a **binary** release, not a registry publish:
+
+```
+build-matrix  (cross-compile each target on its runner)  ──needs──▶  release  (GitHub Release)
+```
+
+- **`build-matrix`** — one leg per target triple, each on a matching runner (`runner_os` maps
+  `*windows*`→`windows-latest`, `*apple*`/`*darwin*`→`macos-latest`, else `ubuntu-latest`). Builds
+  `cargo build --release -p <pkg> --target <triple>` and uploads the binary as an artifact.
+- **`release`** — `needs: build-matrix`; downloads the artifacts and runs `gh release create
+  vX.Y.Z` with them attached. The version is read from `[workspace.package] version`; the step is
+  **idempotent** (`gh release view` skips an existing tag). **No crates.io, no `cargo publish`** —
+  the artifacts are how users install the binary per OS.
+
+Auth: the default `GITHUB_TOKEN` with `contents: write` (to create the tag and Release). The git
+tag `vX.Y.Z` is created by the Release step, on the merge commit.
+
 ## npm specifics
 
-Secrets/auth: `NODE_AUTH_TOKEN`. (cargo would add `CARGO_REGISTRY_TOKEN` later.)
+Secrets/auth: `NODE_AUTH_TOKEN`.
 
 **Gotchas to keep** (see [adapters/npm.md](./adapters/npm.md)):
 

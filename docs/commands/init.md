@@ -3,11 +3,12 @@
 **Interactive workflow generator. Emits exactly one `.github/workflows/release.yml`.**
 
 ```
-otf-release init [--force]
+otf-release init [--adapter npm|cargo] [--force]
 ```
 
 | Flag | Effect |
 | --- | --- |
+| `--adapter` | Which ecosystem the generated workflow targets (`npm` default, or `cargo`). |
 | `--force` | Overwrite an existing `release.yml` without prompting. |
 
 Implemented in `crates/core/src/init.rs`. **No config is ever persisted — the generated YAML
@@ -15,20 +16,18 @@ is the single source of truth.**
 
 ## What it does, step by step
 
-1. **Detect** ecosystems present in the repo (v1: npm).
-2. **List publishable packages**, then **multi-select**: *"Which need binary artifacts built
+1. **List publishable packages**, then **multi-select**: *"Which need binary artifacts built
    before publish?"* — these become the **asset packages**.
-3. For each asset package, **prompt for target triples** (a sensible default set, each marked
+2. For each asset package, **prompt for target triples** (a sensible default set, each marked
    with a `# edit me` comment).
-4. **Emit `release.yml`** with:
-   - a **`build-matrix` job** — only if any asset packages were selected — that cross-compiles
-     the matrix and uploads artifacts;
-   - a **`publish` job** — `needs: build-matrix`; downloads artifacts into `.artifacts/`; runs
-     `otf-release publish`, which releases the **whole topological set** (libraries *and* asset
-     packages), attaching staged binaries where present;
-   - the right **secrets** per ecosystem (`NODE_AUTH_TOKEN` for npm; `CARGO_REGISTRY_TOKEN`
-     later).
-5. **Idempotent**: re-running warns before overwrite (`--force` to replace). The generated
+3. **Emit `release.yml`** in the shape for `--adapter`:
+   - **npm** — a `build-matrix` job (asset packages only) feeding a **`publish` job** that runs
+     `otf-release publish` over the whole topological set, with `NODE_AUTH_TOKEN`.
+   - **cargo** — a `build-matrix` job that cross-compiles each target on a matching runner,
+     feeding a **`release` job** that creates a **GitHub Release** `vX.Y.Z` with the binaries
+     attached. **No crates.io publish**; auth is the default `GITHUB_TOKEN` with
+     `contents: write`. The artifacts are how users install the binary per OS.
+4. **Idempotent**: re-running warns before overwrite (`--force` to replace). The generated
    YAML is an **editable scaffold**, not a tool-managed file — re-running does not fight your
    edits.
 

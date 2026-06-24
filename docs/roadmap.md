@@ -9,17 +9,11 @@ implemented.
 The [`Adapter`](./adapters/overview.md) trait isolates ecosystems. **npm** and **cargo** are
 implemented (see [adapters/cargo.md](./adapters/cargo.md)); **PyPI** and others are further out.
 
-The cargo adapter is an **initial** implementation with one known gap still open:
-
-- `version.workspace = true` (inherited versions) **breaks independent per-package
-  versioning**. The adapter reads inherited versions but **refuses to write** them — independent
-  bumps need a concrete `[package] version`. **Lockstep** workspace versioning (bump the whole
-  workspace together) is the deferred follow-up, needed before the tool can release *its own*
-  crates, which currently inherit their version.
-
-Already handled: `cargo publish` needs a concrete `version` on path deps (done in
-`resolve_workspace_links`); cargo has no peerDep concept so all internal dependents take a
-`Patch`; crates.io is source-only so staged binaries are ignored on publish.
+The cargo adapter handles both independent (concrete-version) crates and **lockstep workspaces**
+(`version.workspace = true` → bump `[workspace.package] version`, single root `CHANGELOG.md`).
+`cargo publish` needs a concrete `version` on path deps (done in `resolve_workspace_links`); cargo
+has no peerDep concept so all internal dependents take a `Patch`. For a binary tool, the cargo
+`init` workflow ships cross-OS binaries via a **GitHub Release** rather than crates.io.
 
 ## Pre-releases / snapshots
 
