@@ -14,7 +14,7 @@ and module skeletons already exist (Phase 0 ✅); every command function is curr
 | 0 | Workspace scaffold + types + CLI surface | ✅ |
 | 1 | npm adapter | ✅ |
 | 2 | Changelog parser/rewriter | ✅ |
-| 3 | Graph: topo sort + cascade | ⬜ |
+| 3 | Graph: topo sort + cascade | ✅ |
 | 4 | Strict preflight | ⬜ |
 | 5 | `version` command | ⬜ |
 | 6 | `publish` command | ⬜ |
@@ -97,10 +97,16 @@ Tasks:
 
 ---
 
-## Phase 3 — Graph: topological sort + cascade
+## Phase 3 — Graph: topological sort + cascade ✅
 
 **Goal:** ordering for publish and the bump cascade for version.
 **Files:** `core/graph.rs`.
+
+**Done.** `Graph::build` indexes by name and validates edges (rejects duplicate names and
+edges to unknown packages); `topo_order` is Kahn's algorithm with deterministic (index-order)
+output and a cycle error naming the involved packages; `cascade` is a max-merge worklist that
+propagates transitively, mirrors peerDeps, and never bumps private leaves. 5 unit tests green
+(diamond order, cycle, validation, transitive/max cascade, private-selection guard).
 
 Tasks:
 1. `Graph::build` — index packages by name; validate that every internal edge points at a known
