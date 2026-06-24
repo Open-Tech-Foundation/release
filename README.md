@@ -6,7 +6,7 @@
 
 > Curated-changelog, manual-bump release CLI for polyglot monorepos.
 
-A single-binary release tool for the OpenTF monorepo. You write the release notes
+A single-binary release tool for the OTF monorepo. You write the release notes
 (in each package's `[Unreleased]` changelog section), you pick the bumps — `release`
 handles the rest: dependency-aware version cascades, internal range updates, topological
 publishing, and a matrix-gated GitHub release in one `release.yml`.
