@@ -21,6 +21,10 @@ pub struct PublishOptions {
     pub artifacts_dir: Option<PathBuf>,
     /// Resolve the plan and print it, but do not publish or push tags.
     pub dry_run: bool,
+    /// Package names to skip — `build-only` packages from `release.toml`. They ship via the
+    /// GitHub Release the workflow creates, never through a registry, so `publish` leaves them
+    /// alone even though their manifests look publishable.
+    pub skip: Vec<String>,
 }
 
 /// Wire up the real git/forge and run the flow.
@@ -47,6 +51,9 @@ pub fn orchestrate(
     for pkg in graph.topo_order()? {
         if !pkg.publishable {
             continue; // private apps are never published
+        }
+        if opts.skip.iter().any(|n| n == &pkg.name) {
+            continue; // build-only: ships via GitHub Release, not a registry
         }
         if adapter.is_published(pkg, &pkg.version)? {
             continue; // already shipped → idempotent / resumable

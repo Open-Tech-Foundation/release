@@ -3,8 +3,9 @@
 An **adapter** is the ecosystem-specific backend behind which *all* registry and manifest
 knowledge lives. The [core](../architecture.md) never reads a manifest directly; it only calls
 adapter methods. Two adapters are implemented — [npm](./npm.md) and [cargo](./cargo.md);
-PyPI and others remain [deferred](../roadmap.md). The CLI selects one per run with
-`--adapter npm|cargo` (the `init`-generated workflow passes it explicitly).
+PyPI and others remain [deferred](../roadmap.md). Which adapters are active comes from
+[`release.toml`](../configuration.md) (there is no `--adapter` flag); the CLI builds one adapter
+per enabled ecosystem.
 
 Defined in `crates/core/src/adapter.rs`; implemented in `crates/adapters/`.
 

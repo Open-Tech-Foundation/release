@@ -19,6 +19,8 @@ authors = ["OpenTF"]
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 # Internal crates, referenced by path so the workspace builds standalone.
 opentf-release-core = { path = "crates/core" }

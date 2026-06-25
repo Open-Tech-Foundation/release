@@ -82,11 +82,12 @@ package, and a `version` bump rolls the whole workspace from a root `CHANGELOG.m
 
 ## Binary distribution (no crates.io)
 
-`cargo publish -p <name>` ships **source** to crates.io and is used when a repo opts into a
-registry. For a **binary** tool, [`init --adapter cargo`](../commands/init.md) instead generates a
-workflow that cross-compiles a target matrix and attaches the binaries to a **GitHub Release**
-tagged `vX.Y.Z` — no registry involved. That is how `otf-release` itself is distributed: download
-the artifact for your OS. See [ci-workflow.md](../ci-workflow.md).
+`cargo publish -p <name>` ships **source** to crates.io and is used only when a cargo package
+opts into `mode = "publish"` in [`release.toml`](../configuration.md). For a **binary** tool, the
+default `mode = "build-only"` makes [`init`](../commands/init.md) generate a workflow that
+cross-compiles a target matrix and attaches the binaries to a **GitHub Release** tagged `vX.Y.Z` —
+no registry involved. That is how `otf-release` itself is distributed: download the artifact for
+your OS. See [ci-workflow.md](../ci-workflow.md).
 
 ## See also
 

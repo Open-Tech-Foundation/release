@@ -4,15 +4,16 @@ Reference documentation for `otf-release`, the curated-changelog, manual-bump re
 for the OpenTF monorepo.
 
 > **Status:** v1 is implemented and tested — `version`, `publish`, and `init`, with the **npm**
-> and **cargo** adapters. The cargo path supports lockstep workspaces and a GitHub-Release binary
-> distribution (how `otf-release` ships itself). [`implementation-plan.md`](./implementation-plan.md)
-> tracks the phase-by-phase build.
+> and **cargo** adapters. Setup is config-driven: `init` writes [`release.toml`](./configuration.md)
+> (the source of truth), with a per-package `publish` vs `build-only` mode. The cargo path supports
+> lockstep workspaces and a GitHub-Release binary distribution (how `otf-release` ships itself).
+> [`implementation-plan.md`](./implementation-plan.md) tracks the phase-by-phase build.
 
 ## Start here
 
 - **New to the tool?** Read the root [`README.md`](../README.md) for the elevator pitch, then
   [`architecture.md`](./architecture.md).
-- **Setting up a repo?** [`commands/init.md`](./commands/init.md) → [`ci-workflow.md`](./ci-workflow.md).
+- **Setting up a repo?** [`commands/init.md`](./commands/init.md) → [`configuration.md`](./configuration.md) → [`ci-workflow.md`](./ci-workflow.md).
 - **Cutting a release?** [`commands/version.md`](./commands/version.md) (local) then
   [`commands/publish.md`](./commands/publish.md) (CI).
 - **Writing a new adapter?** [`adapters/overview.md`](./adapters/overview.md).
@@ -24,7 +25,8 @@ for the OpenTF monorepo.
 | [architecture.md](./architecture.md) | Crate layout, the core/adapter seam, data flow. |
 | [commands/version.md](./commands/version.md) | The interactive, local `version` command. |
 | [commands/publish.md](./commands/publish.md) | The non-interactive, CI `publish` command. |
-| [commands/init.md](./commands/init.md) | The `release.yml` generator. |
+| [commands/init.md](./commands/init.md) | Interactive setup: writes `release.toml`, generates `release.yml`. |
+| [configuration.md](./configuration.md) | The `release.toml` schema — the committed source of truth. |
 | [adapters/overview.md](./adapters/overview.md) | The `Adapter` trait and domain types. |
 | [adapters/npm.md](./adapters/npm.md) | The npm adapter — rules, gotchas, commands. |
 | [adapters/cargo.md](./adapters/cargo.md) | The cargo adapter — rules and Rust-specific limits. |
@@ -51,4 +53,5 @@ for the OpenTF monorepo.
 
 - The invoked binary is `otf-release`; the published npm package is `@opentf/release`.
 - Code/identifier references point at `crates/<crate>/src/<module>.rs`.
-- "v1" = the current milestone: **npm only**, no pre-releases, local `version` → manual PR.
+- "v1" = the current milestone: **npm + cargo** adapters, config-driven via `release.toml`, no
+  pre-releases, local `version` → manual PR.

@@ -10,9 +10,11 @@ one or more **adapters**. The core orchestrates a release; an adapter knows how 
    talks to an [`Adapter`](./adapters/overview.md). This is what keeps it polyglot.
 2. **The adapter owns ecosystem policy**, including the cascade rule (`dependent_bump`) and
    range syntax (`format_range`) — not a shared config file.
-3. **Stateless / config-light.** Nothing is persisted between runs. State is derived from
-   disk (manifests, changelogs, `.artifacts/`) and the registry/git (tags). The generated
-   `release.yml` is the single source of truth for CI.
+3. **One committed config.** [`release.toml`](./configuration.md) (written by `init`) records
+   which adapters are enabled and the per-package build steps — it is the source of truth that
+   `version`, `publish`, and the generated `release.yml` all derive from. Everything else is
+   read from disk (manifests, changelogs, `.artifacts/`) and the registry/git (tags); no other
+   state is persisted between runs.
 4. **Notes are curated, never inferred.** The hand-written `[Unreleased]` changelog section
    is the source of truth for release notes. Bumps are chosen by a human.
 

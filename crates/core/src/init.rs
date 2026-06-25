@@ -1,18 +1,23 @@
-//! The `init` command — interactive `release.yml` generator.
+//! The `init` command — interactive setup. Writes `release.toml` (the source of truth) and a
+//! `.github/workflows/release.yml` generated from it.
 //!
-//! Generates exactly one `.github/workflows/release.yml`. There is **no persisted config** —
-//! the generated YAML is the single source of truth. See `docs/commands/init.md`.
+//! `init` takes no ecosystem flag. It asks which adapters to enable (`npm`, `crates.io`), then,
+//! for each package that needs a build step, its **mode** (`publish` to a registry, or
+//! `build-only` → artifacts attached to a GitHub Release), build matrix, command, and artifacts.
+//! All of that is persisted to [`config::ReleaseConfig`]; the other commands read it.
 //!
-//! The YAML rendering ([`render_workflow`]) is a pure function with golden tests; the
-//! interactive choices go through the [`InitPrompt`] trait so the flow is testable.
+//! The YAML rendering ([`render_workflow`]) is a pure function of the config with tests; the
+//! interactive choices go through the [`InitPrompt`] trait, and package discovery through the
+//! [`AdapterFactory`] trait, so the flow is testable.
 
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::adapter::{Adapter, Pkg};
+use crate::config::{Ecosystem, Mode, PackageEntry, ReleaseConfig};
 
 /// A sensible default cross-compile target set (each emitted with an `# edit me` marker).
 pub const DEFAULT_TARGETS: [&str; 3] = [
@@ -20,17 +25,6 @@ pub const DEFAULT_TARGETS: [&str; 3] = [
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
 ];
-
-/// Which ecosystem the generated workflow targets. Picked by the CLI's `--adapter`.
-///
-/// The shape differs fundamentally: **npm** publishes to a registry (`otf-release publish`),
-/// while **cargo** here builds cross-OS binaries and ships them on a **GitHub Release** — no
-/// registry — so the artifacts can be downloaded to install the binary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Ecosystem {
-    Npm,
-    Cargo,
-}
 
 /// Map a target triple to a sensible default GitHub-hosted runner.
 fn runner_os(target: &str) -> &'static str {
@@ -46,132 +40,261 @@ fn runner_os(target: &str) -> &'static str {
 /// Options for an `init` run.
 #[derive(Debug, Clone, Default)]
 pub struct InitOptions {
-    /// Overwrite an existing `release.yml` without prompting.
+    /// Overwrite existing files (`release.toml`, `release.yml`) without prompting.
     pub force: bool,
 }
 
-/// A publishable package selected as needing prebuilt binary artifacts, with its targets.
-#[derive(Debug, Clone)]
-pub struct AssetPackage {
-    pub name: String,
-    pub targets: Vec<String>,
+/// Builds an [`Adapter`] for a given ecosystem. Implemented by the CLI (which owns the concrete
+/// adapters); `init` uses it to discover each enabled ecosystem's packages.
+pub trait AdapterFactory {
+    fn make(&self, ecosystem: Ecosystem) -> Box<dyn Adapter>;
 }
 
 /// The interactive choices `init` needs.
 pub trait InitPrompt {
-    /// Which publishable packages need binary artifacts built before publish?
-    fn select_asset_packages(&self, publishable: &[&Pkg]) -> Result<Vec<String>>;
-    /// The cross-compile target triples for an asset package.
-    fn target_triples(&self, pkg_name: &str) -> Result<Vec<String>>;
-    /// Confirm overwriting an existing workflow (only asked when not `--force`).
+    /// Which ecosystems to enable (multi-select: `npm`, `crates.io`).
+    fn select_adapters(&self) -> Result<Vec<Ecosystem>>;
+    /// Which publishable packages need a build step before publish/release?
+    fn select_build_packages(&self, publishable: &[&Pkg]) -> Result<Vec<String>>;
+    /// The full build config for one selected package (`enabled` is the chosen adapter set).
+    fn build_entry(&self, pkg_name: &str, enabled: &[Ecosystem]) -> Result<PackageEntry>;
+    /// Confirm overwriting an existing file (only asked when not `--force`).
     fn confirm_overwrite(&self, path: &Path) -> Result<bool>;
 }
 
 /// Wire up the real prompt and run the generator.
-pub fn run(
-    adapter: &dyn Adapter,
-    ecosystem: Ecosystem,
-    root: &Path,
-    opts: &InitOptions,
-) -> Result<()> {
-    orchestrate(adapter, ecosystem, &StdinInitPrompt, root, opts)
+pub fn run(factory: &dyn AdapterFactory, root: &Path, opts: &InitOptions) -> Result<()> {
+    orchestrate(factory, &StdinInitPrompt, root, opts)
 }
 
 /// The testable core of `init`.
 pub fn orchestrate(
-    adapter: &dyn Adapter,
-    ecosystem: Ecosystem,
+    factory: &dyn AdapterFactory,
     prompt: &dyn InitPrompt,
     root: &Path,
     opts: &InitOptions,
 ) -> Result<()> {
-    let packages = adapter.discover_packages()?;
-    let publishable: Vec<&Pkg> = packages.iter().filter(|p| p.publishable).collect();
-
-    let asset_names = prompt.select_asset_packages(&publishable)?;
-    let mut assets = Vec::new();
-    for name in &asset_names {
-        assets.push(AssetPackage {
-            name: name.clone(),
-            targets: prompt.target_triples(name)?,
-        });
+    let enabled = prompt.select_adapters()?;
+    if enabled.is_empty() {
+        bail!("No adapters selected — nothing to configure.");
     }
 
-    let yaml = render_workflow(ecosystem, &assets);
-    let path = root.join(".github/workflows/release.yml");
-
-    if path.exists() && !opts.force && !prompt.confirm_overwrite(&path)? {
-        println!("Left existing {} unchanged.", path.display());
-        return Ok(());
+    // Discover publishable packages across every enabled ecosystem.
+    let mut publishable: Vec<Pkg> = Vec::new();
+    for &eco in &enabled {
+        let adapter = factory.make(eco);
+        for pkg in adapter.discover_packages()? {
+            if pkg.publishable {
+                publishable.push(pkg);
+            }
+        }
     }
 
-    fs::create_dir_all(path.parent().unwrap())
-        .with_context(|| format!("creating {}", path.parent().unwrap().display()))?;
-    fs::write(&path, yaml).with_context(|| format!("writing {}", path.display()))?;
-    println!("Wrote {}", path.display());
+    let refs: Vec<&Pkg> = publishable.iter().collect();
+    let build_names = prompt.select_build_packages(&refs)?;
+    let mut packages = Vec::new();
+    for name in &build_names {
+        packages.push(prompt.build_entry(name, &enabled)?);
+    }
+
+    let config = ReleaseConfig {
+        adapters: enabled,
+        packages,
+    };
+
+    // 1. Persist the source of truth.
+    let toml_path = ReleaseConfig::path(root);
+    if write_allowed(&toml_path, opts.force, prompt)? {
+        config.save(root)?;
+        println!("Wrote {}", toml_path.display());
+    }
+
+    // 2. Generate the workflow from it.
+    let yaml = render_workflow(&config);
+    let yml_path = root.join(".github/workflows/release.yml");
+    if write_allowed(&yml_path, opts.force, prompt)? {
+        fs::create_dir_all(yml_path.parent().unwrap())
+            .with_context(|| format!("creating {}", yml_path.parent().unwrap().display()))?;
+        fs::write(&yml_path, yaml).with_context(|| format!("writing {}", yml_path.display()))?;
+        println!("Wrote {}", yml_path.display());
+    }
     Ok(())
 }
 
-/// Render the single `release.yml` for the chosen ecosystem.
-pub fn render_workflow(ecosystem: Ecosystem, assets: &[AssetPackage]) -> String {
-    match ecosystem {
-        Ecosystem::Npm => render_npm_workflow(assets),
-        Ecosystem::Cargo => render_cargo_workflow(assets),
+/// Whether we may write `path`: true unless it exists, isn't forced, and the user declines.
+fn write_allowed(path: &Path, force: bool, prompt: &dyn InitPrompt) -> Result<bool> {
+    if path.exists() && !force && !prompt.confirm_overwrite(path)? {
+        println!("Left existing {} unchanged.", path.display());
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// A CI job name derived from a package name: `build-<slug>`.
+fn build_job(name: &str) -> String {
+    format!("build-{}", slug(name))
+}
+
+/// Lowercase a package name into a job/artifact-safe slug (`@x/cli` → `x-cli`).
+fn slug(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// Render `.github/workflows/release.yml` from the config.
+///
+/// Shape:
+/// - one `build-<pkg>` job per package with a build step (matrix or single runner),
+/// - an `npm-publish` job if npm is enabled (registry publish via `otf-release publish`),
+/// - a `cargo-publish` job only if a cargo package opts into `mode = "publish"` (crates.io),
+/// - a `github-release` job if any package is `build-only` — attaches its artifacts to a
+///   GitHub Release `vX.Y.Z`, idempotently. **No registry push for build-only packages.**
+pub fn render_workflow(config: &ReleaseConfig) -> String {
+    let any_build_only = config.packages.iter().any(|p| p.mode == Mode::BuildOnly);
+    let cargo_publishes = config
+        .packages
+        .iter()
+        .any(|p| p.adapter == Ecosystem::Cargo && p.mode == Mode::Publish);
+    let npm_enabled = config.adapters.contains(&Ecosystem::Npm);
+
+    let mut s = String::from("name: Release\n\non:\n  push:\n    branches: [main]\n");
+    if any_build_only || cargo_publishes {
+        s.push_str("\npermissions:\n  contents: write  # create tags and GitHub Releases\n");
+    }
+    s.push_str("\njobs:\n");
+
+    for entry in &config.packages {
+        render_build_job(&mut s, entry);
+    }
+
+    if npm_enabled {
+        let needs: Vec<String> = config
+            .packages
+            .iter()
+            .filter(|p| p.adapter == Ecosystem::Npm && p.mode == Mode::Publish)
+            .map(|p| build_job(&p.name))
+            .collect();
+        render_npm_publish(&mut s, &needs);
+    }
+
+    if cargo_publishes {
+        let needs: Vec<String> = config
+            .packages
+            .iter()
+            .filter(|p| p.adapter == Ecosystem::Cargo && p.mode == Mode::Publish)
+            .map(|p| build_job(&p.name))
+            .collect();
+        render_cargo_publish(&mut s, &needs);
+    }
+
+    if any_build_only {
+        let needs: Vec<String> = config
+            .packages
+            .iter()
+            .filter(|p| p.mode == Mode::BuildOnly)
+            .map(|p| build_job(&p.name))
+            .collect();
+        render_github_release(&mut s, &needs);
+    }
+
+    s
+}
+
+/// One build job: matrix or single runner, runs the package's command, uploads its artifacts.
+fn render_build_job(s: &mut String, entry: &PackageEntry) {
+    let job = build_job(&entry.name);
+    let art_slug = slug(&entry.name);
+    s.push_str(&format!("  {job}:\n"));
+
+    if entry.matrix {
+        s.push_str("    runs-on: ${{ matrix.os }}\n");
+        s.push_str("    strategy:\n      matrix:\n        include:\n");
+        for target in &entry.targets {
+            s.push_str(&format!(
+                "          - {{ target: \"{}\", os: \"{}\" }}  # edit me\n",
+                target,
+                runner_os(target)
+            ));
+        }
+    } else {
+        s.push_str("    runs-on: ubuntu-latest  # edit me: choose a runner\n");
+    }
+
+    s.push_str("    steps:\n");
+    s.push_str("      - uses: actions/checkout@v4\n");
+    match entry.adapter {
+        Ecosystem::Cargo => {
+            s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
+            if entry.matrix {
+                s.push_str("        with:\n          targets: ${{ matrix.target }}\n");
+            }
+        }
+        Ecosystem::Npm => {
+            s.push_str("      - uses: actions/setup-node@v4\n");
+            s.push_str("        with:\n          node-version: 20\n");
+            s.push_str("      - run: npm ci\n");
+        }
+    }
+    s.push_str(&format!("      - name: Build {}\n", entry.name));
+    if entry.matrix {
+        s.push_str(&format!(
+            "        run: {}  # edit me: cross-compile with ${{{{ matrix.target }}}}\n",
+            entry.command
+        ));
+    } else {
+        s.push_str(&format!("        run: {}\n", entry.command));
+    }
+    s.push_str("      - uses: actions/upload-artifact@v4\n");
+    s.push_str("        with:\n");
+    if entry.matrix {
+        s.push_str(&format!(
+            "          name: {art_slug}-${{{{ matrix.target }}}}\n"
+        ));
+    } else {
+        s.push_str(&format!("          name: {art_slug}\n"));
+    }
+    s.push_str(&format!("          path: {}\n", entry.artifacts));
+    s.push('\n');
+}
+
+/// Format a `needs:` line, omitted entirely when there are no dependencies.
+fn needs_line(s: &mut String, needs: &[String]) {
+    if !needs.is_empty() {
+        s.push_str(&format!("    needs: [{}]\n", needs.join(", ")));
     }
 }
 
-/// The npm workflow: a `build-matrix` job (asset packages only) feeds a registry `publish` job
-/// that runs `otf-release publish` and downloads staged artifacts to `.artifacts/`.
-fn render_npm_workflow(assets: &[AssetPackage]) -> String {
-    let has_assets = !assets.is_empty();
-    let mut s = String::from("name: Release\n\non:\n  push:\n    branches: [main]\n\njobs:\n");
-
-    if has_assets {
-        s.push_str("  build-matrix:\n");
-        s.push_str("    runs-on: ubuntu-latest  # edit me: choose a runner per target\n");
-        s.push_str("    strategy:\n      matrix:\n        include:\n");
-        for asset in assets {
-            for target in &asset.targets {
-                s.push_str(&format!(
-                    "          - {{ package: \"{}\", target: \"{}\" }}  # edit me\n",
-                    asset.name, target
-                ));
-            }
-        }
-        s.push_str("    steps:\n");
-        s.push_str("      - uses: actions/checkout@v4\n");
-        s.push_str("      - name: Build ${{ matrix.package }} for ${{ matrix.target }}\n");
-        s.push_str("        run: |\n");
-        s.push_str("          # edit me: build the binary for ${{ matrix.target }}\n");
-        s.push_str("          echo \"building ${{ matrix.package }} (${{ matrix.target }})\"\n");
-        s.push_str("      - uses: actions/upload-artifact@v4\n");
-        s.push_str("        with:\n");
-        s.push_str("          name: ${{ matrix.package }}-${{ matrix.target }}\n");
-        s.push_str("          path: . # edit me: path to the built binary/artifacts\n");
-        s.push('\n');
+/// Download staged artifacts into `.artifacts/`, only when something fed this job.
+fn download_artifacts(s: &mut String, needs: &[String]) -> bool {
+    if needs.is_empty() {
+        return false;
     }
+    s.push_str("      - uses: actions/download-artifact@v4\n");
+    s.push_str("        with:\n          path: .artifacts\n");
+    true
+}
 
-    s.push_str("  publish:\n");
-    if has_assets {
-        s.push_str("    needs: build-matrix\n");
-    }
+/// The npm registry publish job (`otf-release publish` — publishes only `publish`-mode packages).
+fn render_npm_publish(s: &mut String, needs: &[String]) {
+    s.push_str("  npm-publish:\n");
+    needs_line(s, needs);
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    steps:\n");
-    s.push_str("      - uses: actions/checkout@v4\n");
-    s.push_str("        with:\n");
-    s.push_str("          fetch-depth: 0\n");
+    s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
     s.push_str("      - uses: actions/setup-node@v4\n");
-    s.push_str("        with:\n");
-    s.push_str("          node-version: 20\n");
+    s.push_str("        with:\n          node-version: 20\n");
     s.push_str("          registry-url: https://registry.npmjs.org\n");
-    if has_assets {
-        s.push_str("      - uses: actions/download-artifact@v4\n");
-        s.push_str("        with:\n");
-        s.push_str("          path: .artifacts\n");
-    }
+    let staged = download_artifacts(s, needs);
     s.push_str("      - run: npm ci\n");
-    s.push_str("      - name: Publish\n");
-    if has_assets {
+    s.push_str("      - name: Publish (npm)\n");
+    if staged {
         s.push_str("        run: otf-release publish --artifacts-dir .artifacts\n");
     } else {
         s.push_str("        run: otf-release publish\n");
@@ -179,86 +302,57 @@ fn render_npm_workflow(assets: &[AssetPackage]) -> String {
     s.push_str("        env:\n");
     s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}\n");
     s.push_str("          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
-    s
+    s.push('\n');
 }
 
-/// The cargo workflow: cross-compile a binary matrix, upload the artifacts, then create a
-/// **GitHub Release** tagged `vX.Y.Z` (read from `[workspace.package] version`) with those
-/// binaries attached. There is **no crates.io publish** — the release artifacts are how users
-/// install the binary for each OS. The release step is idempotent (skips an existing tag).
-fn render_cargo_workflow(assets: &[AssetPackage]) -> String {
-    let has_assets = !assets.is_empty();
-    let mut s = String::from(
-        "name: Release\n\non:\n  push:\n    branches: [main]\n\n\
-         permissions:\n  contents: write  # create tags and GitHub Releases\n\njobs:\n",
-    );
-
-    if has_assets {
-        s.push_str("  build-matrix:\n");
-        s.push_str("    runs-on: ${{ matrix.os }}\n");
-        s.push_str("    strategy:\n      matrix:\n        include:\n");
-        for asset in assets {
-            for target in &asset.targets {
-                s.push_str(&format!(
-                    "          - {{ package: \"{}\", target: \"{}\", os: \"{}\" }}  # edit me\n",
-                    asset.name,
-                    target,
-                    runner_os(target)
-                ));
-            }
-        }
-        s.push_str("    steps:\n");
-        s.push_str("      - uses: actions/checkout@v4\n");
-        s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
-        s.push_str("        with:\n");
-        s.push_str("          targets: ${{ matrix.target }}\n");
-        s.push_str("      - name: Build ${{ matrix.package }} for ${{ matrix.target }}\n");
-        s.push_str(
-            "        run: cargo build --release -p ${{ matrix.package }} --target ${{ matrix.target }}\n",
-        );
-        s.push_str("      - uses: actions/upload-artifact@v4\n");
-        s.push_str("        with:\n");
-        s.push_str("          name: ${{ matrix.package }}-${{ matrix.target }}\n");
-        s.push_str(
-            "          path: target/${{ matrix.target }}/release/  # edit me: narrow to the built binary\n",
-        );
-        s.push('\n');
-    }
-
-    s.push_str("  release:\n");
-    if has_assets {
-        s.push_str("    needs: build-matrix\n");
-    }
+/// The crates.io publish job — only generated when a cargo package opts into `mode = "publish"`.
+fn render_cargo_publish(s: &mut String, needs: &[String]) {
+    s.push_str("  cargo-publish:\n");
+    needs_line(s, needs);
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    steps:\n");
-    s.push_str("      - uses: actions/checkout@v4\n");
-    s.push_str("        with:\n");
-    s.push_str("          fetch-depth: 0\n");
-    if has_assets {
-        s.push_str("      - uses: actions/download-artifact@v4\n");
-        s.push_str("        with:\n");
-        s.push_str("          path: .artifacts\n");
+    s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
+    s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
+    let staged = download_artifacts(s, needs);
+    s.push_str("      - name: Publish (crates.io)\n");
+    if staged {
+        s.push_str("        run: otf-release publish --artifacts-dir .artifacts\n");
+    } else {
+        s.push_str("        run: otf-release publish\n");
     }
-    s.push_str("      - name: Create GitHub Release\n");
     s.push_str("        env:\n");
-    s.push_str("          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
+    s.push_str("          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n");
+    s.push_str("          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
+    s.push('\n');
+}
+
+/// The GitHub Release job for `build-only` packages: attach the staged artifacts to a tag
+/// `vX.Y.Z`, idempotently (skip an existing tag). No registry push.
+fn render_github_release(s: &mut String, needs: &[String]) {
+    s.push_str("  github-release:\n");
+    needs_line(s, needs);
+    s.push_str("    runs-on: ubuntu-latest\n");
+    s.push_str("    steps:\n");
+    s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
+    let staged = download_artifacts(s, needs);
+    s.push_str("      - name: Create GitHub Release\n");
+    s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     s.push_str("        run: |\n");
     s.push_str(
-        "          version=\"$(grep -m1 '^version' Cargo.toml | cut -d'\"' -f2)\"  # edit me: [workspace.package] version\n",
+        "          version=\"$(grep -m1 '^version' Cargo.toml | cut -d'\"' -f2)\"  # edit me: where the version lives\n",
     );
     s.push_str("          tag=\"v$version\"\n");
     s.push_str("          if gh release view \"$tag\" >/dev/null 2>&1; then\n");
     s.push_str("            echo \"Release $tag already exists; nothing to do.\"\n");
     s.push_str("            exit 0\n");
     s.push_str("          fi\n");
-    if has_assets {
+    if staged {
         s.push_str(
             "          gh release create \"$tag\" --title \"$tag\" --generate-notes .artifacts/**/*\n",
         );
     } else {
         s.push_str("          gh release create \"$tag\" --title \"$tag\" --generate-notes\n");
     }
-    s
 }
 
 /// The real terminal prompt for `init`.
@@ -272,39 +366,99 @@ fn read_line(prompt: &str) -> Result<String> {
     Ok(line.trim().to_string())
 }
 
+/// Parse a comma/space list of 1-based indices into the matching items.
+fn pick_indices<T: Clone>(line: &str, items: &[T]) -> Vec<T> {
+    let mut out = Vec::new();
+    for token in line.split([',', ' ', '\t']).filter(|t| !t.is_empty()) {
+        if let Ok(idx) = token.parse::<usize>() {
+            if let Some(item) = items.get(idx.wrapping_sub(1)) {
+                out.push(item.clone());
+            }
+        }
+    }
+    out
+}
+
 impl InitPrompt for StdinInitPrompt {
-    fn select_asset_packages(&self, publishable: &[&Pkg]) -> Result<Vec<String>> {
+    fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
+        println!("Adapters to enable:");
+        for (i, eco) in Ecosystem::ALL.iter().enumerate() {
+            println!("  {}) {}", i + 1, eco.label());
+        }
+        let line = read_line("Select (e.g. 1,2): ")?;
+        Ok(pick_indices(&line, &Ecosystem::ALL))
+    }
+
+    fn select_build_packages(&self, publishable: &[&Pkg]) -> Result<Vec<String>> {
+        if publishable.is_empty() {
+            return Ok(Vec::new());
+        }
         println!("Publishable packages:");
         for (i, p) in publishable.iter().enumerate() {
             println!("  {}) {}", i + 1, p.name);
         }
-        let line =
-            read_line("Which need binary artifacts built before publish? (e.g. 1,2 or 'none'): ")?;
+        let line = read_line("Which need a build step before publish? (e.g. 1,2 or 'none'): ")?;
         if line.is_empty() || line.eq_ignore_ascii_case("none") {
             return Ok(Vec::new());
         }
-        let mut selected = Vec::new();
-        for token in line.split([',', ' ', '\t']).filter(|t| !t.is_empty()) {
-            if let Ok(idx) = token.parse::<usize>() {
-                if let Some(p) = publishable.get(idx.wrapping_sub(1)) {
-                    selected.push(p.name.clone());
-                }
-            }
-        }
-        Ok(selected)
+        let names: Vec<String> = publishable.iter().map(|p| p.name.clone()).collect();
+        Ok(pick_indices(&line, &names))
     }
 
-    fn target_triples(&self, pkg_name: &str) -> Result<Vec<String>> {
-        let defaults = DEFAULT_TARGETS.join(", ");
-        let line = read_line(&format!("Target triples for {pkg_name} [{defaults}]: "))?;
-        if line.is_empty() {
-            return Ok(DEFAULT_TARGETS.iter().map(|s| s.to_string()).collect());
-        }
-        Ok(line
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect())
+    fn build_entry(&self, pkg_name: &str, enabled: &[Ecosystem]) -> Result<PackageEntry> {
+        println!("Configure {pkg_name}:");
+
+        let adapter = if enabled.len() == 1 {
+            enabled[0]
+        } else {
+            let labels: Vec<String> = enabled
+                .iter()
+                .enumerate()
+                .map(|(i, e)| format!("{}={}", i + 1, e.label()))
+                .collect();
+            let line = read_line(&format!("  adapter ({}): ", labels.join(", ")))?;
+            pick_indices(&line, enabled)
+                .first()
+                .copied()
+                .unwrap_or(enabled[0])
+        };
+
+        let mode_line = read_line("  mode (1=publish, 2=build-only): ")?;
+        let mode = if mode_line.trim() == "2" {
+            Mode::BuildOnly
+        } else {
+            Mode::Publish
+        };
+
+        let matrix_line = read_line("  build matrix? (multiple platforms) (y/N): ")?;
+        let matrix = matches!(matrix_line.to_ascii_lowercase().as_str(), "y" | "yes");
+        let targets = if matrix {
+            let defaults = DEFAULT_TARGETS.join(", ");
+            let line = read_line(&format!("  target triples [{defaults}]: "))?;
+            if line.is_empty() {
+                DEFAULT_TARGETS.iter().map(|s| s.to_string()).collect()
+            } else {
+                line.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
+        } else {
+            Vec::new()
+        };
+
+        let command = read_line("  build command: ")?;
+        let artifacts = read_line("  artifacts to stage: ")?;
+
+        Ok(PackageEntry {
+            name: pkg_name.to_string(),
+            adapter,
+            mode,
+            matrix,
+            targets,
+            command,
+            artifacts,
+        })
     }
 
     fn confirm_overwrite(&self, path: &Path) -> Result<bool> {
@@ -317,8 +471,6 @@ impl InitPrompt for StdinInitPrompt {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-
-    const LIBS_ONLY: &str = "name: Release\n\non:\n  push:\n    branches: [main]\n\njobs:\n  publish:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 20\n          registry-url: https://registry.npmjs.org\n      - run: npm ci\n      - name: Publish\n        run: otf-release publish\n        env:\n          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}\n          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n";
 
     struct FakeAdapter {
         packages: Vec<Pkg>,
@@ -357,17 +509,38 @@ mod tests {
         }
     }
 
+    /// A factory returning a fixed package set for every ecosystem.
+    struct FakeFactory {
+        packages: Vec<Pkg>,
+    }
+    impl AdapterFactory for FakeFactory {
+        fn make(&self, _: Ecosystem) -> Box<dyn Adapter> {
+            Box::new(FakeAdapter {
+                packages: self.packages.clone(),
+            })
+        }
+    }
+
     struct FakePrompt {
-        assets: Vec<String>,
-        targets: Vec<String>,
+        adapters: Vec<Ecosystem>,
+        build_names: Vec<String>,
+        entries: Vec<PackageEntry>,
         overwrite: bool,
     }
     impl InitPrompt for FakePrompt {
-        fn select_asset_packages(&self, _: &[&Pkg]) -> Result<Vec<String>> {
-            Ok(self.assets.clone())
+        fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
+            Ok(self.adapters.clone())
         }
-        fn target_triples(&self, _: &str) -> Result<Vec<String>> {
-            Ok(self.targets.clone())
+        fn select_build_packages(&self, _: &[&Pkg]) -> Result<Vec<String>> {
+            Ok(self.build_names.clone())
+        }
+        fn build_entry(&self, name: &str, _: &[Ecosystem]) -> Result<PackageEntry> {
+            Ok(self
+                .entries
+                .iter()
+                .find(|e| e.name == name)
+                .cloned()
+                .unwrap())
         }
         fn confirm_overwrite(&self, _: &Path) -> Result<bool> {
             Ok(self.overwrite)
@@ -378,124 +551,153 @@ mod tests {
         Pkg {
             name: name.to_string(),
             version: "1.0.0".to_string(),
-            manifest_path: PathBuf::from(format!("{name}/package.json")),
+            manifest_path: PathBuf::from(format!("{name}/Cargo.toml")),
             changelog_path: PathBuf::from(format!("{name}/CHANGELOG.md")),
             publishable,
             internal_deps: vec![],
         }
     }
 
-    #[test]
-    fn renders_libs_only_workflow() {
-        assert_eq!(render_workflow(Ecosystem::Npm, &[]), LIBS_ONLY);
-    }
-
-    #[test]
-    fn renders_asset_workflow_with_matrix_and_artifacts() {
-        let assets = vec![AssetPackage {
-            name: "@x/cli".into(),
-            targets: vec![
-                "x86_64-unknown-linux-gnu".into(),
-                "aarch64-apple-darwin".into(),
-            ],
-        }];
-        let out = render_workflow(Ecosystem::Npm, &assets);
-        assert!(out.contains("  build-matrix:\n"));
-        assert!(out.contains(
-            "          - { package: \"@x/cli\", target: \"x86_64-unknown-linux-gnu\" }  # edit me\n"
-        ));
-        assert!(out.contains("    needs: build-matrix\n"));
-        assert!(out.contains("          path: .artifacts\n"));
-        assert!(out.contains("        run: otf-release publish --artifacts-dir .artifacts\n"));
-        // No matrix means no asset wiring in the libs-only output.
-        assert!(!LIBS_ONLY.contains("build-matrix"));
-    }
-
-    #[test]
-    fn renders_cargo_binary_release_with_github_release_no_registry() {
-        let assets = vec![AssetPackage {
-            name: "opentf-release".into(),
+    fn cargo_build_only(name: &str) -> PackageEntry {
+        PackageEntry {
+            name: name.to_string(),
+            adapter: Ecosystem::Cargo,
+            mode: Mode::BuildOnly,
+            matrix: true,
             targets: vec![
                 "x86_64-unknown-linux-gnu".into(),
                 "x86_64-pc-windows-msvc".into(),
             ],
-        }];
-        let out = render_workflow(Ecosystem::Cargo, &assets);
-        // Cross-compile matrix with per-target runners.
-        assert!(out.contains("    runs-on: ${{ matrix.os }}\n"));
-        assert!(out.contains(
-            "          - { package: \"opentf-release\", target: \"x86_64-pc-windows-msvc\", os: \"windows-latest\" }  # edit me\n"
-        ));
-        assert!(out
-            .contains("        run: cargo build --release -p ${{ matrix.package }} --target ${{ matrix.target }}\n"));
-        // Ships via a GitHub Release, idempotently — and never touches a registry.
-        assert!(out.contains("      - name: Create GitHub Release\n"));
-        assert!(out.contains("          if gh release view \"$tag\" >/dev/null 2>&1; then\n"));
-        assert!(out.contains("          gh release create \"$tag\""));
-        assert!(!out.contains("cargo publish"));
-        assert!(!out.contains("crates.io"));
-        assert!(!out.contains("registry-url"));
+            command: "cargo build --release -p otf-release".into(),
+            artifacts: "target/${{ matrix.target }}/release/otf-release*".into(),
+        }
+    }
+
+    fn npm_publish(name: &str) -> PackageEntry {
+        PackageEntry {
+            name: name.to_string(),
+            adapter: Ecosystem::Npm,
+            mode: Mode::Publish,
+            matrix: false,
+            targets: vec![],
+            command: "npm run build".into(),
+            artifacts: "dist/**".into(),
+        }
     }
 
     #[test]
-    fn orchestrate_writes_libs_only_when_no_assets_selected() {
+    fn slug_is_job_safe() {
+        assert_eq!(slug("@x/cli"), "x-cli");
+        assert_eq!(slug("opentf-release"), "opentf-release");
+        assert_eq!(slug("web_compiler"), "web-compiler");
+    }
+
+    #[test]
+    fn npm_only_renders_publish_job_no_release() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            packages: vec![],
+        };
+        let out = render_workflow(&config);
+        assert!(out.contains("  npm-publish:\n"));
+        assert!(out.contains("        run: otf-release publish\n"));
+        // No build steps, so no needs and no artifact download.
+        assert!(!out.contains("needs:"));
+        assert!(!out.contains("github-release"));
+        assert!(!out.contains("permissions:"));
+        assert!(!out.contains("cargo-publish"));
+    }
+
+    #[test]
+    fn cargo_build_only_renders_github_release_no_registry() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            packages: vec![cargo_build_only("opentf-release")],
+        };
+        let out = render_workflow(&config);
+        // Build matrix with per-target runners.
+        assert!(out.contains("  build-opentf-release:\n"));
+        assert!(out.contains("    runs-on: ${{ matrix.os }}\n"));
+        assert!(out.contains(
+            "          - { target: \"x86_64-pc-windows-msvc\", os: \"windows-latest\" }  # edit me\n"
+        ));
+        assert!(out.contains("        run: cargo build --release -p otf-release"));
+        // Ships via a GitHub Release, idempotently — no registry, no cargo publish.
+        assert!(out.contains("permissions:\n  contents: write"));
+        assert!(out.contains("  github-release:\n"));
+        assert!(out.contains("    needs: [build-opentf-release]\n"));
+        assert!(out.contains("          if gh release view \"$tag\" >/dev/null 2>&1; then\n"));
+        assert!(!out.contains("cargo publish"));
+        assert!(!out.contains("cargo-publish"));
+        assert!(!out.contains("crates.io"));
+        assert!(!out.contains("npm-publish"));
+    }
+
+    #[test]
+    fn polyglot_renders_both_publish_and_release() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
+            packages: vec![cargo_build_only("web-compiler"), npm_publish("docs-site")],
+        };
+        let out = render_workflow(&config);
+        assert!(out.contains("  build-web-compiler:\n"));
+        assert!(out.contains("  build-docs-site:\n"));
+        // npm side: a publish job that depends on the npm build.
+        assert!(out.contains("  npm-publish:\n"));
+        assert!(out.contains("    needs: [build-docs-site]\n"));
+        // cargo side: a GitHub Release that depends on the cargo build.
+        assert!(out.contains("  github-release:\n"));
+        assert!(out.contains("    needs: [build-web-compiler]\n"));
+        // build-only cargo never publishes to a registry.
+        assert!(!out.contains("cargo-publish"));
+    }
+
+    #[test]
+    fn orchestrate_writes_release_toml_and_workflow() {
         let tmp = tempfile::tempdir().unwrap();
-        let adapter = FakeAdapter {
-            packages: vec![pkg("@x/lib", true), pkg("@x/app", false)],
+        let factory = FakeFactory {
+            packages: vec![pkg("opentf-release", true), pkg("private-app", false)],
         };
         let prompt = FakePrompt {
-            assets: vec![],
-            targets: vec![],
+            adapters: vec![Ecosystem::Cargo],
+            build_names: vec!["opentf-release".into()],
+            entries: vec![cargo_build_only("opentf-release")],
             overwrite: true,
         };
-        orchestrate(
-            &adapter,
-            Ecosystem::Npm,
-            &prompt,
-            tmp.path(),
-            &InitOptions::default(),
-        )
-        .unwrap();
-        let written = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
-        assert_eq!(written, LIBS_ONLY);
+        orchestrate(&factory, &prompt, tmp.path(), &InitOptions::default()).unwrap();
+
+        // release.toml persisted and parseable.
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(cfg.adapters, vec![Ecosystem::Cargo]);
+        assert_eq!(cfg.packages.len(), 1);
+        assert_eq!(cfg.build_only_names(), vec!["opentf-release".to_string()]);
+
+        // workflow generated from it.
+        let yml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
+        assert!(yml.contains("  github-release:\n"));
     }
 
     #[test]
     fn orchestrate_respects_overwrite_guard() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join(".github/workflows/release.yml");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, "SENTINEL").unwrap();
+        let toml_path = ReleaseConfig::path(tmp.path());
+        fs::write(&toml_path, "SENTINEL").unwrap();
 
-        let adapter = FakeAdapter {
-            packages: vec![pkg("@x/lib", true)],
+        let factory = FakeFactory {
+            packages: vec![pkg("opentf-release", true)],
         };
-
-        // Not forced + declines overwrite => file untouched.
         let decline = FakePrompt {
-            assets: vec![],
-            targets: vec![],
+            adapters: vec![Ecosystem::Cargo],
+            build_names: vec![],
+            entries: vec![],
             overwrite: false,
         };
-        orchestrate(
-            &adapter,
-            Ecosystem::Npm,
-            &decline,
-            tmp.path(),
-            &InitOptions::default(),
-        )
-        .unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "SENTINEL");
+        // Not forced + declines => release.toml untouched.
+        orchestrate(&factory, &decline, tmp.path(), &InitOptions::default()).unwrap();
+        assert_eq!(fs::read_to_string(&toml_path).unwrap(), "SENTINEL");
 
-        // Forced => overwritten without asking.
-        orchestrate(
-            &adapter,
-            Ecosystem::Npm,
-            &decline,
-            tmp.path(),
-            &InitOptions { force: true },
-        )
-        .unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), LIBS_ONLY);
+        // Forced => overwritten.
+        orchestrate(&factory, &decline, tmp.path(), &InitOptions { force: true }).unwrap();
+        assert!(ReleaseConfig::load(tmp.path()).is_ok());
     }
 }

@@ -22,15 +22,17 @@ adapter-based: **npm and cargo today, others later**.
   opens a release PR. Never touches `main` directly.
 - **`publish`** (CI) — publishes changed packages in dependency order, idempotent and
   resumable, attaching prebuilt binaries when a workflow stages them.
-- **`init`** — generates one ecosystem-aware `release.yml`, asking which packages need
-  binary artifacts built before publish.
+- **`init`** — interactive setup: asks which adapters to enable and, per package, its mode
+  (`publish` to a registry, or `build-only` → GitHub Release artifacts), build matrix, command,
+  and artifacts. Persists `release.toml` and generates one `release.yml` from it.
 
 ## Principles
 
 - **You curate, it ships.** Notes and bumps are human decisions; mechanics are automated.
 - **Strict by default.** Commits since the last tag with an empty `[Unreleased]` abort the
   release — no undocumented ships.
-- **Stateless & config-light.** The generated `release.yml` is the single source of truth.
+- **One committed config.** `release.toml` (written by `init`) is the source of truth; the
+  generated `release.yml` and the other commands are derived from it.
 - **Dependency-correct.** peerDep dependents mirror the bump; encapsulated ones get a patch.
   Private apps stay buildable but are never published.
 
@@ -38,7 +40,7 @@ adapter-based: **npm and cargo today, others later**.
 
 Reference docs live in [`docs/`](./docs/) — start at [`docs/README.md`](./docs/README.md).
 
-- [Architecture](./docs/architecture.md) · [Adapters](./docs/adapters/overview.md) ([npm](./docs/adapters/npm.md) · [cargo](./docs/adapters/cargo.md))
+- [Architecture](./docs/architecture.md) · [Adapters](./docs/adapters/overview.md) ([npm](./docs/adapters/npm.md) · [cargo](./docs/adapters/cargo.md)) · [Configuration](./docs/configuration.md)
 - Commands: [version](./docs/commands/version.md) · [publish](./docs/commands/publish.md) · [init](./docs/commands/init.md)
 - [Changelog format](./docs/changelog-format.md) · [Preflight gate](./docs/preflight.md) · [CI workflow](./docs/ci-workflow.md)
 - [Implementation plan](./docs/implementation-plan.md) · [Roadmap](./docs/roadmap.md)
@@ -46,9 +48,11 @@ Reference docs live in [`docs/`](./docs/) — start at [`docs/README.md`](./docs
 ## Status
 
 v1 is **functionally complete**: all three commands (`version`, `publish`, `init`) and the **npm**
-and **cargo** adapters are implemented and tested (CI on fmt + clippy + test). The cargo adapter
-supports **lockstep** workspaces and a **GitHub-Release binary** distribution (cross-OS artifacts,
-no crates.io) — which is how `otf-release` ships itself. See the
+and **cargo** adapters are implemented and tested (CI on fmt + clippy + test). Setup is
+config-driven: `init` is interactive and writes [`release.toml`](./docs/configuration.md) (the
+source of truth, no `--adapter` flag), with a per-package **`publish`** vs **`build-only`** mode.
+The cargo adapter supports **lockstep** workspaces and a **GitHub-Release binary** distribution
+(cross-OS artifacts, no crates.io) — which is how `otf-release` ships itself. See the
 [implementation plan](./docs/implementation-plan.md) for the phase-by-phase breakdown. Further
 ecosystem adapters (PyPI), pre-releases, and a release-PR bot remain on the
 [roadmap](./docs/roadmap.md).

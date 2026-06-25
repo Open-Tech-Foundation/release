@@ -6,6 +6,7 @@
 //! The flow is split across modules that mirror the CLI:
 //!
 //! - [`adapter`]  — the [`adapter::Adapter`] trait + shared domain types ([`adapter::Pkg`], [`adapter::Bump`], …).
+//! - [`config`]   — `release.toml`, the committed source of truth ([`config::ReleaseConfig`]).
 //! - [`graph`]    — internal dependency graph, topological sort, and the bump cascade engine.
 //! - [`changelog`]— Keep a Changelog parser/rewriter (`[Unreleased]` → dated section).
 //! - [`preflight`]— strict tag/changelog compliance gate (all-or-nothing).
@@ -19,6 +20,7 @@
 
 pub mod adapter;
 pub mod changelog;
+pub mod config;
 pub mod date;
 pub mod forge;
 pub mod git;

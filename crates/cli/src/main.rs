@@ -1,23 +1,35 @@
 //! `otf-release` — the CLI entry point.
 //!
-//! Wires command-line arguments to the orchestration in `opentf-release-core`, selecting an
-//! ecosystem adapter (`npm` or `cargo`) from `opentf-release-adapters`.
+//! Wires command-line arguments to the orchestration in `opentf-release-core`. There is **no
+//! `--adapter` flag**: which ecosystems are active is read from `release.toml` (written by
+//! `init`), the committed source of truth. `init` is interactive and creates that file.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
 use opentf_release_core::adapter::Adapter;
-use opentf_release_core::init::Ecosystem;
+use opentf_release_core::config::{Ecosystem, ReleaseConfig};
+use opentf_release_core::init::AdapterFactory;
 use opentf_release_core::{init, publish, version};
 
-/// Which ecosystem adapter to use. A repo can have several; `init` bakes the choice into the
-/// generated workflow, which passes `--adapter` explicitly.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum AdapterKind {
-    Npm,
-    Cargo,
+/// Builds the concrete ecosystem adapters from `opentf-release-adapters`.
+struct CliAdapterFactory {
+    root: PathBuf,
+}
+
+impl AdapterFactory for CliAdapterFactory {
+    fn make(&self, ecosystem: Ecosystem) -> Box<dyn Adapter> {
+        match ecosystem {
+            Ecosystem::Npm => Box::new(opentf_release_adapters::npm::NpmAdapter::new(
+                self.root.clone(),
+            )),
+            Ecosystem::Cargo => Box::new(opentf_release_adapters::cargo::CargoAdapter::new(
+                self.root.clone(),
+            )),
+        }
+    }
 }
 
 /// Curated-changelog, manual-bump release CLI for polyglot monorepos.
@@ -27,10 +39,6 @@ struct Cli {
     /// Workspace root (defaults to the current directory).
     #[arg(long, global = true)]
     root: Option<PathBuf>,
-
-    /// Ecosystem adapter to use.
-    #[arg(long, global = true, value_enum, default_value = "npm")]
-    adapter: AdapterKind,
 
     #[command(subcommand)]
     command: Command,
@@ -56,9 +64,9 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Generate a single `.github/workflows/release.yml`.
+    /// Interactive setup: write `release.toml` and generate `.github/workflows/release.yml`.
     Init {
-        /// Overwrite an existing workflow without prompting.
+        /// Overwrite existing files without prompting.
         #[arg(long)]
         force: bool,
     },
@@ -67,45 +75,50 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let root = cli.root.unwrap_or_else(|| PathBuf::from("."));
-    let (adapter, ecosystem): (Box<dyn Adapter>, Ecosystem) = match cli.adapter {
-        AdapterKind::Npm => (
-            Box::new(opentf_release_adapters::npm::NpmAdapter::new(root.clone())),
-            Ecosystem::Npm,
-        ),
-        AdapterKind::Cargo => (
-            Box::new(opentf_release_adapters::cargo::CargoAdapter::new(
-                root.clone(),
-            )),
-            Ecosystem::Cargo,
-        ),
-    };
-    let adapter = adapter.as_ref();
+    let factory = CliAdapterFactory { root: root.clone() };
 
     match cli.command {
+        // `init` is the one command that doesn't read the config — it writes it.
+        Command::Init { force } => init::run(&factory, &root, &init::InitOptions { force }),
+
+        // Every other command reads `release.toml` and acts on each enabled ecosystem.
         Command::Version {
             dry_run,
             first_release,
-        } => version::run(
-            adapter,
-            &root,
-            &version::VersionOptions {
+        } => {
+            let config = ReleaseConfig::load(&root)?;
+            let opts = version::VersionOptions {
                 dry_run,
                 first_release,
-            },
-        ),
+            };
+            for eco in &config.adapters {
+                let adapter = factory.make(*eco);
+                version::run(adapter.as_ref(), &root, &opts)?;
+            }
+            Ok(())
+        }
+
         Command::Publish {
             artifacts_dir,
             dry_run,
-        } => publish::run(
-            adapter,
-            &root,
-            &publish::PublishOptions {
-                artifacts_dir,
-                dry_run,
-            },
-        ),
-        Command::Init { force } => {
-            init::run(adapter, ecosystem, &root, &init::InitOptions { force })
+        } => {
+            let config = ReleaseConfig::load(&root)?;
+            // build-only packages ship via the GitHub Release the workflow creates, never a
+            // registry — so `publish` skips them.
+            let skip = config.build_only_names();
+            for eco in &config.adapters {
+                let adapter = factory.make(*eco);
+                publish::run(
+                    adapter.as_ref(),
+                    &root,
+                    &publish::PublishOptions {
+                        artifacts_dir: artifacts_dir.clone(),
+                        dry_run,
+                        skip: skip.clone(),
+                    },
+                )?;
+            }
+            Ok(())
         }
     }
 }

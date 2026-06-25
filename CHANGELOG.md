@@ -22,13 +22,17 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   bumped by writing the shared `[workspace.package] version` in the root manifest (every
   inheriting crate moves together) and share a **single root `CHANGELOG.md`**. Crates with a
   concrete `[package] version` are still versioned independently.
-- **cargo binary-release workflow** — `init --adapter cargo` generates a workflow that
-  cross-compiles a target matrix (each on a matching runner) and attaches the binaries to a
+- **cargo binary-release workflow** — a `build-only` cargo package makes `init` generate a workflow
+  that cross-compiles a target matrix (each on a matching runner) and attaches the binaries to a
   **GitHub Release** `vX.Y.Z`, idempotently — **no crates.io**. This is how `otf-release` ships
   itself; `crates/core` and `crates/adapters` are marked `publish = false` so only the binary is
   released.
-- **`--adapter npm|cargo`** selector on the CLI (the `init`-generated workflow passes it
-  explicitly; a repo can use both ecosystems).
+- **`release.toml` — the committed source of truth.** A new `config` module persists which
+  ecosystems are enabled and the per-package build steps. Every command reads it; there is **no
+  `--adapter` flag**. See [docs/configuration.md](docs/configuration.md).
+- **Per-package `publish` vs `build-only` mode.** `publish` builds then pushes to the ecosystem's
+  registry; `build-only` builds then attaches the artifacts to a **GitHub Release** (no registry
+  push). A polyglot repo can mix modes and adapters freely.
 - **Changelog engine** — Keep a Changelog parser/rewriter: read `[Unreleased]`, move it under a
   dated `## [x.y.z] - YYYY-MM-DD` section, leave a fresh `[Unreleased]`, stub auto-bumped-only
   packages with `_Dependency updates._`.
@@ -44,10 +48,12 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 - **`publish` command** — non-interactive CI flow: topological, idempotent (`is_published`
   skip), halt-on-failure with forward-resume; tags and optional GitHub Releases from the dated
   changelog section. Staged binaries attached only when `<artifacts-dir>/<pkg>/` exists.
-- **`init` command** — generates a single `.github/workflows/release.yml`, adapter-aware: the
-  **npm** shape feeds a registry `publish` job, the **cargo** shape feeds a GitHub-Release job.
-  A `build-matrix` job appears only when asset packages are selected. Overwrite guarded by
-  `--force`.
+  **Skips `build-only` packages** (they ship via the GitHub Release the workflow creates).
+- **`init` command** — interactive setup (no flags): multi-select adapters (`npm`, `crates.io`),
+  then per package its mode, build matrix, command, and artifacts. Persists `release.toml` and
+  generates a single `.github/workflows/release.yml` from it — a `build-<pkg>` job per build step
+  feeding an `npm-publish` / `cargo-publish` job (registry) and/or a `github-release` job
+  (build-only). Both writes guarded by `--force`.
 - **Docs** — `docs/` reference tree (architecture, commands, adapters, changelog format,
   preflight, CI workflow, roadmap) and a phased implementation plan.
 - **CI** — `.github/workflows/ci.yml` running `cargo fmt --check`, `clippy -D warnings`, and the
