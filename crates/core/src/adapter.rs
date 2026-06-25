@@ -19,6 +19,16 @@ pub enum Bump {
     Major,
 }
 
+impl std::fmt::Display for Bump {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Bump::Patch => "patch",
+            Bump::Minor => "minor",
+            Bump::Major => "major",
+        })
+    }
+}
+
 /// The relationship kind of an internal dependency. The concrete set is adapter-specific;
 /// this is the npm-flavored set used in v1.
 #[derive(Debug, Clone, PartialEq, Eq)]

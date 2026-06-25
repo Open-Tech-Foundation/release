@@ -33,6 +33,17 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 - **Per-package `publish` vs `build-only` mode.** `publish` builds then pushes to the ecosystem's
   registry; `build-only` builds then attaches the artifacts to a **GitHub Release** (no registry
   push). A polyglot repo can mix modes and adapters freely.
+- **`generic` adapter** — a bring-your-own-commands ecosystem for registries the tool doesn't
+  natively support (e.g. Deno's JSR). The version is read/bumped from a manifest you name
+  (`manifest` + `version_field`, the git-tag source); an optional `publish` command (e.g.
+  `npx jsr publish`) makes it `publish` mode, otherwise it's build-only. `init` collects these
+  interactively. The generated workflow injects no toolchain for generic build steps and marks
+  registry toolchain/secrets `# edit me`.
+- **Single unified `publish` job** — the generated workflow now emits one `publish` job (running
+  `otf-release publish` once across all enabled adapters) instead of per-registry jobs, setting up
+  only the toolchains the active registries need.
+- **Modern interactive prompts** — `init` and `version` now use arrow-key select, spacebar
+  multi-select, and confirm prompts (via `inquire`) instead of typing numbers.
 - **Changelog engine** — Keep a Changelog parser/rewriter: read `[Unreleased]`, move it under a
   dated `## [x.y.z] - YYYY-MM-DD` section, leave a fresh `[Unreleased]`, stub auto-bumped-only
   packages with `_Dependency updates._`.

@@ -30,6 +30,7 @@ for the OpenTF monorepo.
 | [adapters/overview.md](./adapters/overview.md) | The `Adapter` trait and domain types. |
 | [adapters/npm.md](./adapters/npm.md) | The npm adapter — rules, gotchas, commands. |
 | [adapters/cargo.md](./adapters/cargo.md) | The cargo adapter — rules and Rust-specific limits. |
+| [adapters/generic.md](./adapters/generic.md) | The generic adapter — bring-your-own-commands (e.g. JSR). |
 | [changelog-format.md](./changelog-format.md) | Keep a Changelog conventions and rewrite rules. |
 | [preflight.md](./preflight.md) | The strict, all-or-nothing compliance gate. |
 | [ci-workflow.md](./ci-workflow.md) | The single `release.yml` model. |

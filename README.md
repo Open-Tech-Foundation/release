@@ -13,7 +13,7 @@ publishing, and a matrix-gated GitHub release in one `release.yml`.
 
 Unlike commit-driven tools, your hand-written `[Unreleased]` notes are the source of
 truth — never inferred from commits. Unlike npm-locked tools, the publishing backend is
-adapter-based: **npm and cargo today, others later**.
+adapter-based: **npm, cargo, and a `generic` (bring-your-own-commands, e.g. JSR) today, others later**.
 
 ## What it does
 
@@ -40,7 +40,7 @@ adapter-based: **npm and cargo today, others later**.
 
 Reference docs live in [`docs/`](./docs/) — start at [`docs/README.md`](./docs/README.md).
 
-- [Architecture](./docs/architecture.md) · [Adapters](./docs/adapters/overview.md) ([npm](./docs/adapters/npm.md) · [cargo](./docs/adapters/cargo.md)) · [Configuration](./docs/configuration.md)
+- [Architecture](./docs/architecture.md) · [Adapters](./docs/adapters/overview.md) ([npm](./docs/adapters/npm.md) · [cargo](./docs/adapters/cargo.md) · [generic](./docs/adapters/generic.md)) · [Configuration](./docs/configuration.md)
 - Commands: [version](./docs/commands/version.md) · [publish](./docs/commands/publish.md) · [init](./docs/commands/init.md)
 - [Changelog format](./docs/changelog-format.md) · [Preflight gate](./docs/preflight.md) · [CI workflow](./docs/ci-workflow.md)
 - [Implementation plan](./docs/implementation-plan.md) · [Roadmap](./docs/roadmap.md)

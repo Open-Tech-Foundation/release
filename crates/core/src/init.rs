@@ -11,13 +11,13 @@
 //! [`AdapterFactory`] trait, so the flow is testable.
 
 use std::fs;
-use std::io::{self, Write};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+use inquire::{Confirm, MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
-use crate::config::{Ecosystem, Mode, PackageEntry, ReleaseConfig};
+use crate::config::{Ecosystem, Mode, PackageEntry, ReleaseConfig, DEFAULT_VERSION_FIELD};
 
 /// A sensible default cross-compile target set (each emitted with an `# edit me` marker).
 pub const DEFAULT_TARGETS: [&str; 3] = [
@@ -58,6 +58,9 @@ pub trait InitPrompt {
     fn select_build_packages(&self, publishable: &[&Pkg]) -> Result<Vec<String>>;
     /// The full build config for one selected package (`enabled` is the chosen adapter set).
     fn build_entry(&self, pkg_name: &str, enabled: &[Ecosystem]) -> Result<PackageEntry>;
+    /// Enter generic packages (manifest + optional build/publish). Asked only when the generic
+    /// adapter is enabled, since there is nothing to auto-discover.
+    fn generic_packages(&self) -> Result<Vec<PackageEntry>>;
     /// Confirm overwriting an existing file (only asked when not `--force`).
     fn confirm_overwrite(&self, path: &Path) -> Result<bool>;
 }
@@ -79,9 +82,10 @@ pub fn orchestrate(
         bail!("No adapters selected — nothing to configure.");
     }
 
-    // Discover publishable packages across every enabled ecosystem.
+    // Discover publishable packages across every *discoverable* ecosystem (npm/cargo read
+    // manifests). The generic adapter has nothing to discover — its packages are entered below.
     let mut publishable: Vec<Pkg> = Vec::new();
-    for &eco in &enabled {
+    for &eco in enabled.iter().filter(|e| **e != Ecosystem::Generic) {
         let adapter = factory.make(eco);
         for pkg in adapter.discover_packages()? {
             if pkg.publishable {
@@ -95,6 +99,11 @@ pub fn orchestrate(
     let mut packages = Vec::new();
     for name in &build_names {
         packages.push(prompt.build_entry(name, &enabled)?);
+    }
+
+    // Generic packages can't be discovered — ask the user to enter them.
+    if enabled.contains(&Ecosystem::Generic) {
+        packages.extend(prompt.generic_packages()?);
     }
 
     let config = ReleaseConfig {
@@ -151,60 +160,92 @@ fn slug(name: &str) -> String {
 /// Render `.github/workflows/release.yml` from the config.
 ///
 /// Shape:
-/// - one `build-<pkg>` job per package with a build step (matrix or single runner),
-/// - an `npm-publish` job if npm is enabled (registry publish via `otf-release publish`),
-/// - a `cargo-publish` job only if a cargo package opts into `mode = "publish"` (crates.io),
+/// - one `build-<pkg>` job per package that has a build command (matrix or single runner),
+/// - a single `publish` job (if any registry adapter is active) that sets up the needed
+///   toolchains and runs `otf-release publish` once — it publishes only `publish`-mode packages
+///   across every enabled ecosystem (npm, crates.io, generic),
 /// - a `github-release` job if any package is `build-only` — attaches its artifacts to a
 ///   GitHub Release `vX.Y.Z`, idempotently. **No registry push for build-only packages.**
 pub fn render_workflow(config: &ReleaseConfig) -> String {
     let any_build_only = config.packages.iter().any(|p| p.mode == Mode::BuildOnly);
+    let npm_enabled = config.adapters.contains(&Ecosystem::Npm);
     let cargo_publishes = config
         .packages
         .iter()
         .any(|p| p.adapter == Ecosystem::Cargo && p.mode == Mode::Publish);
-    let npm_enabled = config.adapters.contains(&Ecosystem::Npm);
+    let generic_publishes = config
+        .packages
+        .iter()
+        .any(|p| p.adapter == Ecosystem::Generic && p.mode == Mode::Publish);
+    let needs_publish = npm_enabled || cargo_publishes || generic_publishes;
 
     let mut s = String::from("name: Release\n\non:\n  push:\n    branches: [main]\n");
-    if any_build_only || cargo_publishes {
+    if any_build_only || needs_publish {
         s.push_str("\npermissions:\n  contents: write  # create tags and GitHub Releases\n");
     }
     s.push_str("\njobs:\n");
 
-    for entry in &config.packages {
+    // Build jobs only for packages that actually declare a build command.
+    let has_build = |p: &&PackageEntry| !p.command.trim().is_empty();
+    for entry in config.packages.iter().filter(|p| has_build(p)) {
         render_build_job(&mut s, entry);
     }
 
-    if npm_enabled {
+    if needs_publish {
         let needs: Vec<String> = config
             .packages
             .iter()
-            .filter(|p| p.adapter == Ecosystem::Npm && p.mode == Mode::Publish)
+            .filter(|p| p.mode == Mode::Publish && has_build(p))
             .map(|p| build_job(&p.name))
             .collect();
-        render_npm_publish(&mut s, &needs);
-    }
-
-    if cargo_publishes {
-        let needs: Vec<String> = config
-            .packages
-            .iter()
-            .filter(|p| p.adapter == Ecosystem::Cargo && p.mode == Mode::Publish)
-            .map(|p| build_job(&p.name))
-            .collect();
-        render_cargo_publish(&mut s, &needs);
+        render_publish_job(
+            &mut s,
+            &needs,
+            npm_enabled,
+            cargo_publishes,
+            generic_publishes,
+        );
     }
 
     if any_build_only {
-        let needs: Vec<String> = config
+        let build_only: Vec<&PackageEntry> = config
             .packages
             .iter()
             .filter(|p| p.mode == Mode::BuildOnly)
+            .collect();
+        let needs: Vec<String> = build_only
+            .iter()
+            .filter(|p| has_build(p))
             .map(|p| build_job(&p.name))
             .collect();
-        render_github_release(&mut s, &needs);
+        render_github_release(
+            &mut s,
+            &needs,
+            &version_read_cmd(build_only.first().copied()),
+        );
     }
 
     s
+}
+
+/// The shell snippet that reads the release version for the GitHub Release tag, based on the
+/// first build-only package: a manifest field (generic), `package.json` (npm), or `Cargo.toml`.
+fn version_read_cmd(entry: Option<&PackageEntry>) -> String {
+    match entry {
+        Some(e) if e.adapter == Ecosystem::Generic => {
+            let manifest = e.manifest.as_deref().unwrap_or("deno.json");
+            let field = e.version_field.as_deref().unwrap_or("version");
+            if manifest.ends_with(".json") {
+                format!("node -p \"require('./{manifest}').{field}\"")
+            } else {
+                format!("cat {manifest}  # edit me: extract the {field} value")
+            }
+        }
+        Some(e) if e.adapter == Ecosystem::Npm => {
+            "node -p \"require('./package.json').version\"".to_string()
+        }
+        _ => "grep -m1 '^version' Cargo.toml | cut -d'\"' -f2".to_string(),
+    }
 }
 
 /// One build job: matrix or single runner, runs the package's command, uploads its artifacts.
@@ -241,6 +282,8 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
             s.push_str("        with:\n          node-version: 20\n");
             s.push_str("      - run: npm ci\n");
         }
+        // Generic is language-agnostic: no toolchain is assumed — the command sets up its own.
+        Ecosystem::Generic => {}
     }
     s.push_str(&format!("      - name: Build {}\n", entry.name));
     if entry.matrix {
@@ -281,54 +324,54 @@ fn download_artifacts(s: &mut String, needs: &[String]) -> bool {
     true
 }
 
-/// The npm registry publish job (`otf-release publish` — publishes only `publish`-mode packages).
-fn render_npm_publish(s: &mut String, needs: &[String]) {
-    s.push_str("  npm-publish:\n");
+/// The single registry publish job. Runs `otf-release publish` **once**; the tool loops every
+/// enabled adapter internally, so this one job covers npm + crates.io + generic. It sets up only
+/// the toolchains the active registries need; generic publish steps carry `# edit me` markers
+/// since the tool can't know your registry's toolchain or secret.
+fn render_publish_job(s: &mut String, needs: &[String], npm: bool, cargo: bool, generic: bool) {
+    s.push_str("  publish:\n");
     needs_line(s, needs);
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
-    s.push_str("      - uses: actions/setup-node@v4\n");
-    s.push_str("        with:\n          node-version: 20\n");
-    s.push_str("          registry-url: https://registry.npmjs.org\n");
+    if npm {
+        s.push_str("      - uses: actions/setup-node@v4\n");
+        s.push_str("        with:\n          node-version: 20\n");
+        s.push_str("          registry-url: https://registry.npmjs.org\n");
+    }
+    if cargo {
+        s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
+    }
+    if generic {
+        s.push_str("      # edit me: set up the toolchain your generic publish command needs\n");
+    }
     let staged = download_artifacts(s, needs);
-    s.push_str("      - run: npm ci\n");
-    s.push_str("      - name: Publish (npm)\n");
+    if npm {
+        s.push_str("      - run: npm ci\n");
+    }
+    s.push_str("      - name: Publish\n");
     if staged {
         s.push_str("        run: otf-release publish --artifacts-dir .artifacts\n");
     } else {
         s.push_str("        run: otf-release publish\n");
     }
     s.push_str("        env:\n");
-    s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}\n");
-    s.push_str("          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
-    s.push('\n');
-}
-
-/// The crates.io publish job — only generated when a cargo package opts into `mode = "publish"`.
-fn render_cargo_publish(s: &mut String, needs: &[String]) {
-    s.push_str("  cargo-publish:\n");
-    needs_line(s, needs);
-    s.push_str("    runs-on: ubuntu-latest\n");
-    s.push_str("    steps:\n");
-    s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
-    s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
-    let staged = download_artifacts(s, needs);
-    s.push_str("      - name: Publish (crates.io)\n");
-    if staged {
-        s.push_str("        run: otf-release publish --artifacts-dir .artifacts\n");
-    } else {
-        s.push_str("        run: otf-release publish\n");
+    if npm {
+        s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}\n");
     }
-    s.push_str("        env:\n");
-    s.push_str("          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n");
+    if cargo {
+        s.push_str("          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n");
+    }
+    if generic {
+        s.push_str("          # edit me: any secret your generic publish command needs\n");
+    }
     s.push_str("          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     s.push('\n');
 }
 
 /// The GitHub Release job for `build-only` packages: attach the staged artifacts to a tag
 /// `vX.Y.Z`, idempotently (skip an existing tag). No registry push.
-fn render_github_release(s: &mut String, needs: &[String]) {
+fn render_github_release(s: &mut String, needs: &[String], version_cmd: &str) {
     s.push_str("  github-release:\n");
     needs_line(s, needs);
     s.push_str("    runs-on: ubuntu-latest\n");
@@ -338,9 +381,9 @@ fn render_github_release(s: &mut String, needs: &[String]) {
     s.push_str("      - name: Create GitHub Release\n");
     s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     s.push_str("        run: |\n");
-    s.push_str(
-        "          version=\"$(grep -m1 '^version' Cargo.toml | cut -d'\"' -f2)\"  # edit me: where the version lives\n",
-    );
+    s.push_str(&format!(
+        "          version=\"$({version_cmd})\"  # edit me: where the version lives\n"
+    ));
     s.push_str("          tag=\"v$version\"\n");
     s.push_str("          if gh release view \"$tag\" >/dev/null 2>&1; then\n");
     s.push_str("            echo \"Release $tag already exists; nothing to do.\"\n");
@@ -355,100 +398,75 @@ fn render_github_release(s: &mut String, needs: &[String]) {
     }
 }
 
-/// The real terminal prompt for `init`.
+/// The real terminal prompt for `init` — arrow-key select, spacebar multi-select, confirm.
 pub struct StdinInitPrompt;
 
-fn read_line(prompt: &str) -> Result<String> {
-    print!("{prompt}");
-    io::stdout().flush()?;
-    let mut line = String::new();
-    io::stdin().read_line(&mut line)?;
-    Ok(line.trim().to_string())
-}
-
-/// Parse a comma/space list of 1-based indices into the matching items.
-fn pick_indices<T: Clone>(line: &str, items: &[T]) -> Vec<T> {
-    let mut out = Vec::new();
-    for token in line.split([',', ' ', '\t']).filter(|t| !t.is_empty()) {
-        if let Ok(idx) = token.parse::<usize>() {
-            if let Some(item) = items.get(idx.wrapping_sub(1)) {
-                out.push(item.clone());
-            }
-        }
-    }
-    out
-}
+const MULTI_HELP: &str = "↑↓ move · space toggle · enter confirm";
 
 impl InitPrompt for StdinInitPrompt {
     fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
-        println!("Adapters to enable:");
-        for (i, eco) in Ecosystem::ALL.iter().enumerate() {
-            println!("  {}) {}", i + 1, eco.label());
-        }
-        let line = read_line("Select (e.g. 1,2): ")?;
-        Ok(pick_indices(&line, &Ecosystem::ALL))
+        let labels: Vec<&str> = Ecosystem::ALL.iter().map(|e| e.label()).collect();
+        let chosen = MultiSelect::new("Adapters to enable:", labels)
+            .with_help_message(MULTI_HELP)
+            .raw_prompt()?;
+        Ok(chosen.iter().map(|o| Ecosystem::ALL[o.index]).collect())
     }
 
     fn select_build_packages(&self, publishable: &[&Pkg]) -> Result<Vec<String>> {
         if publishable.is_empty() {
             return Ok(Vec::new());
         }
-        println!("Publishable packages:");
-        for (i, p) in publishable.iter().enumerate() {
-            println!("  {}) {}", i + 1, p.name);
-        }
-        let line = read_line("Which need a build step before publish? (e.g. 1,2 or 'none'): ")?;
-        if line.is_empty() || line.eq_ignore_ascii_case("none") {
-            return Ok(Vec::new());
-        }
-        let names: Vec<String> = publishable.iter().map(|p| p.name.clone()).collect();
-        Ok(pick_indices(&line, &names))
+        let labels: Vec<String> = publishable.iter().map(|p| p.name.clone()).collect();
+        let chosen = MultiSelect::new("Which packages need a build step before publish?", labels)
+            .with_help_message(MULTI_HELP)
+            .raw_prompt()?;
+        Ok(chosen
+            .iter()
+            .map(|o| publishable[o.index].name.clone())
+            .collect())
     }
 
     fn build_entry(&self, pkg_name: &str, enabled: &[Ecosystem]) -> Result<PackageEntry> {
-        println!("Configure {pkg_name}:");
-
         let adapter = if enabled.len() == 1 {
             enabled[0]
         } else {
-            let labels: Vec<String> = enabled
-                .iter()
-                .enumerate()
-                .map(|(i, e)| format!("{}={}", i + 1, e.label()))
-                .collect();
-            let line = read_line(&format!("  adapter ({}): ", labels.join(", ")))?;
-            pick_indices(&line, enabled)
-                .first()
-                .copied()
-                .unwrap_or(enabled[0])
+            let labels: Vec<&str> = enabled.iter().map(|e| e.label()).collect();
+            let opt = Select::new(&format!("{pkg_name} — adapter:"), labels).raw_prompt()?;
+            enabled[opt.index]
         };
 
-        let mode_line = read_line("  mode (1=publish, 2=build-only): ")?;
-        let mode = if mode_line.trim() == "2" {
-            Mode::BuildOnly
-        } else {
-            Mode::Publish
+        let mode = match Select::new(
+            &format!("{pkg_name} — mode:"),
+            vec![
+                "publish (to registry)",
+                "build-only (GitHub Release artifacts)",
+            ],
+        )
+        .raw_prompt()?
+        .index
+        {
+            1 => Mode::BuildOnly,
+            _ => Mode::Publish,
         };
 
-        let matrix_line = read_line("  build matrix? (multiple platforms) (y/N): ")?;
-        let matrix = matches!(matrix_line.to_ascii_lowercase().as_str(), "y" | "yes");
+        let matrix = Confirm::new(&format!("{pkg_name} — build across a target matrix?"))
+            .with_default(false)
+            .prompt()?;
         let targets = if matrix {
-            let defaults = DEFAULT_TARGETS.join(", ");
-            let line = read_line(&format!("  target triples [{defaults}]: "))?;
-            if line.is_empty() {
-                DEFAULT_TARGETS.iter().map(|s| s.to_string()).collect()
-            } else {
-                line.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            }
+            let all: Vec<usize> = (0..DEFAULT_TARGETS.len()).collect();
+            MultiSelect::new("Target triples:", DEFAULT_TARGETS.to_vec())
+                .with_default(&all)
+                .with_help_message(MULTI_HELP)
+                .prompt()?
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
         } else {
             Vec::new()
         };
 
-        let command = read_line("  build command: ")?;
-        let artifacts = read_line("  artifacts to stage: ")?;
+        let command = Text::new(&format!("{pkg_name} — build command:")).prompt()?;
+        let artifacts = Text::new(&format!("{pkg_name} — artifacts to stage:")).prompt()?;
 
         Ok(PackageEntry {
             name: pkg_name.to_string(),
@@ -458,12 +476,65 @@ impl InitPrompt for StdinInitPrompt {
             targets,
             command,
             artifacts,
+            manifest: None,
+            version_field: None,
+            publish: None,
         })
     }
 
+    fn generic_packages(&self) -> Result<Vec<PackageEntry>> {
+        let mut out = Vec::new();
+        loop {
+            if !Confirm::new("Add a generic package?")
+                .with_default(out.is_empty())
+                .prompt()?
+            {
+                break;
+            }
+            let name = Text::new("  name:").prompt()?;
+            let manifest =
+                Text::new("  manifest file holding the version (e.g. deno.json):").prompt()?;
+            let version_field = Text::new("  version field:")
+                .with_default(DEFAULT_VERSION_FIELD)
+                .prompt()?;
+            let command = Text::new("  build command (optional):")
+                .with_default("")
+                .prompt()?;
+            let artifacts = Text::new("  artifacts to stage (optional):")
+                .with_default("")
+                .prompt()?;
+            let publish = Text::new("  publish command (optional, e.g. npx jsr publish):")
+                .with_default("")
+                .prompt()?;
+            let publish = (!publish.trim().is_empty()).then_some(publish);
+            let mode = if publish.is_some() {
+                Mode::Publish
+            } else {
+                Mode::BuildOnly
+            };
+
+            out.push(PackageEntry {
+                name,
+                adapter: Ecosystem::Generic,
+                mode,
+                matrix: false,
+                targets: vec![],
+                command,
+                artifacts,
+                manifest: Some(manifest),
+                version_field: Some(version_field),
+                publish,
+            });
+        }
+        Ok(out)
+    }
+
     fn confirm_overwrite(&self, path: &Path) -> Result<bool> {
-        let line = read_line(&format!("{} exists. Overwrite? (y/N): ", path.display()))?;
-        Ok(matches!(line.to_ascii_lowercase().as_str(), "y" | "yes"))
+        Ok(
+            Confirm::new(&format!("{} exists. Overwrite?", path.display()))
+                .with_default(false)
+                .prompt()?,
+        )
     }
 }
 
@@ -521,10 +592,12 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
     struct FakePrompt {
         adapters: Vec<Ecosystem>,
         build_names: Vec<String>,
         entries: Vec<PackageEntry>,
+        generic: Vec<PackageEntry>,
         overwrite: bool,
     }
     impl InitPrompt for FakePrompt {
@@ -541,6 +614,9 @@ mod tests {
                 .find(|e| e.name == name)
                 .cloned()
                 .unwrap())
+        }
+        fn generic_packages(&self) -> Result<Vec<PackageEntry>> {
+            Ok(self.generic.clone())
         }
         fn confirm_overwrite(&self, _: &Path) -> Result<bool> {
             Ok(self.overwrite)
@@ -570,6 +646,9 @@ mod tests {
             ],
             command: "cargo build --release -p otf-release".into(),
             artifacts: "target/${{ matrix.target }}/release/otf-release*".into(),
+            manifest: None,
+            version_field: None,
+            publish: None,
         }
     }
 
@@ -582,6 +661,28 @@ mod tests {
             targets: vec![],
             command: "npm run build".into(),
             artifacts: "dist/**".into(),
+            manifest: None,
+            version_field: None,
+            publish: None,
+        }
+    }
+
+    fn generic_pkg(name: &str, publish: Option<&str>) -> PackageEntry {
+        PackageEntry {
+            name: name.to_string(),
+            adapter: Ecosystem::Generic,
+            mode: if publish.is_some() {
+                Mode::Publish
+            } else {
+                Mode::BuildOnly
+            },
+            matrix: false,
+            targets: vec![],
+            command: "deno task build".into(),
+            artifacts: "dist/*".into(),
+            manifest: Some("deno.json".into()),
+            version_field: Some("version".into()),
+            publish: publish.map(|s| s.into()),
         }
     }
 
@@ -599,13 +700,12 @@ mod tests {
             packages: vec![],
         };
         let out = render_workflow(&config);
-        assert!(out.contains("  npm-publish:\n"));
+        assert!(out.contains("  publish:\n"));
+        assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         assert!(out.contains("        run: otf-release publish\n"));
         // No build steps, so no needs and no artifact download.
         assert!(!out.contains("needs:"));
         assert!(!out.contains("github-release"));
-        assert!(!out.contains("permissions:"));
-        assert!(!out.contains("cargo-publish"));
     }
 
     #[test]
@@ -628,13 +728,48 @@ mod tests {
         assert!(out.contains("    needs: [build-opentf-release]\n"));
         assert!(out.contains("          if gh release view \"$tag\" >/dev/null 2>&1; then\n"));
         assert!(!out.contains("cargo publish"));
-        assert!(!out.contains("cargo-publish"));
         assert!(!out.contains("crates.io"));
-        assert!(!out.contains("npm-publish"));
+        // build-only cargo: no publish job at all.
+        assert!(!out.contains("  publish:\n"));
     }
 
     #[test]
-    fn polyglot_renders_both_publish_and_release() {
+    fn generic_build_only_renders_no_toolchain_and_manifest_version() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Generic],
+            packages: vec![generic_pkg("release", None)],
+        };
+        let out = render_workflow(&config);
+        assert!(out.contains("  build-release:\n"));
+        // Language-agnostic: no rust/node toolchain step is injected.
+        assert!(!out.contains("dtolnay/rust-toolchain"));
+        assert!(!out.contains("setup-node"));
+        // Version comes from the configured manifest (deno.json), shipped via a GitHub Release.
+        assert!(out.contains("          version=\"$(node -p \"require('./deno.json').version\")\""));
+        assert!(out.contains("  github-release:\n"));
+        assert!(!out.contains("  publish:\n"));
+        assert!(!out.contains("crates.io"));
+    }
+
+    #[test]
+    fn generic_publish_renders_publish_job_with_edit_me_toolchain() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Generic],
+            packages: vec![generic_pkg("jsr-lib", Some("npx jsr publish"))],
+        };
+        let out = render_workflow(&config);
+        assert!(out.contains("  build-jsr-lib:\n"));
+        // A unified publish job runs `otf-release publish` (which runs the configured command).
+        assert!(out.contains("  publish:\n"));
+        assert!(out.contains("    needs: [build-jsr-lib]\n"));
+        assert!(out.contains("        run: otf-release publish --artifacts-dir .artifacts\n"));
+        // The tool can't know a generic registry's toolchain/secret → edit-me markers.
+        assert!(out.contains("# edit me: set up the toolchain your generic publish command needs"));
+        assert!(!out.contains("github-release"));
+    }
+
+    #[test]
+    fn polyglot_renders_one_publish_job_and_release() {
         let config = ReleaseConfig {
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             packages: vec![cargo_build_only("web-compiler"), npm_publish("docs-site")],
@@ -642,14 +777,13 @@ mod tests {
         let out = render_workflow(&config);
         assert!(out.contains("  build-web-compiler:\n"));
         assert!(out.contains("  build-docs-site:\n"));
-        // npm side: a publish job that depends on the npm build.
-        assert!(out.contains("  npm-publish:\n"));
+        // A single publish job (npm) depending on the npm build.
+        assert!(out.contains("  publish:\n"));
         assert!(out.contains("    needs: [build-docs-site]\n"));
-        // cargo side: a GitHub Release that depends on the cargo build.
+        assert!(out.contains("      - uses: actions/setup-node@v4\n"));
+        // cargo side is build-only: a GitHub Release depending on the cargo build.
         assert!(out.contains("  github-release:\n"));
         assert!(out.contains("    needs: [build-web-compiler]\n"));
-        // build-only cargo never publishes to a registry.
-        assert!(!out.contains("cargo-publish"));
     }
 
     #[test]
@@ -662,9 +796,9 @@ mod tests {
             adapters: vec![Ecosystem::Cargo],
             build_names: vec!["opentf-release".into()],
             entries: vec![cargo_build_only("opentf-release")],
-            overwrite: true,
+            ..FakePrompt::default()
         };
-        orchestrate(&factory, &prompt, tmp.path(), &InitOptions::default()).unwrap();
+        orchestrate(&factory, &prompt, tmp.path(), &InitOptions { force: true }).unwrap();
 
         // release.toml persisted and parseable.
         let cfg = ReleaseConfig::load(tmp.path()).unwrap();
@@ -678,6 +812,27 @@ mod tests {
     }
 
     #[test]
+    fn orchestrate_collects_generic_packages_into_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No npm/cargo discovery needed; generic packages are user-entered.
+        let factory = FakeFactory { packages: vec![] };
+        let prompt = FakePrompt {
+            adapters: vec![Ecosystem::Generic],
+            generic: vec![generic_pkg("jsr-lib", Some("npx jsr publish"))],
+            ..FakePrompt::default()
+        };
+        orchestrate(&factory, &prompt, tmp.path(), &InitOptions { force: true }).unwrap();
+
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(cfg.packages.len(), 1);
+        let p = &cfg.packages[0];
+        assert_eq!(p.adapter, Ecosystem::Generic);
+        assert_eq!(p.manifest.as_deref(), Some("deno.json"));
+        assert_eq!(p.publish.as_deref(), Some("npx jsr publish"));
+        assert_eq!(p.mode, Mode::Publish);
+    }
+
+    #[test]
     fn orchestrate_respects_overwrite_guard() {
         let tmp = tempfile::tempdir().unwrap();
         let toml_path = ReleaseConfig::path(tmp.path());
@@ -688,9 +843,7 @@ mod tests {
         };
         let decline = FakePrompt {
             adapters: vec![Ecosystem::Cargo],
-            build_names: vec![],
-            entries: vec![],
-            overwrite: false,
+            ..FakePrompt::default()
         };
         // Not forced + declines => release.toml untouched.
         orchestrate(&factory, &decline, tmp.path(), &InitOptions::default()).unwrap();

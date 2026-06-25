@@ -9,14 +9,17 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use opentf_release_adapters::generic::{GenericAdapter, GenericPkg};
 use opentf_release_core::adapter::Adapter;
-use opentf_release_core::config::{Ecosystem, ReleaseConfig};
+use opentf_release_core::config::{Ecosystem, ReleaseConfig, DEFAULT_VERSION_FIELD};
 use opentf_release_core::init::AdapterFactory;
 use opentf_release_core::{init, publish, version};
 
-/// Builds the concrete ecosystem adapters from `opentf-release-adapters`.
+/// Builds the concrete ecosystem adapters from `opentf-release-adapters`. The generic adapter is
+/// configured from `release.toml`'s generic `[[package]]` entries.
 struct CliAdapterFactory {
     root: PathBuf,
+    generic: Vec<GenericPkg>,
 }
 
 impl AdapterFactory for CliAdapterFactory {
@@ -28,8 +31,31 @@ impl AdapterFactory for CliAdapterFactory {
             Ecosystem::Cargo => Box::new(opentf_release_adapters::cargo::CargoAdapter::new(
                 self.root.clone(),
             )),
+            Ecosystem::Generic => {
+                Box::new(GenericAdapter::new(self.root.clone(), self.generic.clone()))
+            }
         }
     }
+}
+
+/// Translate the generic `[[package]]` entries of a config into adapter inputs.
+fn generic_pkgs(config: &ReleaseConfig) -> Vec<GenericPkg> {
+    config
+        .packages
+        .iter()
+        .filter(|p| p.adapter == Ecosystem::Generic)
+        .filter_map(|p| {
+            p.manifest.as_ref().map(|manifest| GenericPkg {
+                name: p.name.clone(),
+                manifest: manifest.into(),
+                version_field: p
+                    .version_field
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_VERSION_FIELD.to_string()),
+                publish: p.publish.clone(),
+            })
+        })
+        .collect()
 }
 
 /// Curated-changelog, manual-bump release CLI for polyglot monorepos.
@@ -75,11 +101,17 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let root = cli.root.unwrap_or_else(|| PathBuf::from("."));
-    let factory = CliAdapterFactory { root: root.clone() };
 
     match cli.command {
-        // `init` is the one command that doesn't read the config — it writes it.
-        Command::Init { force } => init::run(&factory, &root, &init::InitOptions { force }),
+        // `init` is the one command that doesn't read the config — it writes it. The generic
+        // adapter is never discovered here (its packages are entered interactively).
+        Command::Init { force } => {
+            let factory = CliAdapterFactory {
+                root: root.clone(),
+                generic: Vec::new(),
+            };
+            init::run(&factory, &root, &init::InitOptions { force })
+        }
 
         // Every other command reads `release.toml` and acts on each enabled ecosystem.
         Command::Version {
@@ -87,6 +119,10 @@ fn main() -> Result<()> {
             first_release,
         } => {
             let config = ReleaseConfig::load(&root)?;
+            let factory = CliAdapterFactory {
+                root: root.clone(),
+                generic: generic_pkgs(&config),
+            };
             let opts = version::VersionOptions {
                 dry_run,
                 first_release,
@@ -103,6 +139,10 @@ fn main() -> Result<()> {
             dry_run,
         } => {
             let config = ReleaseConfig::load(&root)?;
+            let factory = CliAdapterFactory {
+                root: root.clone(),
+                generic: generic_pkgs(&config),
+            };
             // build-only packages ship via the GitHub Release the workflow creates, never a
             // registry — so `publish` skips them.
             let skip = config.build_only_names();

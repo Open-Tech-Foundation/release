@@ -2,8 +2,9 @@
 
 An **adapter** is the ecosystem-specific backend behind which *all* registry and manifest
 knowledge lives. The [core](../architecture.md) never reads a manifest directly; it only calls
-adapter methods. Two adapters are implemented — [npm](./npm.md) and [cargo](./cargo.md);
-PyPI and others remain [deferred](../roadmap.md). Which adapters are active comes from
+adapter methods. Three adapters are implemented — [npm](./npm.md), [cargo](./cargo.md), and the
+config-driven [generic](./generic.md) (bring-your-own-commands, e.g. JSR); PyPI and others remain
+[deferred](../roadmap.md). Which adapters are active comes from
 [`release.toml`](../configuration.md) (there is no `--adapter` flag); the CLI builds one adapter
 per enabled ecosystem.
 

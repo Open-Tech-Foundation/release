@@ -8,7 +8,7 @@ live here. The file is plain, hand-editable TOML; parsed by `crates/core/src/con
 ## Schema
 
 ```toml
-# Ecosystems enabled for this repo (multi). Registry names, not Rust identifiers.
+# Ecosystems enabled for this repo (multi): "npm", "crates.io", "generic".
 adapters = ["npm", "crates.io"]
 
 # Zero or more packages that need a build step before publish/release.
@@ -34,15 +34,31 @@ artifacts = "dist/**"
 
 | Key | Meaning |
 | --- | --- |
-| `adapters` | Enabled ecosystems: `"npm"`, `"crates.io"`. Drives which publish/release jobs `init` generates. |
+| `adapters` | Enabled ecosystems: `"npm"`, `"crates.io"`, `"generic"`. Drives which publish/release jobs `init` generates. |
 | `[[package]]` | A package with an explicit build step. |
 | `name` | The package name as discovered by its adapter. |
-| `adapter` | The owning ecosystem (`"npm"` / `"crates.io"`). |
-| `mode` | `"publish"` → build then push to the registry. `"build-only"` → build, then attach artifacts to a GitHub Release; **never** pushed to a registry. |
+| `adapter` | The owning ecosystem (`"npm"` / `"crates.io"` / `"generic"`). |
+| `mode` | `"publish"` → build then push to the registry. `"build-only"` → build, then attach artifacts to a GitHub Release; **never** pushed to a registry. (`generic` is always `build-only` — it has no registry.) |
 | `matrix` | `true` builds across `targets` (multiple platforms); `false` is a single runner. |
 | `targets` | Cross-compile triples (only when `matrix = true`). |
 | `command` | The build command CI runs. |
 | `artifacts` | A glob of artifacts to stage for publish / attach to the release. |
+
+## The `generic` adapter
+
+For an ecosystem the tool doesn't natively support (e.g. Deno's JSR), enable `"generic"` and
+describe the package yourself. The version lives in a **manifest you name** (`manifest` +
+`version_field`, default `version`) — that's the git-tag source, bumped in place. A `publish`
+command (e.g. `npx jsr publish`) is **optional**: set it for `publish` mode, omit it for
+build-only. `init` asks for these (or edit `release.toml` directly). The generic-only fields are:
+
+| Key | Meaning |
+| --- | --- |
+| `manifest` | File holding the version (e.g. `deno.json`). Required for a generic package. |
+| `version_field` | The version key inside `manifest` (default `version`). |
+| `publish` | Optional shell command that publishes to the registry. Omit ⇒ build-only. |
+
+See [adapters/generic.md](./adapters/generic.md).
 
 ## How the commands use it
 

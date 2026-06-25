@@ -1,9 +1,9 @@
 //! Interactive prompts for the `version` command. Behind a trait so the flow can be driven
-//! by a scripted fake in tests.
+//! by a scripted fake in tests. The real impl uses [`inquire`] for arrow-key selection,
+//! spacebar multi-select, and confirm prompts.
 
-use std::io::{self, Write};
-
-use anyhow::{anyhow, Result};
+use anyhow::Result;
+use inquire::{Confirm, MultiSelect, Select};
 
 use crate::adapter::{Bump, Pkg};
 
@@ -17,55 +17,35 @@ pub trait Prompt {
     fn confirm(&self, summary: &str) -> Result<bool>;
 }
 
-/// The real terminal prompt.
+/// The real terminal prompt (arrow keys + spacebar via `inquire`).
 pub struct StdinPrompt;
-
-fn read_line(prompt: &str) -> Result<String> {
-    print!("{prompt}");
-    io::stdout().flush()?;
-    let mut line = String::new();
-    io::stdin().read_line(&mut line)?;
-    Ok(line.trim().to_string())
-}
 
 impl Prompt for StdinPrompt {
     fn select_packages(&self, pending: &[&Pkg]) -> Result<Vec<String>> {
-        println!("Packages with [Unreleased] notes:");
-        for (i, p) in pending.iter().enumerate() {
-            println!("  {}) {} ({})", i + 1, p.name, p.version);
-        }
-        let line = read_line("Select to release (e.g. 1,3 or 'all'): ")?;
-        if line.eq_ignore_ascii_case("all") {
-            return Ok(pending.iter().map(|p| p.name.clone()).collect());
-        }
-        let mut selected = Vec::new();
-        for token in line.split([',', ' ', '\t']).filter(|t| !t.is_empty()) {
-            let idx: usize = token
-                .parse()
-                .map_err(|_| anyhow!("invalid selection: {token}"))?;
-            let pkg = pending
-                .get(idx.wrapping_sub(1))
-                .ok_or_else(|| anyhow!("selection out of range: {idx}"))?;
-            selected.push(pkg.name.clone());
-        }
-        Ok(selected)
+        let labels: Vec<String> = pending
+            .iter()
+            .map(|p| format!("{} ({})", p.name, p.version))
+            .collect();
+        let chosen = MultiSelect::new("Select packages to release:", labels)
+            .with_help_message("↑↓ move · space toggle · enter confirm")
+            .raw_prompt()?;
+        Ok(chosen
+            .iter()
+            .map(|o| pending[o.index].name.clone())
+            .collect())
     }
 
     fn choose_bump(&self, pkg_name: &str) -> Result<Bump> {
-        loop {
-            let line = read_line(&format!("Bump for {pkg_name} [major/minor/patch]: "))?;
-            match line.to_ascii_lowercase().as_str() {
-                "major" | "maj" => return Ok(Bump::Major),
-                "minor" | "min" => return Ok(Bump::Minor),
-                "patch" | "pat" => return Ok(Bump::Patch),
-                _ => println!("please type major, minor, or patch"),
-            }
-        }
+        let choice = Select::new(
+            &format!("Bump for {pkg_name}:"),
+            vec![Bump::Major, Bump::Minor, Bump::Patch],
+        )
+        .prompt()?;
+        Ok(choice)
     }
 
     fn confirm(&self, summary: &str) -> Result<bool> {
         print!("{summary}");
-        let line = read_line("Proceed? (y/N): ")?;
-        Ok(matches!(line.to_ascii_lowercase().as_str(), "y" | "yes"))
+        Ok(Confirm::new("Proceed?").with_default(false).prompt()?)
     }
 }

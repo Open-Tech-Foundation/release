@@ -33,27 +33,36 @@ use serde::{Deserialize, Serialize};
 /// The committed config file name, at the workspace root.
 pub const CONFIG_FILE: &str = "release.toml";
 
-/// An enabled ecosystem. Serialized by its registry name (`npm`, `crates.io`).
+/// An enabled ecosystem. Serialized by its registry name (`npm`, `crates.io`) or `generic`.
+///
+/// `Generic` is registry-less: it versions a project via a `VERSION` file and ships a binary,
+/// rather than publishing a package. See [`opentf_release_adapters::generic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ecosystem {
     #[serde(rename = "npm")]
     Npm,
     #[serde(rename = "crates.io")]
     Cargo,
+    #[serde(rename = "generic")]
+    Generic,
 }
 
 impl Ecosystem {
     /// All ecosystems offered by `init`, in menu order.
-    pub const ALL: [Ecosystem; 2] = [Ecosystem::Npm, Ecosystem::Cargo];
+    pub const ALL: [Ecosystem; 3] = [Ecosystem::Npm, Ecosystem::Cargo, Ecosystem::Generic];
 
     /// The human/registry label shown in prompts and written to the file.
     pub fn label(self) -> &'static str {
         match self {
             Ecosystem::Npm => "npm",
             Ecosystem::Cargo => "crates.io",
+            Ecosystem::Generic => "generic (any registry, via your own commands)",
         }
     }
 }
+
+/// The default version field/key for a generic manifest.
+pub const DEFAULT_VERSION_FIELD: &str = "version";
 
 /// What `publish`/CI does with a package after its build step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,7 +87,7 @@ impl Mode {
 /// A package that needs a build step before it is published or released.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageEntry {
-    /// The package name (as the adapter discovers it).
+    /// The package name (as the adapter discovers it, or the generic project name).
     pub name: String,
     /// Which enabled ecosystem this package belongs to.
     pub adapter: Ecosystem,
@@ -90,10 +99,25 @@ pub struct PackageEntry {
     /// Cross-compile target triples (only when `matrix`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<String>,
-    /// The build command run in CI.
+    /// The build command run in CI (may be empty for a publish-only generic package).
+    #[serde(default)]
     pub command: String,
-    /// A glob of artifacts to stage for publish / attach to the release.
+    /// A glob of artifacts to stage for publish / attach to the release (may be empty).
+    #[serde(default)]
     pub artifacts: String,
+
+    // --- generic-adapter fields (ignored by npm/cargo) ---
+    /// `generic` only: the manifest file holding the version (e.g. `deno.json`). Required for a
+    /// generic package — it is the source of the version, and thus the git tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<String>,
+    /// `generic` only: the version field/key inside `manifest` (defaults to `version`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_field: Option<String>,
+    /// `generic` only: the shell command that publishes to the (unsupported) registry, e.g.
+    /// `npx jsr publish`. Omitted ⇒ the package is build-only (artifacts -> GitHub Release).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish: Option<String>,
 }
 
 /// The whole `release.toml`.
@@ -167,6 +191,9 @@ mod tests {
                     targets: vec!["x86_64-unknown-linux-gnu".into()],
                     command: "cargo build --release -p otfw_cli".into(),
                     artifacts: "target/*/release/otfwc*".into(),
+                    manifest: None,
+                    version_field: None,
+                    publish: None,
                 },
                 PackageEntry {
                     name: "docs-site".into(),
@@ -176,6 +203,9 @@ mod tests {
                     targets: vec![],
                     command: "npm run build".into(),
                     artifacts: "dist/**".into(),
+                    manifest: None,
+                    version_field: None,
+                    publish: None,
                 },
             ],
         };
