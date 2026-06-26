@@ -11,10 +11,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
-use opentf_release_adapters::npm::{CommandOutput, CommandRunner, NpmAdapter};
-use opentf_release_core::forge::Forge;
-use opentf_release_core::git::GitOps;
-use opentf_release_core::publish::{orchestrate, PublishOptions};
+use otf_release_adapters::npm::{CommandOutput, CommandRunner, NpmAdapter};
+use otf_release_core::forge::Forge;
+use otf_release_core::git::GitOps;
+use otf_release_core::publish::{orchestrate, PublishOptions};
 
 /// A command runner that models the npm registry across runs.
 #[derive(Clone)]

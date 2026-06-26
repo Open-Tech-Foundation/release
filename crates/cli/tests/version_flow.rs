@@ -10,12 +10,12 @@ use std::process::Command;
 
 use anyhow::Result;
 
-use opentf_release_adapters::npm::{CommandOutput, CommandRunner, NpmAdapter};
-use opentf_release_core::adapter::{Bump, Pkg};
-use opentf_release_core::forge::Forge;
-use opentf_release_core::git::GitRepo;
-use opentf_release_core::prompt::Prompt;
-use opentf_release_core::version::{orchestrate, VersionOptions};
+use otf_release_adapters::npm::{CommandOutput, CommandRunner, NpmAdapter};
+use otf_release_core::adapter::{Bump, Pkg};
+use otf_release_core::forge::Forge;
+use otf_release_core::git::GitRepo;
+use otf_release_core::prompt::Prompt;
+use otf_release_core::version::{orchestrate, VersionOptions};
 
 /// Every `npm` invocation "succeeds" (the version flow only calls `update_lockfile`).
 struct OkRunner;

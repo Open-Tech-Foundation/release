@@ -13,13 +13,13 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
-use opentf_release_adapters::npm::{CommandOutput, CommandRunner, NpmAdapter};
-use opentf_release_core::adapter::{Bump, Pkg};
-use opentf_release_core::forge::Forge;
-use opentf_release_core::git::GitRepo;
-use opentf_release_core::prompt::Prompt;
-use opentf_release_core::publish::{self, PublishOptions};
-use opentf_release_core::version::{self, VersionOptions};
+use otf_release_adapters::npm::{CommandOutput, CommandRunner, NpmAdapter};
+use otf_release_core::adapter::{Bump, Pkg};
+use otf_release_core::forge::Forge;
+use otf_release_core::git::GitRepo;
+use otf_release_core::prompt::Prompt;
+use otf_release_core::publish::{self, PublishOptions};
+use otf_release_core::version::{self, VersionOptions};
 
 /// Models the npm registry: `view` reports published specs, `publish` records them, everything
 /// else (e.g. `install --package-lock-only`) just succeeds.

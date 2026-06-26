@@ -1,5 +1,5 @@
 [package]
-name = "opentf-release"
+name = "otf-release"
 description = "Curated-changelog, manual-bump release CLI for polyglot monorepos."
 version.workspace = true
 edition.workspace = true
@@ -10,7 +10,7 @@ authors.workspace = true
 keywords = ["release", "monorepo", "changelog", "publishing", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
-# The published crate is `opentf-release`; the binary on PATH is `otf-release`.
+# The published crate is `otf-release`; the binary on PATH is `otf-release`.
 [[bin]]
 name = "otf-release"
 path = "src/main.rs"
@@ -18,8 +18,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-opentf-release-core.workspace = true
-opentf-release-adapters.workspace = true
+otf-release-core.workspace = true
+otf-release-adapters.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

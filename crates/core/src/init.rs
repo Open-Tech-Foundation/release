@@ -14,17 +14,22 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use inquire::{Confirm, MultiSelect, Select, Text};
+use inquire::{MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{Ecosystem, Mode, PackageEntry, ReleaseConfig, DEFAULT_VERSION_FIELD};
 use crate::discover::{scan_generic_candidates, GenericCandidate};
 
 /// A sensible default cross-compile target set (each emitted with an `# edit me` marker).
-pub const DEFAULT_TARGETS: [&str; 3] = [
-    "x86_64-unknown-linux-gnu",
-    "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
+pub const DEFAULT_TARGETS: &[(&str, &str)] = &[
+    ("Linux x64", "x86_64-unknown-linux-gnu"),
+    ("Linux ARM64", "aarch64-unknown-linux-gnu"),
+    ("Linux x86 (32-bit)", "i686-unknown-linux-gnu"),
+    ("macOS ARM64", "aarch64-apple-darwin"),
+    ("macOS x64", "x86_64-apple-darwin"),
+    ("Windows x64", "x86_64-pc-windows-msvc"),
+    ("Windows ARM64", "aarch64-pc-windows-msvc"),
+    ("Windows x86 (32-bit)", "i686-pc-windows-msvc"),
 ];
 
 /// Map a target triple to a sensible default GitHub-hosted runner.
@@ -241,6 +246,8 @@ fn version_read_cmd(entry: Option<&PackageEntry>) -> String {
             let field = e.version_field.as_deref().unwrap_or("version");
             if manifest.ends_with(".json") {
                 format!("node -p \"require('./{manifest}').{field}\"")
+            } else if manifest.ends_with(".toml") {
+                format!("grep -m1 '^{field}' {manifest} | cut -d '\"' -f2")
             } else {
                 format!("cat {manifest}  # edit me: extract the {field} value")
             }
@@ -405,30 +412,98 @@ fn render_github_release(s: &mut String, needs: &[String], version_cmd: &str) {
 /// Prompt for a generic package's build/publish commands and assemble its [`PackageEntry`].
 /// `name`/`manifest`/`version_field` are already known (imported from the scan or hand-entered);
 /// a publish command makes it `publish` mode, otherwise build-only.
-fn configure_generic(name: &str, manifest: &str, version_field: &str) -> Result<PackageEntry> {
-    let command = Text::new(&format!("  {name} — build command (optional):"))
-        .with_default("")
-        .prompt()?;
-    let artifacts = Text::new(&format!("  {name} — artifacts to stage (optional):"))
-        .with_default("")
-        .prompt()?;
-    let publish = Text::new(&format!(
-        "  {name} — publish command (optional, e.g. npx jsr publish):"
-    ))
-    .with_default("")
-    .prompt()?;
-    let publish = (!publish.trim().is_empty()).then_some(publish);
-    let mode = if publish.is_some() {
-        Mode::Publish
-    } else {
-        Mode::BuildOnly
+fn configure_generic(
+    name: &str,
+    manifest: &str,
+    version_field: &str,
+    kind: Option<&str>,
+) -> Result<PackageEntry> {
+    let mode = match Select::new(
+        &format!("  {name} — mode:"),
+        vec![
+            "publish (to registry)",
+            "build-only (GitHub Release artifacts)",
+        ],
+    )
+    .raw_prompt()?
+    .index
+    {
+        1 => Mode::BuildOnly,
+        _ => Mode::Publish,
     };
+
+    let matrix = Select::new(
+        &format!("  {name} — build across a target matrix?"),
+        vec!["Yes", "No"],
+    )
+    .raw_prompt()?
+    .index == 0;
+    let targets = if matrix {
+        let defaults: Vec<usize> = DEFAULT_TARGETS
+            .iter()
+            .enumerate()
+            .filter(|(_, (label, _))| !label.contains("32-bit") && !label.contains("ARM"))
+            .map(|(i, _)| i)
+            .collect();
+        let labels: Vec<String> = DEFAULT_TARGETS.iter().map(|(label, triple)| format!("{} - {}", label, triple)).collect();
+        let selected = MultiSelect::new("  Target triples:", labels)
+            .with_default(&defaults)
+            .with_help_message(MULTI_HELP)
+            .raw_prompt()?;
+        selected.iter().map(|s| DEFAULT_TARGETS[s.index].1.to_string()).collect()
+    } else {
+        Vec::new()
+    };
+
+    let default_cmd = match (kind, matrix) {
+        (Some("Rust / Cargo"), true) => "rustup target add ${{ matrix.target }} && cargo build --release --target ${{ matrix.target }}",
+        (Some("Rust / Cargo"), false) => "cargo build --release",
+        (Some("Node / npm"), _) => "npm run build",
+        (Some("Deno / JSR"), _) => "deno task build",
+        (Some("Python / PyPI"), _) => "python -m build",
+        (Some("PHP / Packagist"), _) => "composer build",
+        (Some("Gleam / Hex"), _) => "gleam build",
+        (Some("Elixir / Hex"), _) => "mix build",
+        _ => "",
+    };
+    let command = Text::new(&format!("  {name} — build command (optional):"))
+        .with_default(default_cmd)
+        .prompt()?;
+        
+    let bin_name = if kind == Some("Rust / Cargo") {
+        let n = Text::new(&format!("  {name} — binary name:"))
+            .with_default(name)
+            .prompt()?;
+        Some(n)
+    } else {
+        None
+    };
+
+    let default_artifacts = match (kind, matrix) {
+        (Some("Rust / Cargo"), true) => format!("target/${{{{ matrix.target }}}}/release/{}", bin_name.as_deref().unwrap()),
+        (Some("Rust / Cargo"), false) => format!("target/release/{}", bin_name.as_deref().unwrap()),
+        (Some("Node / npm"), _) => "dist/*".to_string(),
+        _ => "".to_string(),
+    };
+    let artifacts = Text::new(&format!("  {name} — artifacts to stage (optional):"))
+        .with_default(&default_artifacts)
+        .prompt()?;
+
+    let publish = if mode == Mode::Publish {
+        let cmd = Text::new(&format!("  {name} — publish command (e.g. npx jsr publish):"))
+            .with_default("")
+            .prompt()?;
+        (!cmd.trim().is_empty()).then_some(cmd)
+    } else {
+        None
+    };
+
     Ok(PackageEntry {
         name: name.to_string(),
         adapter: Ecosystem::Generic,
         mode,
-        matrix: false,
-        targets: vec![],
+        matrix,
+        targets,
         command,
         artifacts,
         manifest: Some(manifest.to_string()),
@@ -488,23 +563,37 @@ impl InitPrompt for StdinInitPrompt {
             _ => Mode::Publish,
         };
 
-        let matrix = Confirm::new(&format!("{pkg_name} — build across a target matrix?"))
-            .with_default(false)
-            .prompt()?;
+        let matrix = Select::new(
+            &format!("{pkg_name} — build across a target matrix?"),
+            vec!["Yes", "No"],
+        )
+        .raw_prompt()?
+        .index == 0;
         let targets = if matrix {
-            let all: Vec<usize> = (0..DEFAULT_TARGETS.len()).collect();
-            MultiSelect::new("Target triples:", DEFAULT_TARGETS.to_vec())
-                .with_default(&all)
-                .with_help_message(MULTI_HELP)
-                .prompt()?
+            let defaults: Vec<usize> = DEFAULT_TARGETS
                 .iter()
-                .map(|s| s.to_string())
-                .collect()
+                .enumerate()
+                .filter(|(_, (label, _))| !label.contains("32-bit") && !label.contains("ARM"))
+                .map(|(i, _)| i)
+                .collect();
+            let labels: Vec<String> = DEFAULT_TARGETS.iter().map(|(label, triple)| format!("{} - {}", label, triple)).collect();
+            let selected = MultiSelect::new("Target triples:", labels)
+                .with_default(&defaults)
+                .with_help_message(MULTI_HELP)
+                .raw_prompt()?;
+            selected.iter().map(|s| DEFAULT_TARGETS[s.index].1.to_string()).collect()
         } else {
             Vec::new()
         };
 
-        let command = Text::new(&format!("{pkg_name} — build command:")).prompt()?;
+        let default_cmd = match adapter {
+            Ecosystem::Cargo => "cargo build --release",
+            Ecosystem::Npm => "npm run build",
+            Ecosystem::Generic => "",
+        };
+        let command = Text::new(&format!("{pkg_name} — build command:"))
+            .with_default(default_cmd)
+            .prompt()?;
         let artifacts = Text::new(&format!("{pkg_name} — artifacts to stage:")).prompt()?;
 
         Ok(PackageEntry {
@@ -532,7 +621,7 @@ impl InitPrompt for StdinInitPrompt {
                 .raw_prompt()?;
             for opt in chosen {
                 let c = &found[opt.index];
-                out.push(configure_generic(&c.name, &c.manifest, &c.version_field)?);
+                out.push(configure_generic(&c.name, &c.manifest, &c.version_field, Some(c.kind))?);
             }
         }
 
@@ -544,7 +633,7 @@ impl InitPrompt for StdinInitPrompt {
             } else {
                 "Add another package by hand?"
             };
-            if !Confirm::new(question).with_default(first).prompt()? {
+            if Select::new(question, vec!["Yes", "No"]).raw_prompt()?.index == 1 {
                 break;
             }
             let name = Text::new("  name:").prompt()?;
@@ -553,16 +642,19 @@ impl InitPrompt for StdinInitPrompt {
             let version_field = Text::new("  version field:")
                 .with_default(DEFAULT_VERSION_FIELD)
                 .prompt()?;
-            out.push(configure_generic(&name, &manifest, &version_field)?);
+            out.push(configure_generic(&name, &manifest, &version_field, None)?);
         }
         Ok(out)
     }
 
     fn confirm_overwrite(&self, path: &Path) -> Result<bool> {
         Ok(
-            Confirm::new(&format!("{} exists. Overwrite?", path.display()))
-                .with_default(false)
-                .prompt()?,
+            Select::new(
+                &format!("{} exists. Overwrite?", path.display()),
+                vec!["No", "Yes"],
+            )
+            .raw_prompt()?
+            .index == 1,
         )
     }
 }

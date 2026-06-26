@@ -9,7 +9,13 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ## [Unreleased]
 
 ### Added
+- **init** — The `generic` adapter wizard is now much smarter: it explicitly asks for the `mode` using a Select menu, prompts for the binary name for Rust projects, provides matrix-aware default commands (`rustup target add ...`), and automatically extracts versions from `.toml` files using `grep`.
+- **init** — All `y/n` typing prompts have been replaced with arrow-key `Select` components for a smoother, typing-free UX.
 
+### Changed
+- **project** — Renamed the workspace from `opentf-release` to `otf-release` across all `Cargo.toml` files, updated authors to "OTF Contributors", and updated the GitHub repository URL.
+
+### Added
 - **npm adapter** — workspace discovery, format-preserving `package.json` edits (version &
   dependency ranges), `workspace:` link resolution, lockfile refresh, and `is_published` /
   `publish` behind a testable command runner. Keeps the npm gotchas: `--access public`,

@@ -1,6 +1,6 @@
 [package]
-name = "opentf-release-adapters"
-description = "Registry adapters (npm in v1) for the OpenTF release CLI."
+name = "otf-release-adapters"
+description = "Registry adapters (npm in v1) for the OTF release CLI."
 publish = false  # internal library; we ship only the `otf-release` binary via GitHub Releases
 version.workspace = true
 edition.workspace = true
@@ -11,7 +11,7 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-opentf-release-core.workspace = true
+otf-release-core.workspace = true
 serde_json = "1"
 toml_edit = "0.22"
 glob = "0.3"

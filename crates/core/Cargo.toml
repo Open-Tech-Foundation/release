@@ -1,6 +1,6 @@
 [package]
-name = "opentf-release-core"
-description = "Ecosystem-agnostic release orchestration for the OpenTF release CLI."
+name = "otf-release-core"
+description = "Ecosystem-agnostic release orchestration for the OTF release CLI."
 publish = false  # internal library; we ship only the `otf-release` binary via GitHub Releases
 version.workspace = true
 edition.workspace = true

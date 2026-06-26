@@ -1,6 +1,6 @@
 //! # opentf-release-adapters
 //!
-//! Registry/ecosystem adapters implementing [`opentf_release_core::adapter::Adapter`].
+//! Registry/ecosystem adapters implementing [`otf_release_core::adapter::Adapter`].
 //!
 //! - [`npm::NpmAdapter`] — the npm/Node ecosystem.
 //! - [`cargo::CargoAdapter`] — the Rust/crates.io ecosystem (initial implementation).

@@ -9,11 +9,11 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use opentf_release_adapters::generic::{GenericAdapter, GenericPkg};
-use opentf_release_core::adapter::Adapter;
-use opentf_release_core::config::{Ecosystem, ReleaseConfig, DEFAULT_VERSION_FIELD};
-use opentf_release_core::init::AdapterFactory;
-use opentf_release_core::{init, publish, version};
+use otf_release_adapters::generic::{GenericAdapter, GenericPkg};
+use otf_release_core::adapter::Adapter;
+use otf_release_core::config::{Ecosystem, ReleaseConfig, DEFAULT_VERSION_FIELD};
+use otf_release_core::init::AdapterFactory;
+use otf_release_core::{init, publish, version};
 
 /// Builds the concrete ecosystem adapters from `opentf-release-adapters`. The generic adapter is
 /// configured from `release.toml`'s generic `[[package]]` entries.
@@ -25,10 +25,10 @@ struct CliAdapterFactory {
 impl AdapterFactory for CliAdapterFactory {
     fn make(&self, ecosystem: Ecosystem) -> Box<dyn Adapter> {
         match ecosystem {
-            Ecosystem::Npm => Box::new(opentf_release_adapters::npm::NpmAdapter::new(
+            Ecosystem::Npm => Box::new(otf_release_adapters::npm::NpmAdapter::new(
                 self.root.clone(),
             )),
-            Ecosystem::Cargo => Box::new(opentf_release_adapters::cargo::CargoAdapter::new(
+            Ecosystem::Cargo => Box::new(otf_release_adapters::cargo::CargoAdapter::new(
                 self.root.clone(),
             )),
             Ecosystem::Generic => {

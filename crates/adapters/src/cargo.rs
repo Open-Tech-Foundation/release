@@ -21,7 +21,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use glob::glob;
 use toml_edit::{value, DocumentMut, Item};
 
-use opentf_release_core::adapter::{Adapter, Bump, DepKind, InternalDep, Pkg};
+use otf_release_core::adapter::{Adapter, Bump, DepKind, InternalDep, Pkg};
 
 pub use crate::command::{CommandOutput, CommandRunner, SystemRunner};
 

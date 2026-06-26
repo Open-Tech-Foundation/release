@@ -37,7 +37,7 @@ pub const CONFIG_FILE: &str = "release.toml";
 ///
 /// `Generic` is for registries the tool doesn't natively support (e.g. Deno's JSR): it versions a
 /// project via a named manifest field and publishes through a user-supplied command. See
-/// [`opentf_release_adapters::generic`].
+/// [`otf_release_adapters::generic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ecosystem {
     #[serde(rename = "npm")]

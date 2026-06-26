@@ -17,7 +17,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-use opentf_release_core::adapter::{Adapter, Bump, DepKind, Pkg};
+use otf_release_core::adapter::{Adapter, Bump, DepKind, Pkg};
 
 /// One generic project, as configured in `release.toml`.
 #[derive(Debug, Clone)]

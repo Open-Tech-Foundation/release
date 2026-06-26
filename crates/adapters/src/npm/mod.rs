@@ -22,9 +22,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use glob::glob;
 use serde_json::Value;
 
-use opentf_release_core::adapter::{Adapter, Bump, DepKind, InternalDep, Pkg};
+use otf_release_core::adapter::{Adapter, Bump, DepKind, InternalDep, Pkg};
 
-// Re-exported so existing `opentf_release_adapters::npm::{CommandRunner, ...}` paths still work.
+// Re-exported so existing `otf_release_adapters::npm::{CommandRunner, ...}` paths still work.
 pub use crate::command::{CommandOutput, CommandRunner, SystemRunner};
 
 use manifest::{Manifest, DEP_SECTIONS};
