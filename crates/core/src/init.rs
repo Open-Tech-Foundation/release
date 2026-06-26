@@ -18,6 +18,7 @@ use inquire::{Confirm, MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{Ecosystem, Mode, PackageEntry, ReleaseConfig, DEFAULT_VERSION_FIELD};
+use crate::discover::{scan_generic_candidates, GenericCandidate};
 
 /// A sensible default cross-compile target set (each emitted with an `# edit me` marker).
 pub const DEFAULT_TARGETS: [&str; 3] = [
@@ -58,9 +59,10 @@ pub trait InitPrompt {
     fn select_build_packages(&self, publishable: &[&Pkg]) -> Result<Vec<String>>;
     /// The full build config for one selected package (`enabled` is the chosen adapter set).
     fn build_entry(&self, pkg_name: &str, enabled: &[Ecosystem]) -> Result<PackageEntry>;
-    /// Enter generic packages (manifest + optional build/publish). Asked only when the generic
-    /// adapter is enabled, since there is nothing to auto-discover.
-    fn generic_packages(&self) -> Result<Vec<PackageEntry>>;
+    /// Choose/enter generic packages. `found` is what the repo scan inferred (manifests with a
+    /// version); the user imports from those and/or adds more by hand. Asked only when the generic
+    /// adapter is enabled.
+    fn generic_packages(&self, found: &[GenericCandidate]) -> Result<Vec<PackageEntry>>;
     /// Confirm overwriting an existing file (only asked when not `--force`).
     fn confirm_overwrite(&self, path: &Path) -> Result<bool>;
 }
@@ -101,9 +103,11 @@ pub fn orchestrate(
         packages.push(prompt.build_entry(name, &enabled)?);
     }
 
-    // Generic packages can't be discovered — ask the user to enter them.
+    // Generic packages have no native adapter discovery — scan the repo for known manifests and
+    // let the user import from what we infer (plus add any by hand).
     if enabled.contains(&Ecosystem::Generic) {
-        packages.extend(prompt.generic_packages()?);
+        let found = scan_generic_candidates(root);
+        packages.extend(prompt.generic_packages(&found)?);
     }
 
     let config = ReleaseConfig {
@@ -398,6 +402,41 @@ fn render_github_release(s: &mut String, needs: &[String], version_cmd: &str) {
     }
 }
 
+/// Prompt for a generic package's build/publish commands and assemble its [`PackageEntry`].
+/// `name`/`manifest`/`version_field` are already known (imported from the scan or hand-entered);
+/// a publish command makes it `publish` mode, otherwise build-only.
+fn configure_generic(name: &str, manifest: &str, version_field: &str) -> Result<PackageEntry> {
+    let command = Text::new(&format!("  {name} — build command (optional):"))
+        .with_default("")
+        .prompt()?;
+    let artifacts = Text::new(&format!("  {name} — artifacts to stage (optional):"))
+        .with_default("")
+        .prompt()?;
+    let publish = Text::new(&format!(
+        "  {name} — publish command (optional, e.g. npx jsr publish):"
+    ))
+    .with_default("")
+    .prompt()?;
+    let publish = (!publish.trim().is_empty()).then_some(publish);
+    let mode = if publish.is_some() {
+        Mode::Publish
+    } else {
+        Mode::BuildOnly
+    };
+    Ok(PackageEntry {
+        name: name.to_string(),
+        adapter: Ecosystem::Generic,
+        mode,
+        matrix: false,
+        targets: vec![],
+        command,
+        artifacts,
+        manifest: Some(manifest.to_string()),
+        version_field: Some(version_field.to_string()),
+        publish,
+    })
+}
+
 /// The real terminal prompt for `init` — arrow-key select, spacebar multi-select, confirm.
 pub struct StdinInitPrompt;
 
@@ -482,13 +521,30 @@ impl InitPrompt for StdinInitPrompt {
         })
     }
 
-    fn generic_packages(&self) -> Result<Vec<PackageEntry>> {
+    fn generic_packages(&self, found: &[GenericCandidate]) -> Result<Vec<PackageEntry>> {
         let mut out = Vec::new();
+
+        // 1. Import from what the repo scan inferred.
+        if !found.is_empty() {
+            let labels: Vec<String> = found.iter().map(GenericCandidate::label).collect();
+            let chosen = MultiSelect::new("Detected packages to import:", labels)
+                .with_help_message(MULTI_HELP)
+                .raw_prompt()?;
+            for opt in chosen {
+                let c = &found[opt.index];
+                out.push(configure_generic(&c.name, &c.manifest, &c.version_field)?);
+            }
+        }
+
+        // 2. Add any the scan missed (or all of them, if nothing was detected) by hand.
         loop {
-            if !Confirm::new("Add a generic package?")
-                .with_default(out.is_empty())
-                .prompt()?
-            {
+            let first = out.is_empty() && found.is_empty();
+            let question = if found.is_empty() {
+                "Add a generic package?"
+            } else {
+                "Add another package by hand?"
+            };
+            if !Confirm::new(question).with_default(first).prompt()? {
                 break;
             }
             let name = Text::new("  name:").prompt()?;
@@ -497,34 +553,7 @@ impl InitPrompt for StdinInitPrompt {
             let version_field = Text::new("  version field:")
                 .with_default(DEFAULT_VERSION_FIELD)
                 .prompt()?;
-            let command = Text::new("  build command (optional):")
-                .with_default("")
-                .prompt()?;
-            let artifacts = Text::new("  artifacts to stage (optional):")
-                .with_default("")
-                .prompt()?;
-            let publish = Text::new("  publish command (optional, e.g. npx jsr publish):")
-                .with_default("")
-                .prompt()?;
-            let publish = (!publish.trim().is_empty()).then_some(publish);
-            let mode = if publish.is_some() {
-                Mode::Publish
-            } else {
-                Mode::BuildOnly
-            };
-
-            out.push(PackageEntry {
-                name,
-                adapter: Ecosystem::Generic,
-                mode,
-                matrix: false,
-                targets: vec![],
-                command,
-                artifacts,
-                manifest: Some(manifest),
-                version_field: Some(version_field),
-                publish,
-            });
+            out.push(configure_generic(&name, &manifest, &version_field)?);
         }
         Ok(out)
     }
@@ -615,7 +644,7 @@ mod tests {
                 .cloned()
                 .unwrap())
         }
-        fn generic_packages(&self) -> Result<Vec<PackageEntry>> {
+        fn generic_packages(&self, _: &[GenericCandidate]) -> Result<Vec<PackageEntry>> {
             Ok(self.generic.clone())
         }
         fn confirm_overwrite(&self, _: &Path) -> Result<bool> {

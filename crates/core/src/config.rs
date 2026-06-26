@@ -35,8 +35,9 @@ pub const CONFIG_FILE: &str = "release.toml";
 
 /// An enabled ecosystem. Serialized by its registry name (`npm`, `crates.io`) or `generic`.
 ///
-/// `Generic` is registry-less: it versions a project via a `VERSION` file and ships a binary,
-/// rather than publishing a package. See [`opentf_release_adapters::generic`].
+/// `Generic` is for registries the tool doesn't natively support (e.g. Deno's JSR): it versions a
+/// project via a named manifest field and publishes through a user-supplied command. See
+/// [`opentf_release_adapters::generic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ecosystem {
     #[serde(rename = "npm")]

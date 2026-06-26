@@ -15,17 +15,24 @@ otf-release init [--force]
 
 ## What it does, step by step
 
-1. **Choose adapters** (multi-select): `1) npm  2) crates.io`. The enabled set is recorded in
-   `release.toml`; a polyglot repo can enable both.
-2. **List publishable packages** (discovered across the enabled adapters), then **multi-select**:
-   *"Which need a build step before publish?"*
+1. **Choose adapters** (spacebar multi-select): `npm`, `crates.io`, `generic`. The enabled set is
+   recorded in `release.toml`; a polyglot repo can enable several.
+2. **List publishable packages** (discovered across the enabled npm/cargo adapters), then
+   **multi-select**: *"Which need a build step before publish?"*
 3. For each selected package, prompt for:
    - **mode** — `publish` (build, then push to the ecosystem's registry) or **`build-only`**
      (build, then attach the artifacts to a **GitHub Release** — no registry push);
    - **adapter** (only asked if more than one is enabled);
    - **build matrix?** — if yes, the **target triples** (a default set, each marked `# edit me`);
    - the **build command** and the **artifacts** glob to stage.
-4. **Persist `release.toml`** and **generate `release.yml`** from it. Both writes are guarded:
+4. **For the generic adapter** (if enabled): `init` **scans the repo** for recognized manifests that
+   carry a version and presents them in a multi-select to **import** — so you don't hand-type
+   manifest paths (single project or monorepo). Generic is the *custom-way* path, so the scan spans
+   **all** project types (`Cargo.toml`, `package.json`, `deno.json`, `pyproject.toml`, …), not just
+   ones lacking a native adapter. Per imported package you supply only the optional build/artifacts
+   and publish command; you can also **add packages by hand**. See
+   [adapters/generic.md](../adapters/generic.md).
+5. **Persist `release.toml`** and **generate `release.yml`** from it. Both writes are guarded:
    re-running warns before overwrite (`--force` to replace).
 
 ## `release.toml`

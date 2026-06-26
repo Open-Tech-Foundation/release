@@ -22,6 +22,7 @@ pub mod adapter;
 pub mod changelog;
 pub mod config;
 pub mod date;
+pub mod discover;
 pub mod forge;
 pub mod git;
 pub mod graph;

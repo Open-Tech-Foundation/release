@@ -36,9 +36,15 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 - **`generic` adapter** — a bring-your-own-commands ecosystem for registries the tool doesn't
   natively support (e.g. Deno's JSR). The version is read/bumped from a manifest you name
   (`manifest` + `version_field`, the git-tag source); an optional `publish` command (e.g.
-  `npx jsr publish`) makes it `publish` mode, otherwise it's build-only. `init` collects these
-  interactively. The generated workflow injects no toolchain for generic build steps and marks
-  registry toolchain/secrets `# edit me`.
+  `npx jsr publish`) makes it `publish` mode, otherwise it's build-only. The generated workflow
+  injects no toolchain for generic build steps and marks registry toolchain/secrets `# edit me`.
+- **Generic package auto-discovery** — instead of hand-typing a manifest path, `init` scans the
+  repo for recognized manifests carrying a version and presents them in a multi-select to import,
+  inferring each package's name + version (single project or monorepo). Generic is the *custom-way*
+  path, so the scan spans **all** project types — `Cargo.toml`, `package.json`, `deno.json`/
+  `jsr.json`, `pyproject.toml`, `composer.json`, `gleam.toml`, `mix.exs` — not just ecosystems
+  without a native adapter (cargo-workspace-inherited versions, build output, and hidden dirs are
+  skipped). You can still add packages by hand. See `crates/core/src/discover.rs`.
 - **Single unified `publish` job** — the generated workflow now emits one `publish` job (running
   `otf-release publish` once across all enabled adapters) instead of per-registry jobs, setting up
   only the toolchains the active registries need.

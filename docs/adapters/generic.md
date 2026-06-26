@@ -1,9 +1,11 @@
 # generic adapter
 
-The **bring-your-own-commands** adapter, for an ecosystem the tool doesn't natively support yet —
-e.g. Deno's **JSR**. Instead of hardcoded registry knowledge, you describe the package in
-[`release.toml`](../configuration.md) and the tool still gives you versioning, a curated
-changelog, a release PR, and a publish/release workflow scaffold. Implemented in
+The **bring-your-own-commands** adapter — for handling a project *your own way* instead of an
+adapter's predefined behavior. That's orthogonal to project type: reach for it when the cargo/npm
+adapters' built-in flow doesn't fit, or for an ecosystem with no native adapter at all (e.g. Deno's
+**JSR**). Instead of hardcoded registry knowledge, you describe the package in
+[`release.toml`](../configuration.md) and the tool still gives you versioning, a curated changelog,
+a release PR, and a publish/release workflow scaffold. Implemented in
 `crates/adapters/src/generic.rs`.
 
 ## How it works
@@ -35,8 +37,28 @@ artifacts = "dist/*"        # optional
 publish = "npx jsr publish" # the manual publish command
 ```
 
-`init` asks for these interactively (name, manifest, version field, optional build command /
-artifacts, optional publish command), or you can edit `release.toml` directly.
+`init` doesn't make you type the manifest path. When the generic adapter is enabled it **scans the
+repo** for recognized manifests that carry a version and infers each package's name + current
+version (single project or a monorepo of many), then presents them in a multi-select to **import** —
+for each you supply only the optional build/artifacts and publish command. Because generic is about
+handling a project *your own way* (not a specific registry), the scan spans **all** project types,
+not just unsupported ones:
+
+| Manifest | Detected as |
+| --- | --- |
+| `Cargo.toml` | Rust / Cargo |
+| `package.json` | Node / npm |
+| `deno.json` · `deno.jsonc` · `jsr.json` | Deno / JSR |
+| `pyproject.toml` | Python / PyPI |
+| `composer.json` | PHP / Packagist |
+| `gleam.toml` | Gleam / Hex |
+| `mix.exs` | Elixir / Hex |
+
+A `Cargo.toml`/`package.json` shows up here too — pick the generic adapter when you want custom
+commands for it instead of the cargo/npm adapter's built-in flow. (A crate that inherits
+`version.workspace = true` has no literal version and is skipped.) You can still **add packages by
+hand** for anything the scan misses, or edit `release.toml` directly. Scanning skips `node_modules`,
+`target`, hidden dirs, and other build output. Implemented in `crates/core/src/discover.rs`.
 
 ## In the generated workflow
 
