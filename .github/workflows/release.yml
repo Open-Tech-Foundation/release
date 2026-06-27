@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
       - id: check
         run: |
-          version="$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2 | tr -d '"')"  # edit me: where the version lives
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"  # edit me: where the version lives
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [ "$version" = "0.0.0" ]; then
             echo "Version is 0.0.0 (unreleased); skipping build."

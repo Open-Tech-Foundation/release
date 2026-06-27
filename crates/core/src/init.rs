@@ -273,6 +273,8 @@ fn version_read_cmd(entry: Option<&PackageEntry>) -> String {
             let field = e.version_field.as_deref().unwrap_or("version");
             if manifest.ends_with(".json") {
                 format!("node -p \"require('./{manifest}').{field}\"")
+            } else if manifest == "Cargo.toml" && field == "version" {
+                "cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'".to_string()
             } else if manifest.ends_with(".toml") {
                 format!("grep -m1 '^{field}' {manifest} | cut -d '\"' -f2 | tr -d '\"'")
             } else {
