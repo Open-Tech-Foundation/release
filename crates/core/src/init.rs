@@ -25,7 +25,6 @@ pub struct TargetDef {
     pub label: &'static str,
     pub name: &'static str,
     pub arch: &'static str,
-    pub bit: u8,
     pub rust_triple: &'static str,
 }
 
@@ -34,21 +33,20 @@ impl TargetDef {
         Target {
             name: self.name.to_string(),
             arch: self.arch.to_string(),
-            bit: self.bit,
         }
     }
 }
 
 /// A sensible default cross-compile target set (each emitted with an `# edit me` marker).
 pub const DEFAULT_TARGETS: &[TargetDef] = &[
-    TargetDef { label: "Linux x64", name: "linux", arch: "x86_64", bit: 64, rust_triple: "x86_64-unknown-linux-gnu" },
-    TargetDef { label: "Linux ARM64", name: "linux", arch: "aarch64", bit: 64, rust_triple: "aarch64-unknown-linux-gnu" },
-    TargetDef { label: "Linux x86 (32-bit)", name: "linux", arch: "x86", bit: 32, rust_triple: "i686-unknown-linux-gnu" },
-    TargetDef { label: "macOS ARM64", name: "macos", arch: "aarch64", bit: 64, rust_triple: "aarch64-apple-darwin" },
-    TargetDef { label: "macOS x64", name: "macos", arch: "x86_64", bit: 64, rust_triple: "x86_64-apple-darwin" },
-    TargetDef { label: "Windows x64", name: "windows", arch: "x86_64", bit: 64, rust_triple: "x86_64-pc-windows-msvc" },
-    TargetDef { label: "Windows ARM64", name: "windows", arch: "aarch64", bit: 64, rust_triple: "aarch64-pc-windows-msvc" },
-    TargetDef { label: "Windows x86 (32-bit)", name: "windows", arch: "x86", bit: 32, rust_triple: "i686-pc-windows-msvc" },
+    TargetDef { label: "Linux x64", name: "linux", arch: "x86_64", rust_triple: "x86_64-unknown-linux-gnu" },
+    TargetDef { label: "Linux ARM64", name: "linux", arch: "aarch64", rust_triple: "aarch64-unknown-linux-gnu" },
+    TargetDef { label: "Linux x86 (32-bit)", name: "linux", arch: "x86", rust_triple: "i686-unknown-linux-gnu" },
+    TargetDef { label: "macOS ARM64", name: "macos", arch: "aarch64", rust_triple: "aarch64-apple-darwin" },
+    TargetDef { label: "macOS x64", name: "macos", arch: "x86_64", rust_triple: "x86_64-apple-darwin" },
+    TargetDef { label: "Windows x64", name: "windows", arch: "x86_64", rust_triple: "x86_64-pc-windows-msvc" },
+    TargetDef { label: "Windows ARM64", name: "windows", arch: "aarch64", rust_triple: "aarch64-pc-windows-msvc" },
+    TargetDef { label: "Windows x86 (32-bit)", name: "windows", arch: "x86", rust_triple: "i686-pc-windows-msvc" },
 ];
 
 /// Map a target triple to a sensible default GitHub-hosted runner.
@@ -327,14 +325,14 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
         for target in &entry.targets {
             let rust_triple = DEFAULT_TARGETS
                 .iter()
-                .find(|d| d.name == target.name && d.arch == target.arch && d.bit == target.bit)
+                .find(|d| d.name == target.name && d.arch == target.arch)
                 .map(|d| d.rust_triple)
                 .unwrap_or("x86_64-unknown-linux-gnu");
             let os = runner_os(rust_triple);
             let ext = if os == "windows-latest" { ".exe" } else { "" };
             s.push_str(&format!(
-                "          - {{ rust_target: \"{}\", os: \"{}\", ext: \"{}\", name: \"{}\", arch: \"{}\", bit: {} }}  # edit me\n",
-                rust_triple, os, ext, target.name, target.arch, target.bit
+                "          - {{ rust_target: \"{}\", os: \"{}\", ext: \"{}\", name: \"{}\", arch: \"{}\" }}  # edit me\n",
+                rust_triple, os, ext, target.name, target.arch
             ));
         }
 
@@ -342,13 +340,13 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
         for def in DEFAULT_TARGETS {
             let is_selected = entry.targets
                 .iter()
-                .any(|t| t.name == def.name && t.arch == def.arch && t.bit == def.bit);
+                .any(|t| t.name == def.name && t.arch == def.arch);
             if !is_selected {
                 let os = runner_os(def.rust_triple);
                 let ext = if os == "windows-latest" { ".exe" } else { "" };
                 s.push_str(&format!(
-                    "          # - {{ rust_target: \"{}\", os: \"{}\", ext: \"{}\", name: \"{}\", arch: \"{}\", bit: {} }}  # edit me\n",
-                    def.rust_triple, os, ext, def.name, def.arch, def.bit
+                    "          # - {{ rust_target: \"{}\", os: \"{}\", ext: \"{}\", name: \"{}\", arch: \"{}\" }}  # edit me\n",
+                    def.rust_triple, os, ext, def.name, def.arch
                 ));
             }
         }

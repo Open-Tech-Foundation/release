@@ -6,11 +6,11 @@ adapter = "generic"
 mode = "build-only"
 matrix = true
 targets = [
-    { name = "linux", arch = "x86_64", bit = 64 },
-    { name = "linux", arch = "aarch64", bit = 64 },
-    { name = "macos", arch = "x86_64", bit = 64 },
-    { name = "macos", arch = "aarch64", bit = 64 },
-    { name = "windows", arch = "x86_64", bit = 64 },
+    { name = "linux", arch = "x86_64" },
+    { name = "linux", arch = "aarch64" },
+    { name = "macos", arch = "x86_64" },
+    { name = "macos", arch = "aarch64" },
+    { name = "windows", arch = "x86_64" },
 ]
 command = "rustup target add ${{ matrix.rust_target }} && cargo build --release --target ${{ matrix.rust_target }}"
 artifacts = "target/${{ matrix.rust_target }}/release/otf-release${{ matrix.ext }}"

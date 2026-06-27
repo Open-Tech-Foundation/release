@@ -85,15 +85,13 @@ impl Mode {
     }
 }
 
-/// A build target defining generic properties of the OS, architecture, and bit width.
+/// A build target defining generic properties of the OS and architecture.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
     /// Generic OS name (e.g. "linux", "macos", "windows")
     pub name: String,
     /// Generic architecture (e.g. "x86_64", "aarch64", "x86")
     pub arch: String,
-    /// Bit width (e.g. 64, 32)
-    pub bit: u8,
 }
 
 /// A package that needs a build step before it is published or released.
@@ -203,7 +201,6 @@ mod tests {
                     targets: vec![Target {
                         name: "linux".into(),
                         arch: "x86_64".into(),
-                        bit: 64,
                     }],
                     command: "cargo build --release -p otfw_cli".into(),
                     artifacts: "target/*/release/otfwc*".into(),

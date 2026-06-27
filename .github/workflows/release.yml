@@ -39,14 +39,14 @@ jobs:
     strategy:
       matrix:
         include:
-          - { rust_target: "x86_64-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux", arch: "x86_64", bit: 64 }  # edit me
-          - { rust_target: "aarch64-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux", arch: "aarch64", bit: 64 }  # edit me
-          - { rust_target: "x86_64-apple-darwin", os: "macos-latest", ext: "", name: "macos", arch: "x86_64", bit: 64 }  # edit me
-          - { rust_target: "aarch64-apple-darwin", os: "macos-latest", ext: "", name: "macos", arch: "aarch64", bit: 64 }  # edit me
-          - { rust_target: "x86_64-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "x86_64", bit: 64 }  # edit me
-          # - { rust_target: "i686-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux", arch: "x86", bit: 32 }  # edit me
-          # - { rust_target: "aarch64-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "aarch64", bit: 64 }  # edit me
-          # - { rust_target: "i686-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "x86", bit: 32 }  # edit me
+          - { rust_target: "x86_64-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux", arch: "x86_64" }  # edit me
+          - { rust_target: "aarch64-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux", arch: "aarch64" }  # edit me
+          - { rust_target: "x86_64-apple-darwin", os: "macos-latest", ext: "", name: "macos", arch: "x86_64" }  # edit me
+          - { rust_target: "aarch64-apple-darwin", os: "macos-latest", ext: "", name: "macos", arch: "aarch64" }  # edit me
+          - { rust_target: "x86_64-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "x86_64" }  # edit me
+          # - { rust_target: "i686-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux", arch: "x86" }  # edit me
+          # - { rust_target: "aarch64-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "aarch64" }  # edit me
+          # - { rust_target: "i686-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "x86" }  # edit me
     steps:
       - uses: actions/checkout@v4
       - name: Build otf-release
