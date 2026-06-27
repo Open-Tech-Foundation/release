@@ -70,4 +70,13 @@ jobs:
             echo "Release $tag already exists; nothing to do."
             exit 0
           fi
-          gh release create "$tag" --title "$tag" --generate-notes .artifacts/**/*
+          shopt -s globstar
+          mkdir -p .flat-artifacts
+          for file in .artifacts/**/*; do
+            if [ -f "$file" ]; then
+              dir_name=$(basename "$(dirname "$file")")
+              file_name=$(basename "$file")
+              mv "$file" ".flat-artifacts/${dir_name}---${file_name}"
+            fi
+          done
+          gh release create "$tag" --title "$tag" --generate-notes .flat-artifacts/*

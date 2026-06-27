@@ -438,8 +438,17 @@ fn render_github_release(s: &mut String, needs: &[String], version_cmd: &str) {
     s.push_str("            exit 0\n");
     s.push_str("          fi\n");
     if staged {
+        s.push_str("          shopt -s globstar\n");
+        s.push_str("          mkdir -p .flat-artifacts\n");
+        s.push_str("          for file in .artifacts/**/*; do\n");
+        s.push_str("            if [ -f \"$file\" ]; then\n");
+        s.push_str("              dir_name=$(basename \"$(dirname \"$file\")\")\n");
+        s.push_str("              file_name=$(basename \"$file\")\n");
+        s.push_str("              mv \"$file\" \".flat-artifacts/${dir_name}---${file_name}\"\n");
+        s.push_str("            fi\n");
+        s.push_str("          done\n");
         s.push_str(
-            "          gh release create \"$tag\" --title \"$tag\" --generate-notes .artifacts/**/*\n",
+            "          gh release create \"$tag\" --title \"$tag\" --generate-notes .flat-artifacts/*\n",
         );
     } else {
         s.push_str("          gh release create \"$tag\" --title \"$tag\" --generate-notes\n");
