@@ -39,16 +39,16 @@ jobs:
     strategy:
       matrix:
         include:
-          - { target: "x86_64-unknown-linux-gnu", os: "ubuntu-latest", ext: "" }  # edit me
-          - { target: "x86_64-apple-darwin", os: "macos-latest", ext: "" }  # edit me
-          - { target: "x86_64-pc-windows-msvc", os: "windows-latest", ext: ".exe" }  # edit me
+          - { target: "x86_64-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux-x64" }  # edit me
+          - { target: "x86_64-apple-darwin", os: "macos-latest", ext: "", name: "macos-x64" }  # edit me
+          - { target: "x86_64-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows-x64" }  # edit me
     steps:
       - uses: actions/checkout@v4
       - name: Build otf-release
         run: rustup target add ${{ matrix.target }} && cargo build --release --target ${{ matrix.target }}  # edit me: cross-compile with ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: otf-release-${{ matrix.target }}
+          name: otf-release-${{ matrix.name }}
           path: target/${{ matrix.target }}/release/otf-release${{ matrix.ext }}
 
   github-release:
@@ -77,7 +77,12 @@ jobs:
             if [ -f "$file" ]; then
               dir_name=$(basename "$(dirname "$file")")
               file_name=$(basename "$file")
-              mv "$file" ".flat-artifacts/${dir_name}---${file_name}"
+              ext="${file_name##*.}"
+              if [ "$ext" = "$file_name" ]; then
+                mv "$file" ".flat-artifacts/${dir_name}"
+              else
+                mv "$file" ".flat-artifacts/${dir_name}.${ext}"
+              fi
             fi
           done
           gh release create "$tag" --target main --title "$tag" --generate-notes .flat-artifacts/*

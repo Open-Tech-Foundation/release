@@ -288,6 +288,20 @@ fn version_read_cmd(entry: Option<&PackageEntry>) -> String {
     }
 }
 
+fn pretty_name(target: &str) -> &str {
+    match target {
+        "x86_64-unknown-linux-gnu" => "linux-x64",
+        "aarch64-unknown-linux-gnu" => "linux-arm64",
+        "i686-unknown-linux-gnu" => "linux-x86",
+        "x86_64-apple-darwin" => "macos-x64",
+        "aarch64-apple-darwin" => "macos-arm64",
+        "x86_64-pc-windows-msvc" => "windows-x64",
+        "aarch64-pc-windows-msvc" => "windows-arm64",
+        "i686-pc-windows-msvc" => "windows-x86",
+        _ => target,
+    }
+}
+
 /// One build job: matrix or single runner, runs the package's command, uploads its artifacts.
 fn render_build_job(s: &mut String, entry: &PackageEntry) {
     let job = build_job(&entry.name);
@@ -303,8 +317,8 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
             let os = runner_os(target);
             let ext = if os == "windows-latest" { ".exe" } else { "" };
             s.push_str(&format!(
-                "          - {{ target: \"{}\", os: \"{}\", ext: \"{}\" }}  # edit me\n",
-                target, os, ext
+                "          - {{ target: \"{}\", os: \"{}\", ext: \"{}\", name: \"{}\" }}  # edit me\n",
+                target, os, ext, pretty_name(target)
             ));
         }
     } else {
@@ -341,7 +355,7 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
     s.push_str("        with:\n");
     if entry.matrix {
         s.push_str(&format!(
-            "          name: {art_slug}-${{{{ matrix.target }}}}\n"
+            "          name: {art_slug}-${{{{ matrix.name }}}}\n"
         ));
     } else {
         s.push_str(&format!("          name: {art_slug}\n"));
@@ -442,7 +456,12 @@ fn render_github_release(s: &mut String, needs: &[String]) {
         s.push_str("            if [ -f \"$file\" ]; then\n");
         s.push_str("              dir_name=$(basename \"$(dirname \"$file\")\")\n");
         s.push_str("              file_name=$(basename \"$file\")\n");
-        s.push_str("              mv \"$file\" \".flat-artifacts/${dir_name}---${file_name}\"\n");
+        s.push_str("              ext=\"${file_name##*.}\"\n");
+        s.push_str("              if [ \"$ext\" = \"$file_name\" ]; then\n");
+        s.push_str("                mv \"$file\" \".flat-artifacts/${dir_name}\"\n");
+        s.push_str("              else\n");
+        s.push_str("                mv \"$file\" \".flat-artifacts/${dir_name}.${ext}\"\n");
+        s.push_str("              fi\n");
         s.push_str("            fi\n");
         s.push_str("          done\n");
         s.push_str(
