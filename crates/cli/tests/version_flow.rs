@@ -34,15 +34,11 @@ struct ScriptedPrompt {
     bump: Bump,
 }
 impl Prompt for ScriptedPrompt {
-    fn select_channel(&self) -> Result<Option<String>> {
-        Ok(None)
-    }
-
     fn select_packages(&self, _pending: &[&Pkg]) -> Result<Vec<String>> {
         Ok(self.selected.clone())
     }
-    fn choose_bump(&self, _pkg_name: &str) -> Result<Bump> {
-        Ok(self.bump)
+    fn choose_bump(&self, _pkg_name: &str, _current_version: &str) -> Result<Bump> {
+        Ok(self.bump.clone())
     }
     fn confirm(&self, _summary: &str) -> Result<bool> {
         Ok(true)

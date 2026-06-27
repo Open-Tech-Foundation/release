@@ -94,21 +94,23 @@ pub fn orchestrate(
         return Ok(());
     }
 
-    // 3. Prompt: channel, multi-select, then a bump per selected package.
-    let channel = prompt.select_channel()?;
-
+    // 3. Prompt: multi-select, then a bump per selected package.
     let selected_names = prompt.select_packages(&pending)?;
     if selected_names.is_empty() {
         println!("Nothing selected.");
         return Ok(());
     }
+    
+    let by_name: HashMap<&str, &Pkg> = packages.iter().map(|p| (p.name.as_str(), p)).collect();
     let pending_names: HashSet<&str> = pending.iter().map(|p| p.name.as_str()).collect();
+    
     let mut selected: HashMap<String, Bump> = HashMap::new();
     for name in &selected_names {
         if !pending_names.contains(name.as_str()) {
             bail!("selected package is not in the pending list: {name}");
         }
-        selected.insert(name.clone(), prompt.choose_bump(name)?);
+        let pkg = by_name[name.as_str()];
+        selected.insert(name.clone(), prompt.choose_bump(name, &pkg.version)?);
     }
 
     // 4. Cascade through dependents (private leaves excluded).
@@ -116,17 +118,16 @@ pub fn orchestrate(
     let bumps = graph.cascade(adapter, &selected)?;
 
     // 5. Compute new versions.
-    let by_name: HashMap<&str, &Pkg> = packages.iter().map(|p| (p.name.as_str(), p)).collect();
     let mut new_versions: HashMap<String, String> = HashMap::new();
-    for (name, &bump) in &bumps {
+    for (name, bump) in &bumps {
         let pkg = by_name[name.as_str()];
-        new_versions.insert(name.clone(), apply_bump(&pkg.version, bump, channel.as_deref())?);
+        new_versions.insert(name.clone(), apply_bump(&pkg.version, bump)?);
     }
 
     // 6. Build the summary plan.
     let mut changes: Vec<VersionChange> = bumps
         .iter()
-        .map(|(name, &bump)| {
+        .map(|(name, bump)| {
             let pkg = by_name[name.as_str()];
             let is_selected = selected.contains_key(name);
             VersionChange {
@@ -224,8 +225,8 @@ pub fn orchestrate(
     Ok(())
 }
 
-/// Apply a bump to an `x.y.z` version (pre-release/build metadata is dropped unless channel is provided).
-fn apply_bump(version: &str, bump: Bump, channel: Option<&str>) -> Result<String> {
+/// Apply a bump to an `x.y.z` version (pre-release/build metadata is dropped unless entering/iterating prerelease).
+fn apply_bump(version: &str, bump: &Bump) -> Result<String> {
     let mut parts = version.split('-');
     let core = parts.next().unwrap();
     let pre = parts.next();
@@ -246,8 +247,7 @@ fn apply_bump(version: &str, bump: Bump, channel: Option<&str>) -> Result<String
             }
             Ok(format!("{major}.{minor}.{patch}"))
         }
-        Bump::Prerelease => {
-            let ch = channel.unwrap_or("beta");
+        Bump::Prerelease(ch) => {
             if let Some(p) = pre {
                 if p.starts_with(ch) {
                     let mut p_parts = p.split('.');
@@ -256,28 +256,21 @@ fn apply_bump(version: &str, bump: Bump, channel: Option<&str>) -> Result<String
                     return Ok(format!("{core}-{ch}.{}", num + 1));
                 }
             }
-            Ok(format!("{major}.{minor}.{}-{ch}.0", patch + 1))
+            Ok(format!("{core}-{ch}.0"))
         }
-        Bump::Major | Bump::Minor | Bump::Patch => {
-            let (a, b, c) = match bump {
-                Bump::Major => (major + 1, 0, 0),
-                Bump::Minor => (major, minor + 1, 0),
-                Bump::Patch => (major, minor, patch + 1),
-                _ => unreachable!(),
-            };
-            if let Some(ch) = channel {
-                Ok(format!("{a}.{b}.{c}-{ch}.0"))
-            } else {
-                Ok(format!("{a}.{b}.{c}"))
-            }
-        }
+        Bump::PreMajor(ch) => Ok(format!("{}.0.0-{ch}.0", major + 1)),
+        Bump::PreMinor(ch) => Ok(format!("{major}.{}.0-{ch}.0", minor + 1)),
+        Bump::PrePatch(ch) => Ok(format!("{major}.{minor}.{}-{ch}.0", patch + 1)),
+        Bump::Major => Ok(format!("{}.0.0", major + 1)),
+        Bump::Minor => Ok(format!("{major}.{}.0", minor + 1)),
+        Bump::Patch => Ok(format!("{major}.{minor}.{}", patch + 1)),
     }
 }
 
 /// The parenthetical reason shown in the summary for one change.
 fn change_note(
     pkg: &Pkg,
-    bump: Bump,
+    bump: &Bump,
     selected: bool,
     new_versions: &HashMap<String, String>,
 ) -> String {
@@ -297,13 +290,13 @@ fn change_note(
     }
 }
 
-fn bump_word(bump: Bump) -> &'static str {
+fn bump_word(bump: &Bump) -> &'static str {
     match bump {
         Bump::Graduate => "graduate",
-        Bump::Major => "major",
-        Bump::Minor => "minor",
-        Bump::Patch => "patch",
-        Bump::Prerelease => "prerelease",
+        Bump::PreMajor(_) | Bump::Major => "major",
+        Bump::PreMinor(_) | Bump::Minor => "minor",
+        Bump::PrePatch(_) | Bump::Patch => "patch",
+        Bump::Prerelease(_) => "prerelease",
     }
 }
 
@@ -320,23 +313,26 @@ mod tests {
 
     #[test]
     fn apply_bump_increments_and_resets() {
-        assert_eq!(apply_bump("1.2.3", Bump::Major, None).unwrap(), "2.0.0");
-        assert_eq!(apply_bump("1.2.3", Bump::Minor, None).unwrap(), "1.3.0");
-        assert_eq!(apply_bump("1.2.3", Bump::Patch, None).unwrap(), "1.2.4");
+        assert_eq!(apply_bump("1.2.3", &Bump::Major).unwrap(), "2.0.0");
+        assert_eq!(apply_bump("1.2.3", &Bump::Minor).unwrap(), "1.3.0");
+        assert_eq!(apply_bump("1.2.3", &Bump::Patch).unwrap(), "1.2.4");
         // Test transition from pre-release to stable
-        assert_eq!(apply_bump("0.1.0-next.1", Bump::Patch, None).unwrap(), "0.1.1");
+        assert_eq!(apply_bump("0.1.0-next.1", &Bump::Patch).unwrap(), "0.1.1");
         
         // Test pre-release bumps
-        assert_eq!(apply_bump("1.2.3", Bump::Minor, Some("beta")).unwrap(), "1.3.0-beta.0");
-        assert_eq!(apply_bump("1.3.0-beta.0", Bump::Prerelease, Some("beta")).unwrap(), "1.3.0-beta.1");
-        assert_eq!(apply_bump("1.3.0-beta.1", Bump::Prerelease, Some("beta")).unwrap(), "1.3.0-beta.2");
-        assert_eq!(apply_bump("1.2.3", Bump::Prerelease, Some("rc")).unwrap(), "1.2.4-rc.0");
+        assert_eq!(apply_bump("1.2.3", &Bump::PreMinor("beta".to_string())).unwrap(), "1.3.0-beta.0");
+        assert_eq!(apply_bump("1.3.0-beta.0", &Bump::Prerelease("beta".to_string())).unwrap(), "1.3.0-beta.1");
+        assert_eq!(apply_bump("1.3.0-beta.1", &Bump::Prerelease("beta".to_string())).unwrap(), "1.3.0-beta.2");
+        assert_eq!(apply_bump("1.2.3", &Bump::PrePatch("rc".to_string())).unwrap(), "1.2.4-rc.0");
+
+        // Test switch channel
+        assert_eq!(apply_bump("1.3.0-alpha.1", &Bump::Prerelease("beta".to_string())).unwrap(), "1.3.0-beta.0");
 
         // Test graduate
-        assert_eq!(apply_bump("1.3.0-beta.2", Bump::Graduate, None).unwrap(), "1.3.0");
-        assert!(apply_bump("1.3.0", Bump::Graduate, None).is_err());
+        assert_eq!(apply_bump("1.3.0-beta.2", &Bump::Graduate).unwrap(), "1.3.0");
+        assert!(apply_bump("1.3.0", &Bump::Graduate).is_err());
 
-        assert!(apply_bump("nope", Bump::Patch, None).is_err());
+        assert!(apply_bump("nope", &Bump::Patch).is_err());
     }
 
     #[test]
@@ -355,11 +351,11 @@ mod tests {
         };
         let new_versions = HashMap::from([("core".to_string(), "2.0.0".to_string())]);
         assert_eq!(
-            change_note(&pkg, Bump::Major, false, &new_versions),
+            change_note(&pkg, &Bump::Major, false, &new_versions),
             "mirror major — peerDep on core"
         );
         assert_eq!(
-            change_note(&pkg, Bump::Major, true, &new_versions),
+            change_note(&pkg, &Bump::Major, true, &new_versions),
             "major, selected"
         );
     }

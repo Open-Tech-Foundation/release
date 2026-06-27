@@ -112,7 +112,7 @@ impl<'a> Graph<'a> {
         let mut work: VecDeque<usize> = VecDeque::new();
 
         // Seed with the explicit selections (private packages are never versioned).
-        for (name, &bump) in selected {
+        for (name, bump) in selected {
             let idx = *self
                 .by_name
                 .get(name)
@@ -120,14 +120,14 @@ impl<'a> Graph<'a> {
             if !self.packages[idx].publishable {
                 continue;
             }
-            if raise(&mut result, name, bump) {
+            if raise(&mut result, name, bump.clone()) {
                 work.push_back(idx);
             }
         }
 
         // Propagate to dependents until no bump increases.
         while let Some(idx) = work.pop_front() {
-            let src_bump = result[&self.packages[idx].name];
+            let src_bump = result[&self.packages[idx].name].clone();
             let Some(deps) = self.dependents.get(&idx) else {
                 continue;
             };
@@ -136,7 +136,7 @@ impl<'a> Graph<'a> {
                 if !dep_pkg.publishable {
                     continue; // cascade terminates at private leaves
                 }
-                let bump = adapter.dependent_bump(src_bump, kind);
+                let bump = adapter.dependent_bump(src_bump.clone(), kind);
                 if raise(&mut result, &dep_pkg.name, bump) {
                     work.push_back(*dep_idx);
                 }
@@ -150,7 +150,7 @@ impl<'a> Graph<'a> {
 /// Raise `name`'s bump to at least `bump`. Returns `true` if it increased (or was new).
 fn raise(result: &mut HashMap<String, Bump>, name: &str, bump: Bump) -> bool {
     match result.get(name) {
-        Some(&existing) if existing >= bump => false,
+        Some(existing) if existing >= &bump => false,
         _ => {
             result.insert(name.to_string(), bump);
             true

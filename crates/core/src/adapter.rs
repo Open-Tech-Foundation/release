@@ -12,10 +12,13 @@ use anyhow::Result;
 ///
 /// Variants are ordered `Patch < Minor < Major` so that `max(...)` over a set of bumps
 /// (used when a package is reached by several cascade paths) yields the strongest bump.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Bump {
     Graduate,
-    Prerelease,
+    Prerelease(String),
+    PrePatch(String),
+    PreMinor(String),
+    PreMajor(String),
     Patch,
     Minor,
     Major,
@@ -25,7 +28,10 @@ impl std::fmt::Display for Bump {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Bump::Graduate => "graduate",
-            Bump::Prerelease => "prerelease",
+            Bump::Prerelease(ch) => return write!(f, "prerelease ({ch})"),
+            Bump::PrePatch(ch) => return write!(f, "prepatch ({ch})"),
+            Bump::PreMinor(ch) => return write!(f, "preminor ({ch})"),
+            Bump::PreMajor(ch) => return write!(f, "premajor ({ch})"),
             Bump::Patch => "patch",
             Bump::Minor => "minor",
             Bump::Major => "major",

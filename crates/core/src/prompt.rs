@@ -7,14 +7,12 @@ use inquire::{MultiSelect, Select};
 
 use crate::adapter::{Bump, Pkg};
 
-/// The four interactions the `version` command needs from the user.
+/// The interactions the `version` command needs from the user.
 pub trait Prompt {
-    /// Choose the release channel (e.g. None for stable, Some("beta") for beta)
-    fn select_channel(&self) -> Result<Option<String>>;
     /// Choose which of the pending packages to release; returns their names.
     fn select_packages(&self, pending: &[&Pkg]) -> Result<Vec<String>>;
-    /// Choose a bump level for a selected package.
-    fn choose_bump(&self, pkg_name: &str) -> Result<Bump>;
+    /// Interactive flow to determine the next version bump for a package.
+    fn choose_bump(&self, pkg_name: &str, current_version: &str) -> Result<Bump>;
     /// Show the summary and ask for final confirmation.
     fn confirm(&self, summary: &str) -> Result<bool>;
 }
@@ -23,19 +21,6 @@ pub trait Prompt {
 pub struct StdinPrompt;
 
 impl Prompt for StdinPrompt {
-    fn select_channel(&self) -> Result<Option<String>> {
-        let choice = Select::new(
-            "Release channel:",
-            vec!["stable (default)", "alpha", "beta", "rc"],
-        )
-        .prompt()?;
-        
-        match choice {
-            "stable (default)" => Ok(None),
-            ch => Ok(Some(ch.to_string())),
-        }
-    }
-
     fn select_packages(&self, pending: &[&Pkg]) -> Result<Vec<String>> {
         let labels: Vec<String> = pending
             .iter()
@@ -50,13 +35,56 @@ impl Prompt for StdinPrompt {
             .collect())
     }
 
-    fn choose_bump(&self, pkg_name: &str) -> Result<Bump> {
-        let choice = Select::new(
-            &format!("Bump for {pkg_name}:"),
-            vec![Bump::Graduate, Bump::Major, Bump::Minor, Bump::Patch, Bump::Prerelease],
-        )
-        .prompt()?;
-        Ok(choice)
+    fn choose_bump(&self, pkg_name: &str, current_version: &str) -> Result<Bump> {
+        let parts: Vec<&str> = current_version.split('-').collect();
+        let is_prerelease = parts.len() > 1;
+
+        if is_prerelease {
+            let pre_part = parts[1];
+            let current_channel = pre_part.split('.').next().unwrap();
+            let msg = format!("You are currently on '{}'. What would you like to do?", current_channel);
+            let opts = vec![
+                format!("Continue {}", current_channel),
+                "Switch channel".to_string(),
+                "Exit to stable".to_string(),
+            ];
+            let choice = Select::new(&msg, opts).prompt()?;
+            if choice == "Exit to stable" {
+                return Ok(Bump::Graduate);
+            } else if choice == "Switch channel" {
+                let ch = Select::new("Which channel?", vec!["alpha", "beta", "rc"]).prompt()?;
+                return Ok(Bump::Prerelease(ch.to_string()));
+            } else {
+                return Ok(Bump::Prerelease(current_channel.to_string()));
+            }
+        } else {
+            let rtype = Select::new(
+                &format!("Release type for {pkg_name}:"),
+                vec!["Stable", "Pre-release"],
+            ).prompt()?;
+
+            let is_pre = rtype == "Pre-release";
+            let channel = if is_pre {
+                Some(Select::new("Channel:", vec!["alpha", "beta", "rc"]).prompt()?)
+            } else {
+                None
+            };
+
+            let bump_str = Select::new(
+                "Bump size:",
+                vec!["Major", "Minor", "Patch"],
+            ).prompt()?;
+
+            return Ok(match (bump_str, channel) {
+                ("Major", None) => Bump::Major,
+                ("Minor", None) => Bump::Minor,
+                ("Patch", None) => Bump::Patch,
+                ("Major", Some(c)) => Bump::PreMajor(c.to_string()),
+                ("Minor", Some(c)) => Bump::PreMinor(c.to_string()),
+                ("Patch", Some(c)) => Bump::PrePatch(c.to_string()),
+                _ => unreachable!(),
+            });
+        }
     }
 
     fn confirm(&self, summary: &str) -> Result<bool> {

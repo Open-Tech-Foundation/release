@@ -75,14 +75,10 @@ impl CommandRunner for Registry {
 
 struct ScriptedPrompt;
 impl Prompt for ScriptedPrompt {
-    fn select_channel(&self) -> Result<Option<String>> {
-        Ok(None)
-    }
-
     fn select_packages(&self, _pending: &[&Pkg]) -> Result<Vec<String>> {
         Ok(vec!["@x/core".to_string()])
     }
-    fn choose_bump(&self, _pkg_name: &str) -> Result<Bump> {
+    fn choose_bump(&self, _pkg_name: &str, _current_version: &str) -> Result<Bump> {
         Ok(Bump::Major)
     }
     fn confirm(&self, _summary: &str) -> Result<bool> {
