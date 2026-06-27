@@ -15,27 +15,22 @@ Unlike commit-driven tools, your hand-written `[Unreleased]` notes are the sourc
 truth — never inferred from commits. Unlike npm-locked tools, the publishing backend is
 adapter-based: **npm, cargo, and a `generic` (bring-your-own-commands, e.g. JSR) today, others later**.
 
-## What it does
+## Commands
 
-- **`version`** (local) — lists packages, you multi-select and choose bumps; cascades to
-  internal dependents, upgrades dep ranges, moves `[Unreleased]` → a dated section, then
-  opens a release PR. Never touches `main` directly.
-- **`publish`** (CI) — publishes changed packages in dependency order, idempotent and
-  resumable, attaching prebuilt binaries when a workflow stages them.
-- **`init`** — interactive setup: asks which adapters to enable and, per package, its mode
-  (`publish` to a registry, or `build-only` → GitHub Release artifacts), build matrix, command,
-  and artifacts. Persists `release.toml` and generates one `release.yml` from it.
-- **`upgrade`** — instantly upgrades configurations and the `.github/workflows/release.yml` CI pipeline to match the latest CLI version.
+| Command | Usage | Description |
+|---------|-------|-------------|
+| **`init`** | `otf-release init` | Interactive setup: configure ecosystems, build matrices, and artifacts. Generates `release.toml` and `release.yml`. |
+| **`version`** | `otf-release version` | Interactive local release: choose bumps, cascade dependencies, write changelogs, and automatically open a Release PR. |
+| **`publish`** | `otf-release publish` | Non-interactive CI flow: publishes changed packages in topological order, attaching staged build artifacts. |
+| **`upgrade`** | `otf-release upgrade` | Upgrades your local `release.toml` and regenerates your CI pipeline to match the latest CLI version features. |
 
-## Principles
+## Workflow
 
-- **You curate, it ships.** Notes and bumps are human decisions; mechanics are automated.
-- **Strict by default.** Commits since the last tag with an empty `[Unreleased]` abort the
-  release — no undocumented ships.
-- **One committed config.** `release.toml` (written by `init`) is the source of truth; the
-  generated `release.yml` and the other commands are derived from it.
-- **Dependency-correct.** peerDep dependents mirror the bump; encapsulated ones get a patch.
-  Private apps stay buildable but are never published.
+1. **Init:** Run `otf-release init` once to configure ecosystems, build matrices, and instantly generate your `.github/workflows/release.yml` pipeline.
+2. **Curate:** Write your release notes in each package's `[Unreleased]` changelog section as you develop features.
+3. **Version:** Run `otf-release version` locally. It walks you through selecting bumps, safely cascades versions, and opens a curated Release PR.
+4. **Merge:** Review the PR and merge it into `main`. The tool guards against empty changelogs to ensure no undocumented ships occur.
+5. **Publish:** The generated `release.yml` GitHub Action triggers automatically, cross-compiles artifacts natively via the `release.toml` configuration, and publishes them.
 
 ## Installation
 
