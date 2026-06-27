@@ -25,6 +25,7 @@ adapter-based: **npm, cargo, and a `generic` (bring-your-own-commands, e.g. JSR)
 - **`init`** — interactive setup: asks which adapters to enable and, per package, its mode
   (`publish` to a registry, or `build-only` → GitHub Release artifacts), build matrix, command,
   and artifacts. Persists `release.toml` and generates one `release.yml` from it.
+- **`update`** — instantly regenerates the `.github/workflows/release.yml` CI pipeline from your existing `release.toml` config, adopting the latest CLI workflow logic.
 
 ## Principles
 
