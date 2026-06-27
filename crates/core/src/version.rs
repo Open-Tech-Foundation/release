@@ -29,15 +29,24 @@ pub struct VersionOptions {
     pub dry_run: bool,
     /// Allow first-release of packages that have no prior tag.
     pub first_release: bool,
+    /// Skip opening the PR (e.g. if gh CLI is missing).
+    pub skip_pr: bool,
 }
 
 /// Wire up the real adapter/git/forge/prompt and run the flow.
 pub fn run(adapter: &dyn Adapter, root: &Path, opts: &VersionOptions) -> Result<()> {
+    let mut opts = opts.clone();
+    let prompt = StdinPrompt;
+    if std::process::Command::new("gh").arg("--version").output().is_err() {
+        if !Prompt::confirm(&prompt, "\nGitHub CLI (`gh`) is not installed. Continue anyway? (You will need to manually open the PR)")? {
+            bail!("Cancelled.");
+        }
+        opts.skip_pr = true;
+    }
     let repo = GitRepo::new(root);
     let forge = GhForge::new(root);
-    let prompt = StdinPrompt;
     let today = date::today();
-    orchestrate(adapter, &repo, &repo, &forge, &prompt, root, &today, opts)
+    orchestrate(adapter, &repo, &repo, &forge, &prompt, root, &today, &opts)
 }
 
 /// The testable core of the `version` flow. `today` is injected for deterministic output.
@@ -187,9 +196,14 @@ pub fn orchestrate(
     git.add_all()?;
     git.commit(&commit_title)?;
     git.push_branch(&release_branch)?;
-    forge.open_pr(&release_branch, &commit_title, &summary_text)?;
 
-    println!("Opened release PR from `{release_branch}`.");
+    if opts.skip_pr {
+        println!("Skipped PR creation. Please manually open a PR for branch `{release_branch}` on GitHub.");
+    } else {
+        forge.open_pr(&release_branch, &commit_title, &summary_text)?;
+        println!("Opened release PR from `{release_branch}`.");
+    }
+
     Ok(())
 }
 

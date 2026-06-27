@@ -140,6 +140,7 @@ fn main() -> Result<()> {
             let opts = version::VersionOptions {
                 dry_run,
                 first_release,
+                skip_pr: false,
             };
             for eco in &config.adapters {
                 let adapter = factory.make(*eco);
