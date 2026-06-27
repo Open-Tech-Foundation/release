@@ -3,7 +3,7 @@
 //! spacebar multi-select, and confirm prompts.
 
 use anyhow::Result;
-use inquire::{Confirm, MultiSelect, Select};
+use inquire::{MultiSelect, Select};
 
 use crate::adapter::{Bump, Pkg};
 
@@ -46,6 +46,8 @@ impl Prompt for StdinPrompt {
 
     fn confirm(&self, summary: &str) -> Result<bool> {
         print!("{summary}");
-        Ok(Confirm::new("Proceed?").with_default(false).prompt()?)
+        Ok(Select::new("Proceed?", vec!["No", "Yes"])
+            .raw_prompt()?
+            .index == 1)
     }
 }

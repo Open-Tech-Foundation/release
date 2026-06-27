@@ -15,7 +15,6 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ### Changed
 - **project** — Renamed the workspace from `opentf-release` to `otf-release` across all `Cargo.toml` files, updated authors to "OTF Contributors", and updated the GitHub repository URL.
 
-### Added
 - **npm adapter** — workspace discovery, format-preserving `package.json` edits (version &
   dependency ranges), `workspace:` link resolution, lockfile refresh, and `is_published` /
   `publish` behind a testable command runner. Keeps the npm gotchas: `--access public`,
