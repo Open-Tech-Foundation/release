@@ -17,19 +17,38 @@ use anyhow::{bail, Context, Result};
 use inquire::{MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
-use crate::config::{Ecosystem, Mode, PackageEntry, ReleaseConfig, DEFAULT_VERSION_FIELD};
+use crate::config::{Ecosystem, Mode, PackageEntry, ReleaseConfig, Target, DEFAULT_VERSION_FIELD};
 use crate::discover::{scan_generic_candidates, GenericCandidate};
 
+/// A static definition for a default target to offer in the CLI prompt.
+pub struct TargetDef {
+    pub label: &'static str,
+    pub name: &'static str,
+    pub arch: &'static str,
+    pub bit: u8,
+    pub rust_triple: &'static str,
+}
+
+impl TargetDef {
+    pub fn to_target(&self) -> Target {
+        Target {
+            name: self.name.to_string(),
+            arch: self.arch.to_string(),
+            bit: self.bit,
+        }
+    }
+}
+
 /// A sensible default cross-compile target set (each emitted with an `# edit me` marker).
-pub const DEFAULT_TARGETS: &[(&str, &str)] = &[
-    ("Linux x64", "x86_64-unknown-linux-gnu"),
-    ("Linux ARM64", "aarch64-unknown-linux-gnu"),
-    ("Linux x86 (32-bit)", "i686-unknown-linux-gnu"),
-    ("macOS ARM64", "aarch64-apple-darwin"),
-    ("macOS x64", "x86_64-apple-darwin"),
-    ("Windows x64", "x86_64-pc-windows-msvc"),
-    ("Windows ARM64", "aarch64-pc-windows-msvc"),
-    ("Windows x86 (32-bit)", "i686-pc-windows-msvc"),
+pub const DEFAULT_TARGETS: &[TargetDef] = &[
+    TargetDef { label: "Linux x64", name: "linux", arch: "x86_64", bit: 64, rust_triple: "x86_64-unknown-linux-gnu" },
+    TargetDef { label: "Linux ARM64", name: "linux", arch: "aarch64", bit: 64, rust_triple: "aarch64-unknown-linux-gnu" },
+    TargetDef { label: "Linux x86 (32-bit)", name: "linux", arch: "x86", bit: 32, rust_triple: "i686-unknown-linux-gnu" },
+    TargetDef { label: "macOS ARM64", name: "macos", arch: "aarch64", bit: 64, rust_triple: "aarch64-apple-darwin" },
+    TargetDef { label: "macOS x64", name: "macos", arch: "x86_64", bit: 64, rust_triple: "x86_64-apple-darwin" },
+    TargetDef { label: "Windows x64", name: "windows", arch: "x86_64", bit: 64, rust_triple: "x86_64-pc-windows-msvc" },
+    TargetDef { label: "Windows ARM64", name: "windows", arch: "aarch64", bit: 64, rust_triple: "aarch64-pc-windows-msvc" },
+    TargetDef { label: "Windows x86 (32-bit)", name: "windows", arch: "x86", bit: 32, rust_triple: "i686-pc-windows-msvc" },
 ];
 
 /// Map a target triple to a sensible default GitHub-hosted runner.
@@ -290,19 +309,7 @@ fn version_read_cmd(entry: Option<&PackageEntry>) -> String {
     }
 }
 
-fn pretty_name(target: &str) -> &str {
-    match target {
-        "x86_64-unknown-linux-gnu" => "linux-x64",
-        "aarch64-unknown-linux-gnu" => "linux-arm64",
-        "i686-unknown-linux-gnu" => "linux-x86",
-        "x86_64-apple-darwin" => "macos-x64",
-        "aarch64-apple-darwin" => "macos-arm64",
-        "x86_64-pc-windows-msvc" => "windows-x64",
-        "aarch64-pc-windows-msvc" => "windows-arm64",
-        "i686-pc-windows-msvc" => "windows-x86",
-        _ => target,
-    }
-}
+
 
 /// One build job: matrix or single runner, runs the package's command, uploads its artifacts.
 fn render_build_job(s: &mut String, entry: &PackageEntry) {
@@ -315,13 +322,35 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
     if entry.matrix {
         s.push_str("    runs-on: ${{ matrix.os }}\n");
         s.push_str("    strategy:\n      matrix:\n        include:\n");
+        
+        // Print all selected targets
         for target in &entry.targets {
-            let os = runner_os(target);
+            let rust_triple = DEFAULT_TARGETS
+                .iter()
+                .find(|d| d.name == target.name && d.arch == target.arch && d.bit == target.bit)
+                .map(|d| d.rust_triple)
+                .unwrap_or("x86_64-unknown-linux-gnu");
+            let os = runner_os(rust_triple);
             let ext = if os == "windows-latest" { ".exe" } else { "" };
             s.push_str(&format!(
-                "          - {{ target: \"{}\", os: \"{}\", ext: \"{}\", name: \"{}\" }}  # edit me\n",
-                target, os, ext, pretty_name(target)
+                "          - {{ rust_target: \"{}\", os: \"{}\", ext: \"{}\", name: \"{}\", arch: \"{}\", bit: {} }}  # edit me\n",
+                rust_triple, os, ext, target.name, target.arch, target.bit
             ));
+        }
+
+        // Print all unselected defaults as commented-out lines
+        for def in DEFAULT_TARGETS {
+            let is_selected = entry.targets
+                .iter()
+                .any(|t| t.name == def.name && t.arch == def.arch && t.bit == def.bit);
+            if !is_selected {
+                let os = runner_os(def.rust_triple);
+                let ext = if os == "windows-latest" { ".exe" } else { "" };
+                s.push_str(&format!(
+                    "          # - {{ rust_target: \"{}\", os: \"{}\", ext: \"{}\", name: \"{}\", arch: \"{}\", bit: {} }}  # edit me\n",
+                    def.rust_triple, os, ext, def.name, def.arch, def.bit
+                ));
+            }
         }
     } else {
         s.push_str("    runs-on: ubuntu-latest  # edit me: choose a runner\n");
@@ -333,7 +362,7 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
         Ecosystem::Cargo => {
             s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
             if entry.matrix {
-                s.push_str("        with:\n          targets: ${{ matrix.target }}\n");
+                s.push_str("        with:\n          targets: ${{ matrix.rust_target }}\n");
             }
         }
         Ecosystem::Npm => {
@@ -347,7 +376,7 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
     s.push_str(&format!("      - name: Build {}\n", entry.name));
     if entry.matrix {
         s.push_str(&format!(
-            "        run: {}  # edit me: cross-compile with ${{{{ matrix.target }}}}\n",
+            "        run: {}  # edit me: cross-compile with ${{{{ matrix.rust_target }}}}\n",
             entry.command
         ));
     } else {
@@ -357,7 +386,7 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
     s.push_str("        with:\n");
     if entry.matrix {
         s.push_str(&format!(
-            "          name: {art_slug}-${{{{ matrix.name }}}}\n"
+            "          name: {art_slug}-${{{{ matrix.name }}}}-${{{{ matrix.arch }}}}\n"
         ));
     } else {
         s.push_str(&format!("          name: {art_slug}\n"));
@@ -508,12 +537,12 @@ fn configure_generic(
         let defaults: Vec<usize> = DEFAULT_TARGETS
             .iter()
             .enumerate()
-            .filter(|(_, (label, _))| !label.contains("32-bit"))
+            .filter(|(_, def)| !def.label.contains("32-bit"))
             .map(|(i, _)| i)
             .collect();
         let labels: Vec<String> = DEFAULT_TARGETS
             .iter()
-            .map(|(label, triple)| format!("{} - {}", label, triple))
+            .map(|def| format!("{} - {}-{}", def.label, def.name, def.arch))
             .collect();
         let selected = MultiSelect::new("  Target triples:", labels)
             .with_default(&defaults)
@@ -521,14 +550,14 @@ fn configure_generic(
             .raw_prompt()?;
         selected
             .iter()
-            .map(|s| DEFAULT_TARGETS[s.index].1.to_string())
+            .map(|s| DEFAULT_TARGETS[s.index].to_target())
             .collect()
     } else {
         Vec::new()
     };
 
     let default_cmd = match (kind, matrix) {
-        (Some("Rust / Cargo"), true) => "rustup target add ${{ matrix.target }} && cargo build --release --target ${{ matrix.target }}",
+        (Some("Rust / Cargo"), true) => "rustup target add ${{ matrix.rust_target }} && cargo build --release --target ${{ matrix.rust_target }}",
         (Some("Rust / Cargo"), false) => "cargo build --release",
         (Some("Node / npm"), _) => "npm run build",
         (Some("Deno / JSR"), _) => "deno task build",
@@ -651,12 +680,12 @@ impl InitPrompt for StdinInitPrompt {
             let defaults: Vec<usize> = DEFAULT_TARGETS
                 .iter()
                 .enumerate()
-                .filter(|(_, (label, _))| !label.contains("32-bit"))
+                .filter(|(_, def)| !def.label.contains("32-bit"))
                 .map(|(i, _)| i)
                 .collect();
             let labels: Vec<String> = DEFAULT_TARGETS
                 .iter()
-                .map(|(label, triple)| format!("{} - {}", label, triple))
+                .map(|def| format!("{} - {}-{}", def.label, def.name, def.arch))
                 .collect();
             let selected = MultiSelect::new("Target triples:", labels)
                 .with_default(&defaults)
@@ -664,7 +693,7 @@ impl InitPrompt for StdinInitPrompt {
                 .raw_prompt()?;
             selected
                 .iter()
-                .map(|s| DEFAULT_TARGETS[s.index].1.to_string())
+                .map(|s| DEFAULT_TARGETS[s.index].to_target())
                 .collect()
         } else {
             Vec::new()
@@ -854,7 +883,7 @@ mod tests {
                 "x86_64-pc-windows-msvc".into(),
             ],
             command: "cargo build --release -p otf-release".into(),
-            artifacts: "target/${{ matrix.target }}/release/otf-release*".into(),
+            artifacts: "target/${{ matrix.rust_target }}/release/otf-release*".into(),
             manifest: None,
             version_field: None,
             publish: None,

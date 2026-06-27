@@ -85,6 +85,17 @@ impl Mode {
     }
 }
 
+/// A build target defining generic properties of the OS, architecture, and bit width.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Target {
+    /// Generic OS name (e.g. "linux", "macos", "windows")
+    pub name: String,
+    /// Generic architecture (e.g. "x86_64", "aarch64", "x86")
+    pub arch: String,
+    /// Bit width (e.g. 64, 32)
+    pub bit: u8,
+}
+
 /// A package that needs a build step before it is published or released.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageEntry {
@@ -97,9 +108,9 @@ pub struct PackageEntry {
     /// Build across a target matrix (multiple platforms).
     #[serde(default)]
     pub matrix: bool,
-    /// Cross-compile target triples (only when `matrix`).
+    /// Cross-compile targets (only when `matrix`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub targets: Vec<String>,
+    pub targets: Vec<Target>,
     /// The build command run in CI (may be empty for a publish-only generic package).
     #[serde(default)]
     pub command: String,
@@ -189,7 +200,11 @@ mod tests {
                     adapter: Ecosystem::Cargo,
                     mode: Mode::BuildOnly,
                     matrix: true,
-                    targets: vec!["x86_64-unknown-linux-gnu".into()],
+                    targets: vec![Target {
+                        name: "linux".into(),
+                        arch: "x86_64".into(),
+                        bit: 64,
+                    }],
                     command: "cargo build --release -p otfw_cli".into(),
                     artifacts: "target/*/release/otfwc*".into(),
                     manifest: None,

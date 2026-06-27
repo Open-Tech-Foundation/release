@@ -6,11 +6,13 @@ adapter = "generic"
 mode = "build-only"
 matrix = true
 targets = [
-    "x86_64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "x86_64-pc-windows-msvc",
+    { name = "linux", arch = "x86_64", bit = 64 },
+    { name = "linux", arch = "aarch64", bit = 64 },
+    { name = "macos", arch = "x86_64", bit = 64 },
+    { name = "macos", arch = "aarch64", bit = 64 },
+    { name = "windows", arch = "x86_64", bit = 64 },
 ]
-command = "rustup target add ${{ matrix.target }} && cargo build --release --target ${{ matrix.target }}"
-artifacts = "target/${{ matrix.target }}/release/otf-release${{ matrix.ext }}"
+command = "rustup target add ${{ matrix.rust_target }} && cargo build --release --target ${{ matrix.rust_target }}"
+artifacts = "target/${{ matrix.rust_target }}/release/otf-release${{ matrix.ext }}"
 manifest = "Cargo.toml"
 version_field = "version"

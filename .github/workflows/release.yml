@@ -39,17 +39,22 @@ jobs:
     strategy:
       matrix:
         include:
-          - { target: "x86_64-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux-x64" }  # edit me
-          - { target: "x86_64-apple-darwin", os: "macos-latest", ext: "", name: "macos-x64" }  # edit me
-          - { target: "x86_64-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows-x64" }  # edit me
+          - { rust_target: "x86_64-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux", arch: "x86_64", bit: 64 }  # edit me
+          - { rust_target: "aarch64-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux", arch: "aarch64", bit: 64 }  # edit me
+          - { rust_target: "x86_64-apple-darwin", os: "macos-latest", ext: "", name: "macos", arch: "x86_64", bit: 64 }  # edit me
+          - { rust_target: "aarch64-apple-darwin", os: "macos-latest", ext: "", name: "macos", arch: "aarch64", bit: 64 }  # edit me
+          - { rust_target: "x86_64-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "x86_64", bit: 64 }  # edit me
+          # - { rust_target: "i686-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux", arch: "x86", bit: 32 }  # edit me
+          # - { rust_target: "aarch64-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "aarch64", bit: 64 }  # edit me
+          # - { rust_target: "i686-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "x86", bit: 32 }  # edit me
     steps:
       - uses: actions/checkout@v4
       - name: Build otf-release
-        run: rustup target add ${{ matrix.target }} && cargo build --release --target ${{ matrix.target }}  # edit me: cross-compile with ${{ matrix.target }}
+        run: rustup target add ${{ matrix.rust_target }} && cargo build --release --target ${{ matrix.rust_target }}  # edit me: cross-compile with ${{ matrix.rust_target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: otf-release-${{ matrix.name }}
-          path: target/${{ matrix.target }}/release/otf-release${{ matrix.ext }}
+          name: otf-release-${{ matrix.name }}-${{ matrix.arch }}
+          path: target/${{ matrix.rust_target }}/release/otf-release${{ matrix.ext }}
 
   github-release:
     needs: [check-release, build-otf-release]
