@@ -175,14 +175,18 @@ fn render_check_release_job(s: &mut String, version_cmd: &str) {
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n");
     s.push_str("      - id: check\n");
-    s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     s.push_str("        run: |\n");
     s.push_str(&format!(
         "          version=\"$({version_cmd})\"  # edit me: where the version lives\n"
     ));
+    s.push_str("          if [ \"$version\" = \"0.0.0\" ]; then\n");
+    s.push_str("            echo \"Version is 0.0.0 (unreleased); skipping build.\"\n");
+    s.push_str("            echo \"should_release=false\" >> \"$GITHUB_OUTPUT\"\n");
+    s.push_str("            exit 0\n");
+    s.push_str("          fi\n");
     s.push_str("          tag=\"v$version\"\n");
-    s.push_str("          if gh release view \"$tag\" >/dev/null 2>&1; then\n");
-    s.push_str("            echo \"Release $tag already exists; skipping build.\"\n");
+    s.push_str("          if git ls-remote --exit-code --tags origin \"refs/tags/$tag\" >/dev/null 2>&1; then\n");
+    s.push_str("            echo \"Tag $tag already exists; skipping build.\"\n");
     s.push_str("            echo \"should_release=false\" >> \"$GITHUB_OUTPUT\"\n");
     s.push_str("          else\n");
     s.push_str("            echo \"should_release=true\" >> \"$GITHUB_OUTPUT\"\n");

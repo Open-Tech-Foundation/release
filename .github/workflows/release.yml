@@ -15,13 +15,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2 | tr -d '"')"  # edit me: where the version lives
+          if [ "$version" = "0.0.0" ]; then
+            echo "Version is 0.0.0 (unreleased); skipping build."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           tag="v$version"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists; skipping build."
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists; skipping build."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
           else
             echo "should_release=true" >> "$GITHUB_OUTPUT"
