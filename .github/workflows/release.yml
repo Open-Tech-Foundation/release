@@ -12,11 +12,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - id: check
         run: |
           version="$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2 | tr -d '"')"  # edit me: where the version lives
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           if [ "$version" = "0.0.0" ]; then
             echo "Version is 0.0.0 (unreleased); skipping build."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
@@ -37,9 +39,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - { target: "x86_64-unknown-linux-gnu", os: "ubuntu-latest" }  # edit me
-          - { target: "x86_64-apple-darwin", os: "macos-latest" }  # edit me
-          - { target: "x86_64-pc-windows-msvc", os: "windows-latest" }  # edit me
+          - { target: "x86_64-unknown-linux-gnu", os: "ubuntu-latest", ext: "" }  # edit me
+          - { target: "x86_64-apple-darwin", os: "macos-latest", ext: "" }  # edit me
+          - { target: "x86_64-pc-windows-msvc", os: "windows-latest", ext: ".exe" }  # edit me
     steps:
       - uses: actions/checkout@v4
       - name: Build otf-release
@@ -64,8 +66,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          version="$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2 | tr -d '"')"  # edit me: where the version lives
-          tag="v$version"
+          tag="v${{ needs.check-release.outputs.version }}"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists; nothing to do."
             exit 0
@@ -79,4 +80,4 @@ jobs:
               mv "$file" ".flat-artifacts/${dir_name}---${file_name}"
             fi
           done
-          gh release create "$tag" --title "$tag" --generate-notes .flat-artifacts/*
+          gh release create "$tag" --target main --title "$tag" --generate-notes .flat-artifacts/*

@@ -172,6 +172,7 @@ fn render_check_release_job(s: &mut String, version_cmd: &str) {
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    outputs:\n");
     s.push_str("      should_release: ${{ steps.check.outputs.should_release }}\n");
+    s.push_str("      version: ${{ steps.check.outputs.version }}\n");
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n");
     s.push_str("      - id: check\n");
@@ -179,6 +180,7 @@ fn render_check_release_job(s: &mut String, version_cmd: &str) {
     s.push_str(&format!(
         "          version=\"$({version_cmd})\"  # edit me: where the version lives\n"
     ));
+    s.push_str("          echo \"version=$version\" >> \"$GITHUB_OUTPUT\"\n");
     s.push_str("          if [ \"$version\" = \"0.0.0\" ]; then\n");
     s.push_str("            echo \"Version is 0.0.0 (unreleased); skipping build.\"\n");
     s.push_str("            echo \"should_release=false\" >> \"$GITHUB_OUTPUT\"\n");
@@ -259,7 +261,6 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
         render_github_release(
             &mut s,
             &needs,
-            &version_read_cmd(build_only.first().copied()),
         );
     }
 
@@ -284,7 +285,7 @@ fn version_read_cmd(entry: Option<&PackageEntry>) -> String {
         Some(e) if e.adapter == Ecosystem::Npm => {
             "node -p \"require('./package.json').version\"".to_string()
         }
-        _ => "grep -m1 '^version' Cargo.toml | cut -d '\"' -f2 | tr -d '\"'".to_string(),
+        _ => "cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'".to_string(),
     }
 }
 
@@ -300,10 +301,11 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
         s.push_str("    runs-on: ${{ matrix.os }}\n");
         s.push_str("    strategy:\n      matrix:\n        include:\n");
         for target in &entry.targets {
+            let os = runner_os(target);
+            let ext = if os == "windows-latest" { ".exe" } else { "" };
             s.push_str(&format!(
-                "          - {{ target: \"{}\", os: \"{}\" }}  # edit me\n",
-                target,
-                runner_os(target)
+                "          - {{ target: \"{}\", os: \"{}\", ext: \"{}\" }}  # edit me\n",
+                target, os, ext
             ));
         }
     } else {
@@ -416,7 +418,7 @@ fn render_publish_job(s: &mut String, needs: &[String], npm: bool, cargo: bool, 
 
 /// The GitHub Release job for `build-only` packages: attach the staged artifacts to a tag
 /// `vX.Y.Z`, idempotently (skip an existing tag). No registry push.
-fn render_github_release(s: &mut String, needs: &[String], version_cmd: &str) {
+fn render_github_release(s: &mut String, needs: &[String]) {
     s.push_str("  github-release:\n");
     let mut actual_needs = vec!["check-release".to_string()];
     actual_needs.extend_from_slice(needs);
@@ -429,10 +431,7 @@ fn render_github_release(s: &mut String, needs: &[String], version_cmd: &str) {
     s.push_str("      - name: Create GitHub Release\n");
     s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     s.push_str("        run: |\n");
-    s.push_str(&format!(
-        "          version=\"$({version_cmd})\"  # edit me: where the version lives\n"
-    ));
-    s.push_str("          tag=\"v$version\"\n");
+    s.push_str("          tag=\"v${{ needs.check-release.outputs.version }}\"\n");
     s.push_str("          if gh release view \"$tag\" >/dev/null 2>&1; then\n");
     s.push_str("            echo \"Release $tag already exists; nothing to do.\"\n");
     s.push_str("            exit 0\n");
@@ -448,10 +447,10 @@ fn render_github_release(s: &mut String, needs: &[String], version_cmd: &str) {
         s.push_str("            fi\n");
         s.push_str("          done\n");
         s.push_str(
-            "          gh release create \"$tag\" --title \"$tag\" --generate-notes .flat-artifacts/*\n",
+            "          gh release create \"$tag\" --target main --title \"$tag\" --generate-notes .flat-artifacts/*\n",
         );
     } else {
-        s.push_str("          gh release create \"$tag\" --title \"$tag\" --generate-notes\n");
+        s.push_str("          gh release create \"$tag\" --target main --title \"$tag\" --generate-notes\n");
     }
 }
 
@@ -489,7 +488,7 @@ fn configure_generic(
         let defaults: Vec<usize> = DEFAULT_TARGETS
             .iter()
             .enumerate()
-            .filter(|(_, (label, _))| !label.contains("32-bit") && !label.contains("ARM"))
+            .filter(|(_, (label, _))| !label.contains("32-bit"))
             .map(|(i, _)| i)
             .collect();
         let labels: Vec<String> = DEFAULT_TARGETS
@@ -534,7 +533,7 @@ fn configure_generic(
 
     let default_artifacts = match (kind, matrix) {
         (Some("Rust / Cargo"), true) => format!(
-            "target/${{{{ matrix.target }}}}/release/{}",
+            "target/${{{{ matrix.target }}}}/release/{}${{{{ matrix.ext }}}}",
             bin_name.as_deref().unwrap()
         ),
         (Some("Rust / Cargo"), false) => format!("target/release/{}", bin_name.as_deref().unwrap()),
@@ -632,7 +631,7 @@ impl InitPrompt for StdinInitPrompt {
             let defaults: Vec<usize> = DEFAULT_TARGETS
                 .iter()
                 .enumerate()
-                .filter(|(_, (label, _))| !label.contains("32-bit") && !label.contains("ARM"))
+                .filter(|(_, (label, _))| !label.contains("32-bit"))
                 .map(|(i, _)| i)
                 .collect();
             let labels: Vec<String> = DEFAULT_TARGETS
