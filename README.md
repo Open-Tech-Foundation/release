@@ -37,6 +37,25 @@ adapter-based: **npm, cargo, and a `generic` (bring-your-own-commands, e.g. JSR)
 - **Dependency-correct.** peerDep dependents mirror the bump; encapsulated ones get a patch.
   Private apps stay buildable but are never published.
 
+## Installation
+
+You can easily install `otf-release` using our automated installation scripts:
+
+**macOS / Linux:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.ps1 | iex
+```
+
+Alternatively, you can compile from source using Cargo:
+```bash
+cargo install --git https://github.com/Open-Tech-Foundation/release
+```
+
 ## Documentation
 
 Reference docs live in [`docs/`](./docs/) — start at [`docs/README.md`](./docs/README.md).
