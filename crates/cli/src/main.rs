@@ -13,7 +13,7 @@ use otf_release_adapters::generic::{GenericAdapter, GenericPkg};
 use otf_release_core::adapter::Adapter;
 use otf_release_core::config::{Ecosystem, ReleaseConfig, DEFAULT_VERSION_FIELD};
 use otf_release_core::init::AdapterFactory;
-use otf_release_core::{init, publish, update, version};
+use otf_release_core::{init, publish, upgrade, version};
 
 /// Builds the concrete ecosystem adapters from `opentf-release-adapters`. The generic adapter is
 /// configured from `release.toml`'s generic `[[package]]` entries.
@@ -96,8 +96,8 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Update configurations and the GitHub workflow to match the latest CLI version
-    Update {
+    /// Upgrade configurations and the GitHub workflow to match the latest CLI version
+    Upgrade {
         /// Overwrite existing files without prompting.
         #[arg(long)]
         force: bool,
@@ -118,10 +118,10 @@ fn main() -> Result<()> {
             };
             init::run(&factory, &root, &init::InitOptions { force })
         }
-        Command::Update { force } => {
-            update::orchestrate(
+        Command::Upgrade { force } => {
+            upgrade::orchestrate(
                 &root,
-                &update::UpdateOptions { force },
+                &upgrade::UpgradeOptions { force },
                 &otf_release_core::prompt::StdinPrompt,
             )?;
             Ok(())

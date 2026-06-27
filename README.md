@@ -8,7 +8,7 @@
 
 A single-binary release tool for the OTF monorepo. You write the release notes
 (in each package's `[Unreleased]` changelog section), you pick the bumps — `release`
-handles the rest: dependency-aware version cascades, internal range updates, topological
+handles the rest: dependency-aware version cascades, internal range upgrades, topological
 publishing, and a matrix-gated GitHub release in one `release.yml`.
 
 Unlike commit-driven tools, your hand-written `[Unreleased]` notes are the source of
@@ -18,14 +18,14 @@ adapter-based: **npm, cargo, and a `generic` (bring-your-own-commands, e.g. JSR)
 ## What it does
 
 - **`version`** (local) — lists packages, you multi-select and choose bumps; cascades to
-  internal dependents, updates dep ranges, moves `[Unreleased]` → a dated section, then
+  internal dependents, upgrades dep ranges, moves `[Unreleased]` → a dated section, then
   opens a release PR. Never touches `main` directly.
 - **`publish`** (CI) — publishes changed packages in dependency order, idempotent and
   resumable, attaching prebuilt binaries when a workflow stages them.
 - **`init`** — interactive setup: asks which adapters to enable and, per package, its mode
   (`publish` to a registry, or `build-only` → GitHub Release artifacts), build matrix, command,
   and artifacts. Persists `release.toml` and generates one `release.yml` from it.
-- **`update`** — instantly updates configurations and the `.github/workflows/release.yml` CI pipeline to match the latest CLI version.
+- **`upgrade`** — instantly upgrades configurations and the `.github/workflows/release.yml` CI pipeline to match the latest CLI version.
 
 ## Principles
 

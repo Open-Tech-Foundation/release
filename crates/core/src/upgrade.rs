@@ -1,4 +1,4 @@
-//! The `update` command — regenerates the GitHub workflow from the existing config.
+//! The `upgrade` command — regenerates the GitHub workflow from the existing config.
 
 use std::fs;
 use std::path::Path;
@@ -9,15 +9,15 @@ use crate::config::ReleaseConfig;
 use crate::init::render_workflow;
 use crate::prompt::Prompt;
 
-/// Options for an `update` run.
+/// Options for an `upgrade` run.
 #[derive(Debug, Clone, Default)]
-pub struct UpdateOptions {
+pub struct UpgradeOptions {
     /// Overwrite existing files (`release.yml`) without prompting.
     pub force: bool,
 }
 
 /// Load the config and regenerate the workflow.
-pub fn orchestrate(root: &Path, opts: &UpdateOptions, prompt: &dyn Prompt) -> Result<()> {
+pub fn orchestrate(root: &Path, opts: &UpgradeOptions, prompt: &dyn Prompt) -> Result<()> {
     let config = ReleaseConfig::load(root)
         .context("Could not load release.toml. Are you in an initialized repo?")?;
     let yaml = render_workflow(&config);
@@ -33,7 +33,7 @@ pub fn orchestrate(root: &Path, opts: &UpdateOptions, prompt: &dyn Prompt) -> Re
     fs::create_dir_all(yml_path.parent().unwrap())
         .with_context(|| format!("creating {}", yml_path.parent().unwrap().display()))?;
     fs::write(&yml_path, yaml).with_context(|| format!("writing {}", yml_path.display()))?;
-    println!("Updated {}", yml_path.display());
+    println!("Upgraded {}", yml_path.display());
 
     Ok(())
 }
