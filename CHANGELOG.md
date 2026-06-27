@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-27
+
 ### Added
 - **init** — The `generic` adapter wizard is now much smarter: it explicitly asks for the `mode` using a Select menu, prompts for the binary name for Rust projects, provides matrix-aware default commands (`rustup target add ...`), and automatically extracts versions from `.toml` files using `grep`.
 - **init** — All `y/n` typing prompts have been replaced with arrow-key `Select` components for a smoother, typing-free UX.
