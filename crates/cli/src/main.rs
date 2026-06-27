@@ -96,7 +96,7 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Regenerate the GitHub workflow from the existing release.toml without interactive prompts.
+    /// Update configurations and the GitHub workflow to match the latest CLI version
     Update {
         /// Overwrite existing files without prompting.
         #[arg(long)]
