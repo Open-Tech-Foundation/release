@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Added
+- **init** — Emits all known targets in the generated `.github/workflows/release.yml` matrix with unselected ones commented out, allowing users to easily toggle builds on and off.
+- **core** — Added automated `install.sh` and `install.ps1` scripts for seamless downloads of GitHub Release assets.
+- **docs** — Redesigned the `README.md` into a polished landing page with a commands table and a visual Mermaid workflow diagram.
+
+### Changed
+- **core** — Refactored CI target matrix configurations from Rust-specific strings to generic `Target` objects (`{ name, arch }`) making the schema fully language-agnostic.
+
 ## [0.1.0] - 2026-06-27
 
 ### Added
