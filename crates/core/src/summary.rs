@@ -38,43 +38,34 @@ pub struct Plan {
 pub fn render(plan: &Plan) -> String {
     let mut out = String::new();
 
-    let selected: Vec<&VersionChange> = plan.changes.iter().filter(|c| c.selected).collect();
-    let auto: Vec<&VersionChange> = plan.changes.iter().filter(|c| !c.selected).collect();
+    if !plan.changes.is_empty() {
+        let name_w = plan.changes.iter().map(|c| c.name.len()).max().unwrap_or(7).max(7);
+        let old_w = plan.changes.iter().map(|c| c.old_version.len()).max().unwrap_or(3).max(3);
+        let new_w = plan.changes.iter().map(|c| c.new_version.len()).max().unwrap_or(3).max(3);
 
-    if !selected.is_empty() {
-        out.push_str("Packages to publish:\n");
-        for c in &selected {
-            out.push_str(&format!(
-                "  {}  {} → {}  ({})\n",
-                c.name, c.old_version, c.new_version, c.note
-            ));
-        }
-        out.push('\n');
-    }
+        out.push_str("\nVersion Bumps (Direct & Indirect):\n");
+        out.push_str(&format!("  {:<name_w$} | {:<old_w$} | {:<new_w$} | {}\n", "Package", "Old", "New", "Reason", name_w=name_w, old_w=old_w, new_w=new_w));
+        out.push_str(&format!("  {:-<name_w$}-+-{:-<old_w$}-+-{:-<new_w$}-+--------------------------------\n", "", "", "", name_w=name_w, old_w=old_w, new_w=new_w));
 
-    if !auto.is_empty() {
-        out.push_str("Auto-bumped dependents:\n");
-        for c in &auto {
-            out.push_str(&format!(
-                "  {}  {} → {}  ({})\n",
-                c.name, c.old_version, c.new_version, c.note
-            ));
+        for c in &plan.changes {
+            out.push_str(&format!("  {:<name_w$} | {:<old_w$} | {:<new_w$} | {}\n", c.name, c.old_version, c.new_version, c.note, name_w=name_w, old_w=old_w, new_w=new_w));
         }
         out.push('\n');
     }
 
     if !plan.range_updates.is_empty() {
-        out.push_str("Internal range updates:\n");
+        let cons_w = plan.range_updates.iter().map(|c| c.consumer.len()).max().unwrap_or(8).max(8);
+        let dep_w = plan.range_updates.iter().map(|c| c.dep.len()).max().unwrap_or(10).max(10);
+        let old_w = plan.range_updates.iter().map(|c| c.old_range.len()).max().unwrap_or(3).max(3);
+        let new_w = plan.range_updates.iter().map(|c| c.new_range.len()).max().unwrap_or(3).max(3);
+
+        out.push_str("Internal Range Updates:\n");
+        out.push_str(&format!("  {:<cons_w$} | {:<dep_w$} | {:<old_w$} | {:<new_w$} | {}\n", "Consumer", "Dependency", "Old", "New", "Notes", cons_w=cons_w, dep_w=dep_w, old_w=old_w, new_w=new_w));
+        out.push_str(&format!("  {:-<cons_w$}-+-{:-<dep_w$}-+-{:-<old_w$}-+-{:-<new_w$}-+------------------------\n", "", "", "", "", cons_w=cons_w, dep_w=dep_w, old_w=old_w, new_w=new_w));
+
         for r in &plan.range_updates {
-            let private = if r.consumer_private {
-                "   (private — range updated, NOT published)"
-            } else {
-                ""
-            };
-            out.push_str(&format!(
-                "  {}:  {} {} → {}{}\n",
-                r.consumer, r.dep, r.old_range, r.new_range, private
-            ));
+            let note = if r.consumer_private { "private app (not published)" } else { "" };
+            out.push_str(&format!("  {:<cons_w$} | {:<dep_w$} | {:<old_w$} | {:<new_w$} | {}\n", r.consumer, r.dep, r.old_range, r.new_range, note, cons_w=cons_w, dep_w=dep_w, old_w=old_w, new_w=new_w));
         }
         out.push('\n');
     }
@@ -115,12 +106,11 @@ mod tests {
         };
 
         let out = render(&plan);
-        assert!(out.contains("Packages to publish:"));
-        assert!(out.contains("@opentf/core  1.2.0 → 2.0.0  (major, selected)"));
-        assert!(out.contains("Auto-bumped dependents:"));
+        assert!(out.contains("Version Bumps (Direct & Indirect):"));
+        assert!(out.contains("@opentf/core | 1.2.0 | 2.0.0 | major, selected"));
         assert!(out.contains("mirror major — peerDep on @opentf/core"));
-        assert!(out.contains("Internal range updates:"));
-        assert!(out.contains("(private — range updated, NOT published)"));
+        assert!(out.contains("Internal Range Updates:"));
+        assert!(out.contains("private app (not published)"));
     }
 
     #[test]
@@ -136,8 +126,7 @@ mod tests {
             range_updates: vec![],
         };
         let out = render(&plan);
-        assert!(out.contains("Packages to publish:"));
-        assert!(!out.contains("Auto-bumped dependents:"));
-        assert!(!out.contains("Internal range updates:"));
+        assert!(out.contains("Version Bumps (Direct & Indirect):"));
+        assert!(!out.contains("Internal Range Updates:"));
     }
 }
