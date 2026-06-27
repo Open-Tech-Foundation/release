@@ -56,13 +56,8 @@ Alternatively, you can compile from source using Cargo:
 cargo install --git https://github.com/Open-Tech-Foundation/release
 ```
 
-## Documentation
+## License
 
-Reference docs live in [`docs/`](./docs/) — start at [`docs/README.md`](./docs/README.md).
-
-- [Architecture](./docs/architecture.md) · [Adapters](./docs/adapters/overview.md) ([npm](./docs/adapters/npm.md) · [cargo](./docs/adapters/cargo.md) · [generic](./docs/adapters/generic.md)) · [Configuration](./docs/configuration.md)
-- Commands: [version](./docs/commands/version.md) · [publish](./docs/commands/publish.md) · [init](./docs/commands/init.md)
-- [Changelog format](./docs/changelog-format.md) · [Preflight gate](./docs/preflight.md) · [CI workflow](./docs/ci-workflow.md)
-- [Implementation plan](./docs/implementation-plan.md) · [Roadmap](./docs/roadmap.md)
+MIT License. See [LICENSE](LICENSE) for details.
 
 
