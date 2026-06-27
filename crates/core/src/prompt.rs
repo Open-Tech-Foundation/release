@@ -48,6 +48,7 @@ impl Prompt for StdinPrompt {
         print!("{summary}");
         Ok(Select::new("Proceed?", vec!["No", "Yes"])
             .raw_prompt()?
-            .index == 1)
+            .index
+            == 1)
     }
 }

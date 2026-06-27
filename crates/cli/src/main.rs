@@ -13,7 +13,7 @@ use otf_release_adapters::generic::{GenericAdapter, GenericPkg};
 use otf_release_core::adapter::Adapter;
 use otf_release_core::config::{Ecosystem, ReleaseConfig, DEFAULT_VERSION_FIELD};
 use otf_release_core::init::AdapterFactory;
-use otf_release_core::{init, publish, version};
+use otf_release_core::{init, publish, update, version};
 
 /// Builds the concrete ecosystem adapters from `opentf-release-adapters`. The generic adapter is
 /// configured from `release.toml`'s generic `[[package]]` entries.
@@ -96,6 +96,12 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Regenerate the GitHub workflow from the existing release.toml without interactive prompts.
+    Update {
+        /// Overwrite existing files without prompting.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -111,6 +117,14 @@ fn main() -> Result<()> {
                 generic: Vec::new(),
             };
             init::run(&factory, &root, &init::InitOptions { force })
+        }
+        Command::Update { force } => {
+            update::orchestrate(
+                &root,
+                &update::UpdateOptions { force },
+                &otf_release_core::prompt::StdinPrompt,
+            )?;
+            Ok(())
         }
 
         // Every other command reads `release.toml` and acts on each enabled ecosystem.

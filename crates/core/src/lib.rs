@@ -31,4 +31,5 @@ pub mod preflight;
 pub mod prompt;
 pub mod publish;
 pub mod summary;
+pub mod update;
 pub mod version;

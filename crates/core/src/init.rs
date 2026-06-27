@@ -166,6 +166,29 @@ fn slug(name: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
+/// The preliminary job that checks if a release is needed, guarding the expensive build steps.
+fn render_check_release_job(s: &mut String, version_cmd: &str) {
+    s.push_str("  check-release:\n");
+    s.push_str("    runs-on: ubuntu-latest\n");
+    s.push_str("    outputs:\n");
+    s.push_str("      should_release: ${{ steps.check.outputs.should_release }}\n");
+    s.push_str("    steps:\n");
+    s.push_str("      - uses: actions/checkout@v4\n");
+    s.push_str("      - id: check\n");
+    s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
+    s.push_str("        run: |\n");
+    s.push_str(&format!(
+        "          version=\"$({version_cmd})\"  # edit me: where the version lives\n"
+    ));
+    s.push_str("          tag=\"v$version\"\n");
+    s.push_str("          if gh release view \"$tag\" >/dev/null 2>&1; then\n");
+    s.push_str("            echo \"Release $tag already exists; skipping build.\"\n");
+    s.push_str("            echo \"should_release=false\" >> \"$GITHUB_OUTPUT\"\n");
+    s.push_str("          else\n");
+    s.push_str("            echo \"should_release=true\" >> \"$GITHUB_OUTPUT\"\n");
+    s.push_str("          fi\n\n");
+}
+
 /// Render `.github/workflows/release.yml` from the config.
 ///
 /// Shape:
@@ -193,6 +216,8 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
         s.push_str("\npermissions:\n  contents: write  # create tags and GitHub Releases\n");
     }
     s.push_str("\njobs:\n");
+    let version_cmd = version_read_cmd(config.packages.first());
+    render_check_release_job(&mut s, &version_cmd);
 
     // Build jobs only for packages that actually declare a build command.
     let has_build = |p: &&PackageEntry| !p.command.trim().is_empty();
@@ -264,6 +289,8 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
     let job = build_job(&entry.name);
     let art_slug = slug(&entry.name);
     s.push_str(&format!("  {job}:\n"));
+    s.push_str("    needs: [check-release]\n");
+    s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
 
     if entry.matrix {
         s.push_str("    runs-on: ${{ matrix.os }}\n");
@@ -341,7 +368,10 @@ fn download_artifacts(s: &mut String, needs: &[String]) -> bool {
 /// since the tool can't know your registry's toolchain or secret.
 fn render_publish_job(s: &mut String, needs: &[String], npm: bool, cargo: bool, generic: bool) {
     s.push_str("  publish:\n");
-    needs_line(s, needs);
+    let mut actual_needs = vec!["check-release".to_string()];
+    actual_needs.extend_from_slice(needs);
+    needs_line(s, &actual_needs);
+    s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
@@ -384,7 +414,10 @@ fn render_publish_job(s: &mut String, needs: &[String], npm: bool, cargo: bool, 
 /// `vX.Y.Z`, idempotently (skip an existing tag). No registry push.
 fn render_github_release(s: &mut String, needs: &[String], version_cmd: &str) {
     s.push_str("  github-release:\n");
-    needs_line(s, needs);
+    let mut actual_needs = vec!["check-release".to_string()];
+    actual_needs.extend_from_slice(needs);
+    needs_line(s, &actual_needs);
+    s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
@@ -848,7 +881,7 @@ mod tests {
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         assert!(out.contains("        run: otf-release publish\n"));
         // No build steps, so no needs and no artifact download.
-        assert!(!out.contains("needs:"));
+        assert!(out.contains("needs: [check-release]"));
         assert!(!out.contains("github-release"));
     }
 
@@ -869,7 +902,7 @@ mod tests {
         // Ships via a GitHub Release, idempotently — no registry, no cargo publish.
         assert!(out.contains("permissions:\n  contents: write"));
         assert!(out.contains("  github-release:\n"));
-        assert!(out.contains("    needs: [build-opentf-release]\n"));
+        assert!(out.contains("    needs: [check-release, build-opentf-release]\n"));
         assert!(out.contains("          if gh release view \"$tag\" >/dev/null 2>&1; then\n"));
         assert!(!out.contains("cargo publish"));
         assert!(!out.contains("crates.io"));
@@ -905,7 +938,7 @@ mod tests {
         assert!(out.contains("  build-jsr-lib:\n"));
         // A unified publish job runs `otf-release publish` (which runs the configured command).
         assert!(out.contains("  publish:\n"));
-        assert!(out.contains("    needs: [build-jsr-lib]\n"));
+        assert!(out.contains("    needs: [check-release, build-jsr-lib]\n"));
         assert!(out.contains("        run: otf-release publish --artifacts-dir .artifacts\n"));
         // The tool can't know a generic registry's toolchain/secret → edit-me markers.
         assert!(out.contains("# edit me: set up the toolchain your generic publish command needs"));
@@ -923,11 +956,11 @@ mod tests {
         assert!(out.contains("  build-docs-site:\n"));
         // A single publish job (npm) depending on the npm build.
         assert!(out.contains("  publish:\n"));
-        assert!(out.contains("    needs: [build-docs-site]\n"));
+        assert!(out.contains("    needs: [check-release, build-docs-site]\n"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         // cargo side is build-only: a GitHub Release depending on the cargo build.
         assert!(out.contains("  github-release:\n"));
-        assert!(out.contains("    needs: [build-web-compiler]\n"));
+        assert!(out.contains("    needs: [check-release, build-web-compiler]\n"));
     }
 
     #[test]
