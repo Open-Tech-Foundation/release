@@ -37,7 +37,11 @@ pub struct VersionOptions {
 pub fn run(adapter: &dyn Adapter, root: &Path, opts: &VersionOptions) -> Result<()> {
     let mut opts = opts.clone();
     let prompt = StdinPrompt;
-    if std::process::Command::new("gh").arg("--version").output().is_err() {
+    if std::process::Command::new("gh")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         if !Prompt::confirm(&prompt, "\nGitHub CLI (`gh`) is not installed. Continue anyway? (You will need to manually open the PR)")? {
             bail!("Cancelled.");
         }

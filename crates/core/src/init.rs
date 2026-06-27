@@ -258,10 +258,7 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
             .filter(|p| has_build(p))
             .map(|p| build_job(&p.name))
             .collect();
-        render_github_release(
-            &mut s,
-            &needs,
-        );
+        render_github_release(&mut s, &needs);
     }
 
     s
@@ -285,7 +282,9 @@ fn version_read_cmd(entry: Option<&PackageEntry>) -> String {
         Some(e) if e.adapter == Ecosystem::Npm => {
             "node -p \"require('./package.json').version\"".to_string()
         }
-        _ => "cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'".to_string(),
+        _ => {
+            "cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'".to_string()
+        }
     }
 }
 
