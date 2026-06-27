@@ -50,11 +50,34 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 flowchart TD
     Init["1️⃣ <b>Init</b><br/>Run <code>otf-release init</code> once to generate configs & CI"]
     Curate["2️⃣ <b>Curate</b><br/>Write <code>[Unreleased]</code> notes as you develop"]
+    PreVersion{"🪝 pre_version"}
     Version["3️⃣ <b>Version</b><br/>Run <code>otf-release version</code> to bump & open PR"]
+    PostVersion{"🪝 post_version"}
     Merge["4️⃣ <b>Merge</b><br/>Review & merge the Release PR to <code>main</code>"]
+    PrePublish{"🪝 pre_publish"}
     Publish["5️⃣ <b>Publish</b><br/>CI auto-compiles & publishes artifacts natively"]
+    PostPublish{"🪝 post_publish"}
 
-    Init --> Curate --> Version --> Merge --> Publish
+    Init --> Curate --> PreVersion --> Version --> PostVersion --> Merge --> PrePublish --> Publish --> PostPublish
+```
+
+## Lifecycle Hooks
+
+You can define custom shell scripts to run at critical stages of the release process by editing your `release.toml` file. These hooks are executed across all operating systems automatically using your native shell (`sh` on Unix, `powershell` on Windows).
+
+```toml
+[hooks]
+# Runs before the interactive version prompt starts (e.g. to validate repo state)
+pre_version = ["npm run lint", "node scripts/validate.js"]
+
+# Runs after versions and changelogs are updated, but BEFORE they are committed
+post_version = ["python3 scripts/sync-docs.py"]
+
+# Runs in CI before the publish loop begins
+pre_publish = ["npm run test"]
+
+# Runs in CI after everything is successfully published
+post_publish = ["curl -X POST ..."]
 ```
 
 ## License
