@@ -4,16 +4,17 @@
 
 </div>
 
+<div align="right">
+
+Part of Open Tech Foundation ecosystem.
+
+</div>
+
 > Curated-changelog, manual-bump release CLI for polyglot monorepos.
 
-A single-binary release tool for the OTF monorepo. You write the release notes
-(in each package's `[Unreleased]` changelog section), you pick the bumps — `release`
-handles the rest: dependency-aware version cascades, internal range upgrades, topological
-publishing, and a matrix-gated GitHub release in one `release.yml`.
+A single-binary release tool for polyglot monorepos. You write your release notes in each package's `[Unreleased]` changelog section and pick the bumps — `otf-release` handles the rest: dependency-aware version cascades, topological publishing across multiple ecosystems (**npm, cargo, generic/JSR**), and a matrix-gated cross-platform GitHub release via a single generated `release.yml`. 
 
-Unlike commit-driven tools, your hand-written `[Unreleased]` notes are the source of
-truth — never inferred from commits. Unlike npm-locked tools, the publishing backend is
-adapter-based: **npm, cargo, and a `generic` (bring-your-own-commands, e.g. JSR) today, others later**.
+Unlike commit-driven tools, your hand-written notes are the strict source of truth.
 
 ## Installation
 
@@ -59,5 +60,3 @@ flowchart TD
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
-
-
