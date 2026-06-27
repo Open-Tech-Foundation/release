@@ -61,6 +61,12 @@ flowchart TD
     Init --> Curate --> PreVersion --> Version --> PostVersion --> Merge --> PrePublish --> Publish --> PostPublish
 ```
 
+## Pre-releases
+
+When running `otf-release version`, the interactive prompt will first ask you to select a release channel. By default, it uses the **stable** channel. If you select an alternative channel (e.g. `alpha`, `beta`, `rc`), `otf-release` will automatically compute valid semantic pre-release versions for your bumps.
+
+For example, choosing a `minor` bump on the `beta` channel will transition `1.0.0` into `1.1.0-beta.0`. Once on a pre-release channel, you can select the new `prerelease` bump option to iterate tags (e.g., `beta.0` → `beta.1`).
+
 ## Lifecycle Hooks
 
 You can define custom shell scripts to run at critical stages of the release process by editing your `release.toml` file. These hooks are executed across all operating systems automatically using your native shell (`sh` on Unix, `powershell` on Windows).
