@@ -26,11 +26,16 @@ adapter-based: **npm, cargo, and a `generic` (bring-your-own-commands, e.g. JSR)
 
 ## Workflow
 
-1. **Init:** Run `otf-release init` once to configure ecosystems, build matrices, and instantly generate your `.github/workflows/release.yml` pipeline.
-2. **Curate:** Write your release notes in each package's `[Unreleased]` changelog section as you develop features.
-3. **Version:** Run `otf-release version` locally. It walks you through selecting bumps, safely cascades versions, and opens a curated Release PR.
-4. **Merge:** Review the PR and merge it into `main`. The tool guards against empty changelogs to ensure no undocumented ships occur.
-5. **Publish:** The generated `release.yml` GitHub Action triggers automatically, cross-compiles artifacts natively via the `release.toml` configuration, and publishes them.
+```mermaid
+flowchart TD
+    Init["1️⃣ <b>Init</b><br/>Run <code>otf-release init</code> once to generate configs & CI"]
+    Curate["2️⃣ <b>Curate</b><br/>Write <code>[Unreleased]</code> notes as you develop"]
+    Version["3️⃣ <b>Version</b><br/>Run <code>otf-release version</code> to bump & open PR"]
+    Merge["4️⃣ <b>Merge</b><br/>Review & merge the Release PR to <code>main</code>"]
+    Publish["5️⃣ <b>Publish</b><br/>CI auto-compiles & publishes artifacts natively"]
+
+    Init --> Curate --> Version --> Merge --> Publish
+```
 
 ## Installation
 
