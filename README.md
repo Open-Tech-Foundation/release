@@ -65,14 +65,4 @@ Reference docs live in [`docs/`](./docs/) — start at [`docs/README.md`](./docs
 - [Changelog format](./docs/changelog-format.md) · [Preflight gate](./docs/preflight.md) · [CI workflow](./docs/ci-workflow.md)
 - [Implementation plan](./docs/implementation-plan.md) · [Roadmap](./docs/roadmap.md)
 
-## Status
 
-v1 is **functionally complete**: all three commands (`version`, `publish`, `init`) and the **npm**
-and **cargo** adapters are implemented and tested (CI on fmt + clippy + test). Setup is
-config-driven: `init` is interactive and writes [`release.toml`](./docs/configuration.md) (the
-source of truth, no `--adapter` flag), with a per-package **`publish`** vs **`build-only`** mode.
-The cargo adapter supports **lockstep** workspaces and a **GitHub-Release binary** distribution
-(cross-OS artifacts, no crates.io) — which is how `otf-release` ships itself. See the
-[implementation plan](./docs/implementation-plan.md) for the phase-by-phase breakdown. Further
-ecosystem adapters (PyPI), pre-releases, and a release-PR bot remain on the
-[roadmap](./docs/roadmap.md).
