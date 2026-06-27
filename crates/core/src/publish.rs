@@ -28,10 +28,11 @@ pub struct PublishOptions {
 }
 
 /// Wire up the real git/forge and run the flow.
-pub fn run(adapter: &dyn Adapter, root: &Path, opts: &PublishOptions) -> Result<()> {
+pub fn run(adapter: &dyn Adapter, root: &Path, opts: &PublishOptions, hooks: &crate::config::Hooks) -> Result<()> {
     let repo = GitRepo::new(root);
     let forge = GhForge::new(root);
-    orchestrate(adapter, &repo, &forge, opts)
+    let hook_runner = crate::hooks::ShHookRunner;
+    orchestrate(adapter, &repo, &forge, root, opts, hooks, &hook_runner)
 }
 
 /// The testable core of the publish flow:
@@ -41,7 +42,10 @@ pub fn orchestrate(
     adapter: &dyn Adapter,
     git: &dyn GitOps,
     forge: &dyn Forge,
+    root: &Path,
     opts: &PublishOptions,
+    hooks: &crate::config::Hooks,
+    hook_runner: &dyn crate::hooks::HookRunner,
 ) -> Result<()> {
     let packages = adapter.discover_packages()?;
     let graph = Graph::build(&packages)?;
@@ -74,6 +78,10 @@ pub fn orchestrate(
         return Ok(());
     }
 
+    if !hooks.pre_publish.is_empty() {
+        hook_runner.run_hooks(root, &hooks.pre_publish)?;
+    }
+
     for pkg in to_publish {
         adapter.resolve_workspace_links(pkg)?;
 
@@ -94,6 +102,10 @@ pub fn orchestrate(
         }
 
         println!("Published {tag}");
+    }
+
+    if !hooks.post_publish.is_empty() {
+        hook_runner.run_hooks(root, &hooks.post_publish)?;
     }
 
     Ok(())

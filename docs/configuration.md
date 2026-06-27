@@ -11,6 +11,13 @@ live here. The file is plain, hand-editable TOML; parsed by `crates/core/src/con
 # Ecosystems enabled for this repo (multi): "npm", "crates.io", "generic".
 adapters = ["npm", "crates.io"]
 
+# Global lifecycle hooks (optional). Array of shell commands executed in order.
+[hooks]
+pre_version = ["npm run lint", "node scripts/validate.js"]
+post_version = ["python3 scripts/sync-docs.py"]
+pre_publish = ["npm run test"]
+post_publish = ["curl -X POST ..."]
+
 # Zero or more packages that need a build step before publish/release.
 # A publishable package with no entry here is published as-is by its adapter (no build).
 [[package]]

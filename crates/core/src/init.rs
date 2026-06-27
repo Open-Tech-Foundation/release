@@ -133,6 +133,7 @@ pub fn orchestrate(
     }
 
     let config = ReleaseConfig {
+        hooks: crate::config::Hooks::default(),
         adapters: enabled,
         packages,
     };
@@ -877,8 +878,8 @@ mod tests {
             mode: Mode::BuildOnly,
             matrix: true,
             targets: vec![
-                "x86_64-unknown-linux-gnu".into(),
-                "x86_64-pc-windows-msvc".into(),
+                crate::config::Target { name: "linux".into(), arch: "x86_64".into() },
+                crate::config::Target { name: "windows".into(), arch: "x86_64".into() },
             ],
             command: "cargo build --release -p otf-release".into(),
             artifacts: "target/${{ matrix.rust_target }}/release/otf-release*".into(),
@@ -932,6 +933,7 @@ mod tests {
     #[test]
     fn npm_only_renders_publish_job_no_release() {
         let config = ReleaseConfig {
+            hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
             packages: vec![],
         };
@@ -947,6 +949,7 @@ mod tests {
     #[test]
     fn cargo_build_only_renders_github_release_no_registry() {
         let config = ReleaseConfig {
+            hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
             packages: vec![cargo_build_only("opentf-release")],
         };
@@ -955,7 +958,7 @@ mod tests {
         assert!(out.contains("  build-opentf-release:\n"));
         assert!(out.contains("    runs-on: ${{ matrix.os }}\n"));
         assert!(out.contains(
-            "          - { target: \"x86_64-pc-windows-msvc\", os: \"windows-latest\" }  # edit me\n"
+            "name: \"windows\", arch: \"x86_64\""
         ));
         assert!(out.contains("        run: cargo build --release -p otf-release"));
         // Ships via a GitHub Release, idempotently — no registry, no cargo publish.
@@ -972,6 +975,7 @@ mod tests {
     #[test]
     fn generic_build_only_renders_no_toolchain_and_manifest_version() {
         let config = ReleaseConfig {
+            hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
             packages: vec![generic_pkg("release", None)],
         };
@@ -990,6 +994,7 @@ mod tests {
     #[test]
     fn generic_publish_renders_publish_job_with_edit_me_toolchain() {
         let config = ReleaseConfig {
+            hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
             packages: vec![generic_pkg("jsr-lib", Some("npx jsr publish"))],
         };
@@ -1007,6 +1012,7 @@ mod tests {
     #[test]
     fn polyglot_renders_one_publish_job_and_release() {
         let config = ReleaseConfig {
+            hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             packages: vec![cargo_build_only("web-compiler"), npm_publish("docs-site")],
         };

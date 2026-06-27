@@ -144,7 +144,7 @@ fn main() -> Result<()> {
             };
             for eco in &config.adapters {
                 let adapter = factory.make(*eco);
-                version::run(adapter.as_ref(), &root, &opts)?;
+                version::run(adapter.as_ref(), &root, &opts, &config.hooks)?;
             }
             Ok(())
         }
@@ -171,6 +171,7 @@ fn main() -> Result<()> {
                         dry_run,
                         skip: skip.clone(),
                     },
+                    &config.hooks,
                 )?;
             }
             Ok(())

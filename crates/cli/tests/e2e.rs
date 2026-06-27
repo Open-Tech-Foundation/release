@@ -167,22 +167,28 @@ fn version_then_publish_ships_exactly_the_computed_bumps() {
     let adapter = NpmAdapter::with_runner(root, Box::new(registry.clone()));
     let repo = GitRepo::new(root);
     let forge = CapForge::default();
+    let prompt = ScriptedPrompt;
+    let today = "2026-06-24";
 
     // 1. version: cut the release branch with bumps (core major -> sdk mirror major).
+    let hooks = otf_release_core::config::Hooks::default();
+    let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
     version::orchestrate(
         &adapter,
         &repo,
         &repo,
         &forge,
-        &ScriptedPrompt,
+        &prompt,
         root,
-        "2026-06-24",
+        today,
         &VersionOptions::default(),
+        &hooks,
+        &hook_runner,
     )
     .unwrap();
 
     // 2. (merge simulated by staying on the branch) publish reads the bumped working tree.
-    publish::orchestrate(&adapter, &repo, &forge, &PublishOptions::default()).unwrap();
+    publish::orchestrate(&adapter, &repo, &forge, &root, &PublishOptions::default(), &hooks, &hook_runner).unwrap();
 
     let published = registry.published.lock().unwrap();
     assert!(published.contains("@x/core@2.0.0"), "{published:?}");

@@ -34,7 +34,7 @@ pub struct VersionOptions {
 }
 
 /// Wire up the real adapter/git/forge/prompt and run the flow.
-pub fn run(adapter: &dyn Adapter, root: &Path, opts: &VersionOptions) -> Result<()> {
+pub fn run(adapter: &dyn Adapter, root: &Path, opts: &VersionOptions, hooks: &crate::config::Hooks) -> Result<()> {
     let mut opts = opts.clone();
     let prompt = StdinPrompt;
     if std::process::Command::new("gh")
@@ -49,8 +49,9 @@ pub fn run(adapter: &dyn Adapter, root: &Path, opts: &VersionOptions) -> Result<
     }
     let repo = GitRepo::new(root);
     let forge = GhForge::new(root);
+    let hook_runner = crate::hooks::ShHookRunner;
     let today = date::today();
-    orchestrate(adapter, &repo, &repo, &forge, &prompt, root, &today, &opts)
+    orchestrate(adapter, &repo, &repo, &forge, &prompt, root, &today, &opts, hooks, &hook_runner)
 }
 
 /// The testable core of the `version` flow. `today` is injected for deterministic output.
@@ -64,7 +65,13 @@ pub fn orchestrate(
     root: &Path,
     today: &str,
     opts: &VersionOptions,
+    hooks: &crate::config::Hooks,
+    hook_runner: &dyn crate::hooks::HookRunner,
 ) -> Result<()> {
+    if !hooks.pre_version.is_empty() {
+        hook_runner.run_hooks(root, &hooks.pre_version)?;
+    }
+
     let packages = adapter.discover_packages()?;
 
     // 1. Strict preflight — abort before any prompt or mutation.
@@ -189,6 +196,10 @@ pub fn orchestrate(
         changelog::release_unreleased(&pkg.changelog_path, new_ver, today, empties[name.as_str()])?;
     }
     adapter.update_lockfile(root)?;
+
+    if !hooks.post_version.is_empty() {
+        hook_runner.run_hooks(root, &hooks.post_version)?;
+    }
 
     // 11. Commit, push, open the PR.
     let mut titles: Vec<String> = selected

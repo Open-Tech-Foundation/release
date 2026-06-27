@@ -26,6 +26,7 @@ pub mod discover;
 pub mod forge;
 pub mod git;
 pub mod graph;
+pub mod hooks;
 pub mod init;
 pub mod preflight;
 pub mod prompt;

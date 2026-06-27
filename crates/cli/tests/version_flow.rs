@@ -154,6 +154,8 @@ fn version_flow_releases_on_a_branch_and_never_touches_main() {
         bump: Bump::Major,
     };
 
+    let hooks = otf_release_core::config::Hooks::default();
+    let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
     orchestrate(
         &adapter,
         &repo,
@@ -163,6 +165,8 @@ fn version_flow_releases_on_a_branch_and_never_touches_main() {
         root,
         "2026-06-24",
         &VersionOptions::default(),
+        &hooks,
+        &hook_runner,
     )
     .unwrap();
 
@@ -216,6 +220,8 @@ fn dry_run_prints_the_plan_and_writes_nothing() {
         bump: Bump::Major,
     };
 
+    let hooks = otf_release_core::config::Hooks::default();
+    let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
     orchestrate(
         &adapter,
         &repo,
@@ -227,7 +233,10 @@ fn dry_run_prints_the_plan_and_writes_nothing() {
         &VersionOptions {
             dry_run: true,
             first_release: false,
+            skip_pr: false,
         },
+        &hooks,
+        &hook_runner,
     )
     .unwrap();
 

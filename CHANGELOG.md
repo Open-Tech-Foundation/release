@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ## [Unreleased]
 
 ### Added
+- **config** — Added global lifecycle hooks (`pre_version`, `post_version`, `pre_publish`, `post_publish`) to `release.toml`, allowing users to execute custom shell scripts across OS environments during critical release orchestration steps.
 - **init** — Emits all known targets in the generated `.github/workflows/release.yml` matrix with unselected ones commented out, allowing users to easily toggle builds on and off.
 - **core** — Added automated `install.sh` and `install.ps1` scripts for seamless downloads of GitHub Release assets.
 - **docs** — Redesigned the `README.md` into a polished landing page with a commands table and a visual Mermaid workflow diagram.

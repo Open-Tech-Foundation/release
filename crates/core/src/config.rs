@@ -130,11 +130,31 @@ pub struct PackageEntry {
     pub publish: Option<String>,
 }
 
+/// Global lifecycle hook scripts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Hooks {
+    /// Commands to run before computing the release (e.g. `npm run lint`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_version: Vec<String>,
+    /// Commands to run after versions/manifests are updated but before committing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_version: Vec<String>,
+    /// Commands to run before publishing starts in CI.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_publish: Vec<String>,
+    /// Commands to run after a successful publish.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub post_publish: Vec<String>,
+}
+
 /// The whole `release.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReleaseConfig {
     /// Ecosystems enabled for this repo.
     pub adapters: Vec<Ecosystem>,
+    /// Global lifecycle hooks.
+    #[serde(default)]
+    pub hooks: Hooks,
     /// Packages with an explicit build step. Packages absent here are published as-is by their
     /// adapter (no build), in `publish` mode.
     #[serde(default, rename = "package")]
@@ -192,6 +212,7 @@ mod tests {
     fn round_trips_through_toml() {
         let cfg = ReleaseConfig {
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
+            hooks: Hooks::default(),
             packages: vec![
                 PackageEntry {
                     name: "web-compiler".into(),
@@ -241,6 +262,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = ReleaseConfig {
             adapters: vec![Ecosystem::Cargo],
+            hooks: Hooks::default(),
             packages: vec![],
         };
         cfg.save(tmp.path()).unwrap();

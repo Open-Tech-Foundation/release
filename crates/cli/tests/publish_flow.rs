@@ -175,7 +175,9 @@ fn publishes_in_topo_order_and_is_idempotent() {
     let git = FakeGit::default();
     let forge = FakeForge::default();
 
-    orchestrate(&adapter, &git, &forge, &PublishOptions::default()).unwrap();
+    let hooks = otf_release_core::config::Hooks::default();
+    let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
+    orchestrate(&adapter, &git, &forge, root, &PublishOptions::default(), &hooks, &hook_runner).unwrap();
 
     assert_eq!(
         *runner.publish_log.lock().unwrap(),
@@ -187,7 +189,9 @@ fn publishes_in_topo_order_and_is_idempotent() {
     // Second run publishes nothing (everything is already at its published version).
     let published_before = runner.publish_log.lock().unwrap().len();
     let tags_before = git.tags.borrow().len();
-    orchestrate(&adapter, &git, &forge, &PublishOptions::default()).unwrap();
+    let hooks = otf_release_core::config::Hooks::default();
+    let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
+    orchestrate(&adapter, &git, &forge, root, &PublishOptions::default(), &hooks, &hook_runner).unwrap();
     assert_eq!(runner.publish_log.lock().unwrap().len(), published_before);
     assert_eq!(git.tags.borrow().len(), tags_before);
 }
@@ -204,7 +208,9 @@ fn halts_on_failure_and_resumes_forward() {
     let forge = FakeForge::default();
 
     // First run halts at sdk; mid (its dependent) is never attempted.
-    let err = orchestrate(&adapter, &git, &forge, &PublishOptions::default()).unwrap_err();
+    let hooks = otf_release_core::config::Hooks::default();
+    let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
+    let err = orchestrate(&adapter, &git, &forge, root, &PublishOptions::default(), &hooks, &hook_runner).unwrap_err();
     assert!(err.to_string().contains("publish"), "got: {err}");
     assert_eq!(*runner.attempts.lock().unwrap(), vec!["core", "sdk"]);
     assert!(runner.published.lock().unwrap().contains("@x/core@1.0.0"));
@@ -212,7 +218,7 @@ fn halts_on_failure_and_resumes_forward() {
     assert!(!runner.published.lock().unwrap().contains("@x/mid@1.0.0"));
 
     // Resume: core is skipped (already published), sdk + mid go through.
-    orchestrate(&adapter, &git, &forge, &PublishOptions::default()).unwrap();
+    orchestrate(&adapter, &git, &forge, root, &PublishOptions::default(), &hooks, &hook_runner).unwrap();
     assert!(runner.published.lock().unwrap().contains("@x/sdk@1.0.0"));
     assert!(runner.published.lock().unwrap().contains("@x/mid@1.0.0"));
 }
