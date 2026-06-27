@@ -247,7 +247,7 @@ fn version_read_cmd(entry: Option<&PackageEntry>) -> String {
             if manifest.ends_with(".json") {
                 format!("node -p \"require('./{manifest}').{field}\"")
             } else if manifest.ends_with(".toml") {
-                format!("grep -m1 '^{field}' {manifest} | cut -d '\"' -f2")
+                format!("grep -m1 '^{field}' {manifest} | cut -d '\"' -f2 | tr -d '\"'")
             } else {
                 format!("cat {manifest}  # edit me: extract the {field} value")
             }
@@ -255,7 +255,7 @@ fn version_read_cmd(entry: Option<&PackageEntry>) -> String {
         Some(e) if e.adapter == Ecosystem::Npm => {
             "node -p \"require('./package.json').version\"".to_string()
         }
-        _ => "grep -m1 '^version' Cargo.toml | cut -d'\"' -f2".to_string(),
+        _ => "grep -m1 '^version' Cargo.toml | cut -d '\"' -f2 | tr -d '\"'".to_string(),
     }
 }
 
@@ -437,7 +437,8 @@ fn configure_generic(
         vec!["Yes", "No"],
     )
     .raw_prompt()?
-    .index == 0;
+    .index
+        == 0;
     let targets = if matrix {
         let defaults: Vec<usize> = DEFAULT_TARGETS
             .iter()
@@ -445,12 +446,18 @@ fn configure_generic(
             .filter(|(_, (label, _))| !label.contains("32-bit") && !label.contains("ARM"))
             .map(|(i, _)| i)
             .collect();
-        let labels: Vec<String> = DEFAULT_TARGETS.iter().map(|(label, triple)| format!("{} - {}", label, triple)).collect();
+        let labels: Vec<String> = DEFAULT_TARGETS
+            .iter()
+            .map(|(label, triple)| format!("{} - {}", label, triple))
+            .collect();
         let selected = MultiSelect::new("  Target triples:", labels)
             .with_default(&defaults)
             .with_help_message(MULTI_HELP)
             .raw_prompt()?;
-        selected.iter().map(|s| DEFAULT_TARGETS[s.index].1.to_string()).collect()
+        selected
+            .iter()
+            .map(|s| DEFAULT_TARGETS[s.index].1.to_string())
+            .collect()
     } else {
         Vec::new()
     };
@@ -469,7 +476,7 @@ fn configure_generic(
     let command = Text::new(&format!("  {name} — build command (optional):"))
         .with_default(default_cmd)
         .prompt()?;
-        
+
     let bin_name = if kind == Some("Rust / Cargo") {
         let n = Text::new(&format!("  {name} — binary name:"))
             .with_default(name)
@@ -480,7 +487,10 @@ fn configure_generic(
     };
 
     let default_artifacts = match (kind, matrix) {
-        (Some("Rust / Cargo"), true) => format!("target/${{{{ matrix.target }}}}/release/{}", bin_name.as_deref().unwrap()),
+        (Some("Rust / Cargo"), true) => format!(
+            "target/${{{{ matrix.target }}}}/release/{}",
+            bin_name.as_deref().unwrap()
+        ),
         (Some("Rust / Cargo"), false) => format!("target/release/{}", bin_name.as_deref().unwrap()),
         (Some("Node / npm"), _) => "dist/*".to_string(),
         _ => "".to_string(),
@@ -490,9 +500,11 @@ fn configure_generic(
         .prompt()?;
 
     let publish = if mode == Mode::Publish {
-        let cmd = Text::new(&format!("  {name} — publish command (e.g. npx jsr publish):"))
-            .with_default("")
-            .prompt()?;
+        let cmd = Text::new(&format!(
+            "  {name} — publish command (e.g. npx jsr publish):"
+        ))
+        .with_default("")
+        .prompt()?;
         (!cmd.trim().is_empty()).then_some(cmd)
     } else {
         None
@@ -568,7 +580,8 @@ impl InitPrompt for StdinInitPrompt {
             vec!["Yes", "No"],
         )
         .raw_prompt()?
-        .index == 0;
+        .index
+            == 0;
         let targets = if matrix {
             let defaults: Vec<usize> = DEFAULT_TARGETS
                 .iter()
@@ -576,12 +589,18 @@ impl InitPrompt for StdinInitPrompt {
                 .filter(|(_, (label, _))| !label.contains("32-bit") && !label.contains("ARM"))
                 .map(|(i, _)| i)
                 .collect();
-            let labels: Vec<String> = DEFAULT_TARGETS.iter().map(|(label, triple)| format!("{} - {}", label, triple)).collect();
+            let labels: Vec<String> = DEFAULT_TARGETS
+                .iter()
+                .map(|(label, triple)| format!("{} - {}", label, triple))
+                .collect();
             let selected = MultiSelect::new("Target triples:", labels)
                 .with_default(&defaults)
                 .with_help_message(MULTI_HELP)
                 .raw_prompt()?;
-            selected.iter().map(|s| DEFAULT_TARGETS[s.index].1.to_string()).collect()
+            selected
+                .iter()
+                .map(|s| DEFAULT_TARGETS[s.index].1.to_string())
+                .collect()
         } else {
             Vec::new()
         };
@@ -621,7 +640,12 @@ impl InitPrompt for StdinInitPrompt {
                 .raw_prompt()?;
             for opt in chosen {
                 let c = &found[opt.index];
-                out.push(configure_generic(&c.name, &c.manifest, &c.version_field, Some(c.kind))?);
+                out.push(configure_generic(
+                    &c.name,
+                    &c.manifest,
+                    &c.version_field,
+                    Some(c.kind),
+                )?);
             }
         }
 
@@ -648,14 +672,13 @@ impl InitPrompt for StdinInitPrompt {
     }
 
     fn confirm_overwrite(&self, path: &Path) -> Result<bool> {
-        Ok(
-            Select::new(
-                &format!("{} exists. Overwrite?", path.display()),
-                vec!["No", "Yes"],
-            )
-            .raw_prompt()?
-            .index == 1,
+        Ok(Select::new(
+            &format!("{} exists. Overwrite?", path.display()),
+            vec!["No", "Yes"],
         )
+        .raw_prompt()?
+        .index
+            == 1)
     }
 }
 
