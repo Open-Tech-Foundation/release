@@ -7,8 +7,10 @@ use inquire::{MultiSelect, Select};
 
 use crate::adapter::{Bump, Pkg};
 
-/// The three interactions the `version` command needs from the user.
+/// The four interactions the `version` command needs from the user.
 pub trait Prompt {
+    /// Choose the release channel (e.g. None for stable, Some("beta") for beta)
+    fn select_channel(&self) -> Result<Option<String>>;
     /// Choose which of the pending packages to release; returns their names.
     fn select_packages(&self, pending: &[&Pkg]) -> Result<Vec<String>>;
     /// Choose a bump level for a selected package.
@@ -21,6 +23,19 @@ pub trait Prompt {
 pub struct StdinPrompt;
 
 impl Prompt for StdinPrompt {
+    fn select_channel(&self) -> Result<Option<String>> {
+        let choice = Select::new(
+            "Release channel:",
+            vec!["stable (default)", "alpha", "beta", "rc"],
+        )
+        .prompt()?;
+        
+        match choice {
+            "stable (default)" => Ok(None),
+            ch => Ok(Some(ch.to_string())),
+        }
+    }
+
     fn select_packages(&self, pending: &[&Pkg]) -> Result<Vec<String>> {
         let labels: Vec<String> = pending
             .iter()
@@ -38,7 +53,7 @@ impl Prompt for StdinPrompt {
     fn choose_bump(&self, pkg_name: &str) -> Result<Bump> {
         let choice = Select::new(
             &format!("Bump for {pkg_name}:"),
-            vec![Bump::Major, Bump::Minor, Bump::Patch],
+            vec![Bump::Major, Bump::Minor, Bump::Patch, Bump::Prerelease],
         )
         .prompt()?;
         Ok(choice)

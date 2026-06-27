@@ -75,6 +75,10 @@ impl CommandRunner for Registry {
 
 struct ScriptedPrompt;
 impl Prompt for ScriptedPrompt {
+    fn select_channel(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     fn select_packages(&self, _pending: &[&Pkg]) -> Result<Vec<String>> {
         Ok(vec!["@x/core".to_string()])
     }
