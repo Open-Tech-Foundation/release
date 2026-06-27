@@ -14,6 +14,7 @@ use anyhow::Result;
 /// (used when a package is reached by several cascade paths) yields the strongest bump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Bump {
+    Graduate,
     Prerelease,
     Patch,
     Minor,
@@ -23,6 +24,7 @@ pub enum Bump {
 impl std::fmt::Display for Bump {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Bump::Graduate => "graduate",
             Bump::Prerelease => "prerelease",
             Bump::Patch => "patch",
             Bump::Minor => "minor",

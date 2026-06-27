@@ -53,7 +53,7 @@ impl Prompt for StdinPrompt {
     fn choose_bump(&self, pkg_name: &str) -> Result<Bump> {
         let choice = Select::new(
             &format!("Bump for {pkg_name}:"),
-            vec![Bump::Major, Bump::Minor, Bump::Patch, Bump::Prerelease],
+            vec![Bump::Graduate, Bump::Major, Bump::Minor, Bump::Patch, Bump::Prerelease],
         )
         .prompt()?;
         Ok(choice)

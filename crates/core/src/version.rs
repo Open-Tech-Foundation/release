@@ -240,6 +240,12 @@ fn apply_bump(version: &str, bump: Bump, channel: Option<&str>) -> Result<String
     let (major, minor, patch) = (next()?, next()?, next()?);
 
     match bump {
+        Bump::Graduate => {
+            if pre.is_none() {
+                bail!("Cannot graduate a stable version: {version}. Select Major/Minor/Patch instead.");
+            }
+            Ok(format!("{major}.{minor}.{patch}"))
+        }
         Bump::Prerelease => {
             let ch = channel.unwrap_or("beta");
             if let Some(p) = pre {
@@ -293,6 +299,7 @@ fn change_note(
 
 fn bump_word(bump: Bump) -> &'static str {
     match bump {
+        Bump::Graduate => "graduate",
         Bump::Major => "major",
         Bump::Minor => "minor",
         Bump::Patch => "patch",
@@ -324,6 +331,10 @@ mod tests {
         assert_eq!(apply_bump("1.3.0-beta.0", Bump::Prerelease, Some("beta")).unwrap(), "1.3.0-beta.1");
         assert_eq!(apply_bump("1.3.0-beta.1", Bump::Prerelease, Some("beta")).unwrap(), "1.3.0-beta.2");
         assert_eq!(apply_bump("1.2.3", Bump::Prerelease, Some("rc")).unwrap(), "1.2.4-rc.0");
+
+        // Test graduate
+        assert_eq!(apply_bump("1.3.0-beta.2", Bump::Graduate, None).unwrap(), "1.3.0");
+        assert!(apply_bump("1.3.0", Bump::Graduate, None).is_err());
 
         assert!(apply_bump("nope", Bump::Patch, None).is_err());
     }
