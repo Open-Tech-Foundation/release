@@ -42,6 +42,8 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 | **`init`** | `otf-release init` | Interactive setup: configure ecosystems, build matrices, and artifacts. Generates `release.toml` and `release.yml`. |
 | **`version`** | `otf-release version` | Interactive local release: choose bumps, cascade dependencies, write changelogs, and automatically open a Release PR. |
 | **`publish`** | `otf-release publish` | Non-interactive CI flow: publishes changed packages in topological order, attaching staged build artifacts. |
+| **`config`** | `otf-release config` | Interactively edit your `release.toml` file without manually typing out OS architecture strings or workflow targets. |
+| **`snapshot`** | `otf-release snapshot` | Non-interactive CI flow: completely automates an ephemeral snapshot release powered by a short git hash (e.g. `1.0.0-snapshot.a1b2c3d`) |
 | **`upgrade`** | `otf-release upgrade` | Upgrades your local `release.toml` and regenerates your CI pipeline to match the latest CLI version features. |
 
 ## Workflow
@@ -66,6 +68,12 @@ flowchart TD
 When running `otf-release version`, the interactive prompt will first ask you to select a release channel. By default, it uses the **stable** channel. If you select an alternative channel (e.g. `alpha`, `beta`, `rc`), `otf-release` will automatically compute valid semantic pre-release versions for your bumps.
 
 For example, choosing a `minor` bump on the `beta` channel will transition `1.0.0` into `1.1.0-beta.0`. Once on a pre-release channel, you can select the new `prerelease` bump option to iterate tags (e.g., `beta.0` → `beta.1`).
+
+## Snapshot Releases
+
+To avoid polluting your changelog with every single CI run, you can configure an automated `snapshot` workflow. During `otf-release init`, the wizard will ask you for a snapshot tag (like `snapshot`, `canary`, or `edge`). 
+
+This will automatically scaffold a `.github/workflows/snapshot.yml` that triggers on `main` branch pushes. It runs `otf-release snapshot`, which generates short-hash ephemeral versions (like `1.0.0-canary.a1b2c3d`) and automatically bumps your ecosystem boundaries and pushes to registries without touching your tags or PRs.
 
 ## Lifecycle Hooks
 
