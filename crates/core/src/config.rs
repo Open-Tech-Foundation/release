@@ -162,6 +162,13 @@ pub struct ReleaseConfig {
     /// Tag used for automated snapshot releases (e.g. "snapshot", "canary").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_tag: Option<String>,
+    /// Git hosting provider (e.g. "github", "gitlab").
+    #[serde(default = "default_provider")]
+    pub provider: String,
+}
+
+fn default_provider() -> String {
+    "github".to_string()
 }
 
 impl ReleaseConfig {
@@ -215,6 +222,7 @@ mod tests {
     fn round_trips_through_toml() {
         let cfg = ReleaseConfig {
             snapshot_tag: None,
+            provider: "github".to_string(),
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             hooks: Hooks::default(),
             packages: vec![
@@ -266,6 +274,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = ReleaseConfig {
             snapshot_tag: None,
+            provider: "github".to_string(),
             adapters: vec![Ecosystem::Cargo],
             hooks: Hooks::default(),
             packages: vec![],

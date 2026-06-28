@@ -89,6 +89,8 @@ pub trait InitPrompt {
     fn confirm_overwrite(&self, path: &Path) -> Result<bool>;
     /// Ask for the tag to use for automated snapshot releases.
     fn snapshot_tag(&self) -> Result<String>;
+    /// Ask for the git hosting provider.
+    fn prompt_provider(&self) -> Result<String>;
 }
 
 /// Wire up the real prompt and run the generator.
@@ -139,6 +141,7 @@ pub fn orchestrate(
         adapters: enabled,
         packages,
         snapshot_tag: Some(prompt.snapshot_tag()?),
+        provider: prompt.prompt_provider()?,
     };
 
     // 1. Persist the source of truth.
@@ -842,6 +845,28 @@ impl InitPrompt for StdinInitPrompt {
             Ok(tag.to_string())
         }
     }
+
+    fn prompt_provider(&self) -> Result<String> {
+        loop {
+            let ans = Select::new(
+                "Which Git hosting provider do you use?",
+                vec![
+                    "GitHub",
+                    "GitLab (Coming Soon)",
+                    "Bitbucket (Coming Soon)",
+                    "Gitea (Coming Soon)",
+                    "Codeberg (Coming Soon)",
+                ],
+            )
+            .prompt()?;
+
+            if ans == "GitHub" {
+                return Ok("github".to_string());
+            } else {
+                println!("Only GitHub is fully supported at this moment. Please select GitHub.");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -930,6 +955,9 @@ mod tests {
         fn snapshot_tag(&self) -> Result<String> {
             Ok("snapshot".to_string())
         }
+        fn prompt_provider(&self) -> Result<String> {
+            Ok("github".to_string())
+        }
     }
 
     fn pkg(name: &str, publishable: bool) -> Pkg {
@@ -1006,6 +1034,7 @@ mod tests {
     fn npm_only_renders_publish_job_no_release() {
         let config = ReleaseConfig {
             snapshot_tag: None,
+            provider: "github".to_string(),
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
             packages: vec![],
@@ -1023,6 +1052,7 @@ mod tests {
     fn cargo_build_only_renders_github_release_no_registry() {
         let config = ReleaseConfig {
             snapshot_tag: None,
+            provider: "github".to_string(),
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
             packages: vec![cargo_build_only("opentf-release")],
@@ -1050,6 +1080,7 @@ mod tests {
     fn generic_build_only_renders_no_toolchain_and_manifest_version() {
         let config = ReleaseConfig {
             snapshot_tag: None,
+            provider: "github".to_string(),
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
             packages: vec![generic_pkg("release", None)],
@@ -1070,6 +1101,7 @@ mod tests {
     fn generic_publish_renders_publish_job_with_edit_me_toolchain() {
         let config = ReleaseConfig {
             snapshot_tag: None,
+            provider: "github".to_string(),
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
             packages: vec![generic_pkg("jsr-lib", Some("npx jsr publish"))],
@@ -1089,6 +1121,7 @@ mod tests {
     fn polyglot_renders_one_publish_job_and_release() {
         let config = ReleaseConfig {
             snapshot_tag: None,
+            provider: "github".to_string(),
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             packages: vec![cargo_build_only("web-compiler"), npm_publish("docs-site")],
