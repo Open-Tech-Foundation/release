@@ -102,6 +102,8 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Edit release.toml interactively.
+    Config,
 }
 
 fn main() -> Result<()> {
@@ -124,6 +126,10 @@ fn main() -> Result<()> {
                 &upgrade::UpgradeOptions { force },
                 &otf_release_core::prompt::StdinPrompt,
             )?;
+            Ok(())
+        }
+        Command::Config => {
+            otf_release_core::config_cmd::orchestrate(&root)?;
             Ok(())
         }
 

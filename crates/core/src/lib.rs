@@ -21,6 +21,7 @@
 pub mod adapter;
 pub mod changelog;
 pub mod config;
+pub mod config_cmd;
 pub mod date;
 pub mod discover;
 pub mod forge;
