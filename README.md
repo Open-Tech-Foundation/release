@@ -44,6 +44,7 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 | **`publish`** | `otf-release publish` | Non-interactive CI flow: publishes changed packages in topological order, attaching staged build artifacts. |
 | **`config`** | `otf-release config` | Interactively edit your `release.toml` file without manually typing out OS architecture strings or workflow targets. |
 | **`snapshot`** | `otf-release snapshot` | Non-interactive CI flow: completely automates an ephemeral snapshot release powered by a short git hash (e.g. `1.0.0-snapshot.a1b2c3d`) |
+| **`self-update`** | `otf-release self-update` | Updates your local `otf-release` binary to the latest version published on GitHub Releases. |
 | **`upgrade`** | `otf-release upgrade` | Upgrades your local `release.toml` and regenerates your CI pipeline to match the latest CLI version features. |
 
 ## Workflow
