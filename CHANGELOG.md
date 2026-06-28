@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-28
+
 ### Added
 - **version** — Added interactive pre-release channel selection (stable, alpha, beta, rc). Choosing a pre-release channel unlocks the new `prerelease` bump strategy for iterating tags, and automatically formats transitions from stable to pre-release (e.g., `1.0.0` to `1.1.0-beta.0`).
 - **config** — Added global lifecycle hooks (`pre_version`, `post_version`, `pre_publish`, `post_publish`) to `release.toml`, allowing users to execute custom shell scripts across OS environments during critical release orchestration steps.
