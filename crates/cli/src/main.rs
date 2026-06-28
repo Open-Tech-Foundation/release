@@ -170,10 +170,14 @@ fn main() -> Result<()> {
                 first_release,
                 skip_pr: false,
             };
-            for eco in &config.adapters {
-                let adapter = factory.make(*eco);
-                version::run(adapter.as_ref(), &root, &opts, &config)?;
-            }
+            let adapters: Vec<Box<dyn Adapter>> = config
+                .adapters
+                .iter()
+                .map(|eco| factory.make(*eco))
+                .collect();
+            let adapter_refs: Vec<&dyn Adapter> =
+                adapters.iter().map(|adapter| adapter.as_ref()).collect();
+            version::run_many(&adapter_refs, &root, &opts, &config)?;
             Ok(())
         }
 

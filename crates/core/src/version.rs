@@ -34,7 +34,22 @@ pub struct VersionOptions {
 }
 
 /// Wire up the real adapter/git/forge/prompt and run the flow.
-pub fn run(adapter: &dyn Adapter, root: &Path, opts: &VersionOptions, config: &crate::config::ReleaseConfig) -> Result<()> {
+pub fn run(
+    adapter: &dyn Adapter,
+    root: &Path,
+    opts: &VersionOptions,
+    config: &crate::config::ReleaseConfig,
+) -> Result<()> {
+    run_many(&[adapter], root, opts, config)
+}
+
+/// Wire up real side effects and run a single release transaction across all enabled adapters.
+pub fn run_many(
+    adapters: &[&dyn Adapter],
+    root: &Path,
+    opts: &VersionOptions,
+    config: &crate::config::ReleaseConfig,
+) -> Result<()> {
     let mut opts = opts.clone();
     let prompt = StdinPrompt;
     if std::process::Command::new("gh")
@@ -51,7 +66,18 @@ pub fn run(adapter: &dyn Adapter, root: &Path, opts: &VersionOptions, config: &c
     let forge = GhForge::new(root);
     let hook_runner = crate::hooks::ShHookRunner;
     let today = date::today();
-    orchestrate(adapter, &repo, &repo, &forge, &prompt, root, &today, &opts, config, &hook_runner)
+    orchestrate_many(
+        adapters,
+        &repo,
+        &repo,
+        &forge,
+        &prompt,
+        root,
+        &today,
+        &opts,
+        config,
+        &hook_runner,
+    )
 }
 
 /// The testable core of the `version` flow. `today` is injected for deterministic output.
@@ -68,14 +94,72 @@ pub fn orchestrate(
     config: &crate::config::ReleaseConfig,
     hook_runner: &dyn crate::hooks::HookRunner,
 ) -> Result<()> {
+    orchestrate_many(
+        &[adapter],
+        repo,
+        git,
+        forge,
+        prompt,
+        root,
+        today,
+        opts,
+        config,
+        hook_runner,
+    )
+}
+
+struct AdapterPackages<'a> {
+    adapter: &'a dyn Adapter,
+    packages: Vec<Pkg>,
+}
+
+/// The testable core of the multi-adapter `version` flow.
+#[allow(clippy::too_many_arguments)]
+pub fn orchestrate_many(
+    adapters: &[&dyn Adapter],
+    repo: &dyn RepoState,
+    git: &dyn GitOps,
+    forge: &dyn Forge,
+    prompt: &dyn Prompt,
+    root: &Path,
+    today: &str,
+    opts: &VersionOptions,
+    config: &crate::config::ReleaseConfig,
+    hook_runner: &dyn crate::hooks::HookRunner,
+) -> Result<()> {
+    if adapters.is_empty() {
+        println!("Nothing to release: no adapters are enabled.");
+        return Ok(());
+    }
+
     if !config.hooks.pre_version.is_empty() {
         hook_runner.run_hooks(root, &config.hooks.pre_version)?;
     }
 
-    let packages = adapter.discover_packages()?;
+    let mut adapter_packages = Vec::with_capacity(adapters.len());
+    let mut seen = HashSet::new();
+    for adapter in adapters {
+        let packages = adapter.discover_packages()?;
+        for pkg in &packages {
+            if !seen.insert(pkg.name.clone()) {
+                bail!(
+                    "duplicate package name across enabled adapters: {}",
+                    pkg.name
+                );
+            }
+        }
+        adapter_packages.push(AdapterPackages {
+            adapter: *adapter,
+            packages,
+        });
+    }
 
     // 1. Strict preflight — abort before any prompt or mutation.
-    let violations = preflight::check(repo, &packages, &[])?;
+    let all_packages: Vec<Pkg> = adapter_packages
+        .iter()
+        .flat_map(|ctx| ctx.packages.iter().cloned())
+        .collect();
+    let violations = preflight::check(repo, &all_packages, &[])?;
     if !violations.is_empty() {
         bail!("{}", preflight::format_violations(&violations));
     }
@@ -85,7 +169,7 @@ pub fn orchestrate(
     let mut generated_notes: HashMap<&str, String> = HashMap::new();
     let is_generated = config.changelog_strategy == crate::config::ChangelogStrategy::Generated;
 
-    for p in &packages {
+    for p in &all_packages {
         if is_generated {
             let last = repo.last_tag(&p.name)?;
             let notes = repo.commits_since(last.as_deref(), p.manifest_path.parent().unwrap())?;
@@ -95,7 +179,7 @@ pub fn orchestrate(
             empties.insert(p.name.as_str(), unreleased_is_empty(&p.changelog_path)?);
         }
     }
-    let pending: Vec<&Pkg> = packages
+    let pending: Vec<&Pkg> = all_packages
         .iter()
         .filter(|p| p.publishable && !empties[p.name.as_str()])
         .collect();
@@ -110,10 +194,10 @@ pub fn orchestrate(
         println!("Nothing selected.");
         return Ok(());
     }
-    
-    let by_name: HashMap<&str, &Pkg> = packages.iter().map(|p| (p.name.as_str(), p)).collect();
+
+    let by_name: HashMap<&str, &Pkg> = all_packages.iter().map(|p| (p.name.as_str(), p)).collect();
     let pending_names: HashSet<&str> = pending.iter().map(|p| p.name.as_str()).collect();
-    
+
     let mut selected: HashMap<String, Bump> = HashMap::new();
     for name in &selected_names {
         if !pending_names.contains(name.as_str()) {
@@ -123,26 +207,43 @@ pub fn orchestrate(
         selected.insert(name.clone(), prompt.choose_bump(name, &pkg.version)?);
     }
 
-    // 4. Cascade through dependents (private leaves excluded).
-    let graph = Graph::build(&packages)?;
-    let bumps = graph.cascade(adapter, &selected)?;
-
-    // 5. Compute new versions.
+    // 4. Cascade through dependents within each adapter (private leaves excluded).
+    let mut adapter_bumps = Vec::with_capacity(adapter_packages.len());
     let mut new_versions: HashMap<String, String> = HashMap::new();
-    for (name, bump) in &bumps {
-        let pkg = by_name[name.as_str()];
-        new_versions.insert(name.clone(), apply_bump(&pkg.version, bump)?);
+    for ctx in &adapter_packages {
+        let ctx_names: HashSet<&str> = ctx.packages.iter().map(|p| p.name.as_str()).collect();
+        let selected_for_adapter: HashMap<String, Bump> = selected
+            .iter()
+            .filter(|(name, _)| ctx_names.contains(name.as_str()))
+            .map(|(name, bump)| (name.clone(), bump.clone()))
+            .collect();
+        let graph = Graph::build(&ctx.packages)?;
+        let bumps = graph.cascade(ctx.adapter, &selected_for_adapter)?;
+        for (name, bump) in &bumps {
+            let pkg = by_name[name.as_str()];
+            new_versions.insert(name.clone(), apply_bump(&pkg.version, bump)?);
+        }
+        adapter_bumps.push(bumps);
     }
 
-    // 6. Build the summary plan.
-    let mut changes: Vec<VersionChange> = bumps
+    if new_versions.is_empty() {
+        println!("Nothing to release: no selected package was publishable.");
+        return Ok(());
+    }
+
+    // 5. Build the summary plan.
+    let mut changes: Vec<VersionChange> = adapter_bumps
         .iter()
+        .flat_map(|bumps| bumps.iter())
         .map(|(name, bump)| {
             let pkg = by_name[name.as_str()];
             let is_selected = selected.contains_key(name);
             let mut note = change_note(pkg, bump, is_selected, &new_versions);
             if is_generated && is_selected {
-                let gen = generated_notes.get(name.as_str()).cloned().unwrap_or_default();
+                let gen = generated_notes
+                    .get(name.as_str())
+                    .cloned()
+                    .unwrap_or_default();
                 if !gen.is_empty() {
                     note = format!("{note}\n\nGenerated notes:\n{gen}");
                 }
@@ -159,16 +260,20 @@ pub fn orchestrate(
     changes.sort_by(|a, b| b.selected.cmp(&a.selected).then(a.name.cmp(&b.name)));
 
     let mut range_updates: Vec<RangeUpdate> = Vec::new();
-    for p in &packages {
-        for dep in &p.internal_deps {
-            if let Some(new_dep_ver) = new_versions.get(&dep.name) {
-                range_updates.push(RangeUpdate {
-                    consumer: p.name.clone(),
-                    dep: dep.name.clone(),
-                    old_range: dep.range.clone(),
-                    new_range: adapter.format_range(new_dep_ver),
-                    consumer_private: !p.publishable,
-                });
+    let mut apply_ranges: Vec<(usize, String, String)> = Vec::new();
+    for (idx, ctx) in adapter_packages.iter().enumerate() {
+        for p in &ctx.packages {
+            for dep in &p.internal_deps {
+                if let Some(new_dep_ver) = new_versions.get(&dep.name) {
+                    range_updates.push(RangeUpdate {
+                        consumer: p.name.clone(),
+                        dep: dep.name.clone(),
+                        old_range: dep.range.clone(),
+                        new_range: ctx.adapter.format_range(new_dep_ver),
+                        consumer_private: !p.publishable,
+                    });
+                    apply_ranges.push((idx, p.name.clone(), dep.name.clone()));
+                }
             }
         }
     }
@@ -180,19 +285,19 @@ pub fn orchestrate(
     };
     let summary_text = summary::render(&plan);
 
-    // 7. Dry run: print the plan and stop, writing nothing.
+    // 6. Dry run: print the plan and stop, writing nothing.
     if opts.dry_run {
         print!("{summary_text}");
         return Ok(());
     }
 
-    // 8. Confirm. On cancel, write nothing.
+    // 7. Confirm. On cancel, write nothing.
     if !prompt.confirm(&summary_text)? {
         println!("Cancelled. Nothing written.");
         return Ok(());
     }
 
-    // 9. Branch guard: clean tree, on `main`, then cut release/*.
+    // 8. Branch guard: clean tree, on `main`, then cut release/*.
     if !git.is_clean()? {
         bail!("working tree is not clean; commit or stash first");
     }
@@ -203,30 +308,47 @@ pub fn orchestrate(
     let release_branch = format!("release/{today}");
     git.create_branch(&release_branch)?;
 
-    // 10. Apply: versions, then internal ranges, then changelogs, then the lockfile.
-    for (name, new_ver) in &new_versions {
-        adapter.write_version(by_name[name.as_str()], new_ver)?;
+    // 9. Apply: versions, then internal ranges, then changelogs, then lockfiles.
+    for (idx, ctx) in adapter_packages.iter().enumerate() {
+        for (name, _) in &adapter_bumps[idx] {
+            let new_ver = &new_versions[name];
+            ctx.adapter.write_version(by_name[name.as_str()], new_ver)?;
+        }
     }
-    for r in &plan.range_updates {
-        adapter.update_dep_range(by_name[r.consumer.as_str()], &r.dep, &new_versions[&r.dep])?;
+    for (idx, consumer, dep) in &apply_ranges {
+        let ctx = &adapter_packages[*idx];
+        ctx.adapter
+            .update_dep_range(by_name[consumer.as_str()], dep, &new_versions[dep])?;
     }
     for (name, new_ver) in &new_versions {
         let pkg = by_name[name.as_str()];
         if is_generated {
-            let gen = generated_notes.get(name.as_str()).cloned().unwrap_or_default();
+            let gen = generated_notes
+                .get(name.as_str())
+                .cloned()
+                .unwrap_or_default();
             crate::changelog::prepend_generated(&pkg.changelog_path, new_ver, today, &gen)?;
         } else {
             // Auto-bumped-only packages (empty [Unreleased]) get the stub.
-            changelog::release_unreleased(&pkg.changelog_path, new_ver, today, empties[name.as_str()])?;
+            changelog::release_unreleased(
+                &pkg.changelog_path,
+                new_ver,
+                today,
+                empties[name.as_str()],
+            )?;
         }
     }
-    adapter.update_lockfile(root)?;
+    for (idx, ctx) in adapter_packages.iter().enumerate() {
+        if !adapter_bumps[idx].is_empty() {
+            ctx.adapter.update_lockfile(root)?;
+        }
+    }
 
     if !config.hooks.post_version.is_empty() {
         hook_runner.run_hooks(root, &config.hooks.post_version)?;
     }
 
-    // 11. Commit, push, open the PR.
+    // 10. Commit, push, open the PR.
     let mut titles: Vec<String> = selected
         .keys()
         .map(|n| format!("{n}@{}", new_versions[n]))
@@ -332,6 +454,190 @@ fn unreleased_is_empty(changelog_path: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::path::Path;
+
+    use crate::forge::Forge;
+
+    struct FakeVersionAdapter {
+        packages: Vec<Pkg>,
+        writes: RefCell<Vec<(String, String)>>,
+        lockfile_updates: RefCell<usize>,
+    }
+
+    impl FakeVersionAdapter {
+        fn new(pkg: Pkg) -> Self {
+            Self {
+                packages: vec![pkg],
+                writes: RefCell::new(Vec::new()),
+                lockfile_updates: RefCell::new(0),
+            }
+        }
+    }
+
+    impl Adapter for FakeVersionAdapter {
+        fn discover_packages(&self) -> Result<Vec<Pkg>> {
+            Ok(self.packages.clone())
+        }
+
+        fn write_version(&self, pkg: &Pkg, new: &str) -> Result<()> {
+            self.writes
+                .borrow_mut()
+                .push((pkg.name.clone(), new.to_string()));
+            Ok(())
+        }
+
+        fn update_dep_range(&self, _: &Pkg, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn format_range(&self, version: &str) -> String {
+            version.to_string()
+        }
+
+        fn resolve_workspace_links(&self, _: &Pkg) -> Result<()> {
+            Ok(())
+        }
+
+        fn update_lockfile(&self, _: &Path) -> Result<()> {
+            *self.lockfile_updates.borrow_mut() += 1;
+            Ok(())
+        }
+
+        fn dependent_bump(&self, _: Bump, _: &DepKind) -> Bump {
+            Bump::Patch
+        }
+
+        fn is_published(&self, _: &Pkg, _: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn publish(&self, _: &Pkg, _: Option<&Path>) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FakeRepo;
+
+    impl RepoState for FakeRepo {
+        fn last_tag(&self, pkg_name: &str) -> Result<Option<String>> {
+            Ok(Some(format!("{pkg_name}@1.0.0")))
+        }
+
+        fn commit_count_since(&self, _: &str, _: &Path) -> Result<usize> {
+            Ok(0)
+        }
+
+        fn commits_since(&self, _: Option<&str>, _: &Path) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    struct FakeGit {
+        branch: RefCell<String>,
+        created: RefCell<Vec<String>>,
+        commits: RefCell<Vec<String>>,
+        pushes: RefCell<Vec<String>>,
+    }
+
+    impl FakeGit {
+        fn new() -> Self {
+            Self {
+                branch: RefCell::new("main".to_string()),
+                created: RefCell::new(Vec::new()),
+                commits: RefCell::new(Vec::new()),
+                pushes: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl GitOps for FakeGit {
+        fn is_clean(&self) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn current_branch(&self) -> Result<String> {
+            Ok(self.branch.borrow().clone())
+        }
+
+        fn create_branch(&self, name: &str) -> Result<()> {
+            self.created.borrow_mut().push(name.to_string());
+            *self.branch.borrow_mut() = name.to_string();
+            Ok(())
+        }
+
+        fn add_all(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn commit(&self, message: &str) -> Result<()> {
+            self.commits.borrow_mut().push(message.to_string());
+            Ok(())
+        }
+
+        fn push_branch(&self, name: &str) -> Result<()> {
+            self.pushes.borrow_mut().push(name.to_string());
+            Ok(())
+        }
+
+        fn create_tag(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn push_tag(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FakePrompt;
+
+    impl Prompt for FakePrompt {
+        fn select_packages(&self, pending: &[&Pkg]) -> Result<Vec<String>> {
+            Ok(pending.iter().map(|pkg| pkg.name.clone()).collect())
+        }
+
+        fn choose_bump(&self, _: &str, _: &str) -> Result<Bump> {
+            Ok(Bump::Patch)
+        }
+
+        fn confirm(&self, _: &str) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    struct FakeForge {
+        prs: RefCell<Vec<String>>,
+    }
+
+    impl Forge for FakeForge {
+        fn open_pr(&self, branch: &str, _: &str, _: &str) -> Result<()> {
+            self.prs.borrow_mut().push(branch.to_string());
+            Ok(())
+        }
+
+        fn create_release(&self, _: &str, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_pkg(root: &Path, name: &str) -> Pkg {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let changelog = dir.join("CHANGELOG.md");
+        std::fs::write(
+            &changelog,
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n- change\n",
+        )
+        .unwrap();
+        Pkg {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: dir.join("manifest"),
+            changelog_path: changelog,
+            publishable: true,
+            internal_deps: vec![],
+        }
+    }
 
     #[test]
     fn apply_bump_increments_and_resets() {
@@ -340,18 +646,36 @@ mod tests {
         assert_eq!(apply_bump("1.2.3", &Bump::Patch).unwrap(), "1.2.4");
         // Test transition from pre-release to stable
         assert_eq!(apply_bump("0.1.0-next.1", &Bump::Patch).unwrap(), "0.1.1");
-        
+
         // Test pre-release bumps
-        assert_eq!(apply_bump("1.2.3", &Bump::PreMinor("beta".to_string())).unwrap(), "1.3.0-beta.0");
-        assert_eq!(apply_bump("1.3.0-beta.0", &Bump::Prerelease("beta".to_string())).unwrap(), "1.3.0-beta.1");
-        assert_eq!(apply_bump("1.3.0-beta.1", &Bump::Prerelease("beta".to_string())).unwrap(), "1.3.0-beta.2");
-        assert_eq!(apply_bump("1.2.3", &Bump::PrePatch("rc".to_string())).unwrap(), "1.2.4-rc.0");
+        assert_eq!(
+            apply_bump("1.2.3", &Bump::PreMinor("beta".to_string())).unwrap(),
+            "1.3.0-beta.0"
+        );
+        assert_eq!(
+            apply_bump("1.3.0-beta.0", &Bump::Prerelease("beta".to_string())).unwrap(),
+            "1.3.0-beta.1"
+        );
+        assert_eq!(
+            apply_bump("1.3.0-beta.1", &Bump::Prerelease("beta".to_string())).unwrap(),
+            "1.3.0-beta.2"
+        );
+        assert_eq!(
+            apply_bump("1.2.3", &Bump::PrePatch("rc".to_string())).unwrap(),
+            "1.2.4-rc.0"
+        );
 
         // Test switch channel
-        assert_eq!(apply_bump("1.3.0-alpha.1", &Bump::Prerelease("beta".to_string())).unwrap(), "1.3.0-beta.0");
+        assert_eq!(
+            apply_bump("1.3.0-alpha.1", &Bump::Prerelease("beta".to_string())).unwrap(),
+            "1.3.0-beta.0"
+        );
 
         // Test graduate
-        assert_eq!(apply_bump("1.3.0-beta.2", &Bump::Graduate).unwrap(), "1.3.0");
+        assert_eq!(
+            apply_bump("1.3.0-beta.2", &Bump::Graduate).unwrap(),
+            "1.3.0"
+        );
         assert!(apply_bump("1.3.0", &Bump::Graduate).is_err());
 
         assert!(apply_bump("nope", &Bump::Patch).is_err());
@@ -380,5 +704,53 @@ mod tests {
             change_note(&pkg, &Bump::Major, true, &new_versions),
             "major, selected"
         );
+    }
+
+    #[test]
+    fn orchestrate_many_versions_all_adapters_in_one_release_transaction() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let a = FakeVersionAdapter::new(test_pkg(root, "npm-lib"));
+        let b = FakeVersionAdapter::new(test_pkg(root, "cargo-lib"));
+        let repo = FakeRepo;
+        let git = FakeGit::new();
+        let forge = FakeForge {
+            prs: RefCell::new(Vec::new()),
+        };
+        let prompt = FakePrompt;
+        let hook_runner = crate::hooks::fakes::FakeHookRunner::new();
+        let config = crate::config::ReleaseConfig {
+            changelog_strategy: crate::config::ChangelogStrategy::Curated,
+            ..Default::default()
+        };
+
+        orchestrate_many(
+            &[&a, &b],
+            &repo,
+            &git,
+            &forge,
+            &prompt,
+            root,
+            "2026-06-28",
+            &VersionOptions::default(),
+            &config,
+            &hook_runner,
+        )
+        .unwrap();
+
+        assert_eq!(git.created.borrow().as_slice(), ["release/2026-06-28"]);
+        assert_eq!(git.commits.borrow().len(), 1);
+        assert_eq!(git.pushes.borrow().as_slice(), ["release/2026-06-28"]);
+        assert_eq!(forge.prs.borrow().as_slice(), ["release/2026-06-28"]);
+        assert_eq!(
+            a.writes.borrow().as_slice(),
+            [("npm-lib".to_string(), "1.0.1".to_string())]
+        );
+        assert_eq!(
+            b.writes.borrow().as_slice(),
+            [("cargo-lib".to_string(), "1.0.1".to_string())]
+        );
+        assert_eq!(*a.lockfile_updates.borrow(), 1);
+        assert_eq!(*b.lockfile_updates.borrow(), 1);
     }
 }

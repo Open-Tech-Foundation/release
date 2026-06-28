@@ -161,9 +161,22 @@ impl Adapter for GenericAdapter {
         Bump::Patch
     }
 
-    fn is_published(&self, _pkg: &Pkg, _version: &str) -> Result<bool> {
-        // No registry API to query; rely on the dated changelog / tag for idempotency upstream.
-        Ok(false)
+    fn is_published(&self, pkg: &Pkg, version: &str) -> Result<bool> {
+        // No generic registry API exists, so use the tag created after a successful publish as
+        // the resumability marker.
+        let tag = format!("{}@{}", pkg.name, version);
+        let out = Command::new("git")
+            .args(["tag", "--list", &tag])
+            .current_dir(&self.root)
+            .output()
+            .with_context(|| format!("checking for release tag: {tag}"))?;
+        if !out.status.success() {
+            bail!(
+                "`git tag --list {tag}` failed:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        Ok(!String::from_utf8_lossy(&out.stdout).trim().is_empty())
     }
 
     fn publish(&self, pkg: &Pkg, _staged_assets: Option<&Path>) -> Result<()> {
@@ -252,5 +265,47 @@ mod tests {
         let a = GenericAdapter::new(tmp.path(), vec![pkg("lib", "deno.json", None)]);
         let p = a.discover_packages().unwrap().pop().unwrap();
         assert!(a.publish(&p, None).is_err());
+    }
+
+    #[test]
+    fn is_published_uses_existing_release_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("deno.json"), "{\"version\":\"1.0.0\"}").unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+
+        let a = GenericAdapter::new(tmp.path(), vec![pkg("lib", "deno.json", Some("true"))]);
+        let p = a.discover_packages().unwrap().pop().unwrap();
+        assert!(!a.is_published(&p, "1.0.0").unwrap());
+
+        std::process::Command::new("git")
+            .args(["tag", "lib@1.0.0"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        assert!(a.is_published(&p, "1.0.0").unwrap());
     }
 }

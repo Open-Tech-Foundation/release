@@ -302,7 +302,7 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
         s.push_str("\npermissions:\n  contents: write  # create tags and GitHub Releases\n");
     }
     s.push_str("\njobs:\n");
-    let version_cmd = version_read_cmd(config.packages.first());
+    let version_cmd = version_read_cmd(config);
     render_check_release_job(&mut s, &version_cmd);
 
     // Build jobs only for packages that actually declare a build command.
@@ -346,8 +346,8 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
 
 /// The shell snippet that reads the release version for the GitHub Release tag, based on the
 /// first build-only package: a manifest field (generic), `package.json` (npm), or `Cargo.toml`.
-fn version_read_cmd(entry: Option<&PackageEntry>) -> String {
-    match entry {
+fn version_read_cmd(config: &ReleaseConfig) -> String {
+    match config.packages.first() {
         Some(e) if e.adapter == Ecosystem::Generic => {
             let manifest = e.manifest.as_deref().unwrap_or("deno.json");
             let field = e.version_field.as_deref().unwrap_or("version");
@@ -364,8 +364,17 @@ fn version_read_cmd(entry: Option<&PackageEntry>) -> String {
         Some(e) if e.adapter == Ecosystem::Npm => {
             "node -p \"require('./package.json').version\"".to_string()
         }
-        _ => {
+        Some(_) => {
             "cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'".to_string()
+        }
+        None if config.adapters.contains(&Ecosystem::Npm) => {
+            "node -p \"require('./package.json').version\"".to_string()
+        }
+        None if config.adapters.contains(&Ecosystem::Cargo) => {
+            "cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'".to_string()
+        }
+        _ => {
+            "echo 0.0.0  # edit me: where the version lives".to_string()
         }
     }
 }
@@ -1066,6 +1075,8 @@ mod tests {
         let out = render_workflow(&config);
         assert!(out.contains("  publish:\n"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
+        assert!(out.contains("          version=\"$(node -p \"require('./package.json').version\")\""));
+        assert!(!out.contains("version=\"$(cargo metadata"));
         assert!(out.contains("        run: otf-release publish\n"));
         // No build steps, so no needs and no artifact download.
         assert!(out.contains("needs: [check-release]"));

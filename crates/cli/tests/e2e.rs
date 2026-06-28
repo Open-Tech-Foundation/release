@@ -15,7 +15,7 @@ use anyhow::Result;
 
 use otf_release_adapters::npm::{CommandOutput, CommandRunner, NpmAdapter};
 use otf_release_core::adapter::{Bump, Pkg};
-use otf_release_core::config::{Hooks, ReleaseConfig};
+use otf_release_core::config::ReleaseConfig;
 use otf_release_core::forge::Forge;
 use otf_release_core::git::GitRepo;
 use otf_release_core::prompt::Prompt;

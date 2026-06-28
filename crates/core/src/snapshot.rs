@@ -5,7 +5,6 @@ use crate::adapter::Adapter;
 use crate::config::ReleaseConfig;
 use crate::publish;
 use crate::graph::Graph;
-use crate::hooks;
 use crate::git;
 
 pub fn run(adapter: &dyn Adapter, root: &Path, config: &ReleaseConfig) -> Result<()> {

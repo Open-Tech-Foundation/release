@@ -16,7 +16,7 @@ use otf_release_core::forge::Forge;
 use otf_release_core::git::GitRepo;
 use otf_release_core::prompt::Prompt;
 use otf_release_core::version::{orchestrate, VersionOptions};
-use otf_release_core::config::{Hooks, ReleaseConfig};
+use otf_release_core::config::ReleaseConfig;
 
 /// Every `npm` invocation "succeeds" (the version flow only calls `update_lockfile`).
 struct OkRunner;
