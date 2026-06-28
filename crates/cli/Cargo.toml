@@ -20,6 +20,8 @@ anyhow.workspace = true
 clap.workspace = true
 otf-release-core.workspace = true
 otf-release-adapters.workspace = true
+ureq.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

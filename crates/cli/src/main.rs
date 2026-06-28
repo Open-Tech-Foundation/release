@@ -15,6 +15,8 @@ use otf_release_core::config::{Ecosystem, ReleaseConfig, DEFAULT_VERSION_FIELD};
 use otf_release_core::init::AdapterFactory;
 use otf_release_core::{init, publish, upgrade, version};
 
+mod self_update;
+
 /// Builds the concrete ecosystem adapters from `opentf-release-adapters`. The generic adapter is
 /// configured from `release.toml`'s generic `[[package]]` entries.
 struct CliAdapterFactory {
@@ -106,6 +108,8 @@ enum Command {
     Config,
     /// Non-interactive, CI: automated ephemeral release via short git hashes.
     Snapshot,
+    /// Update otf-release to the latest version.
+    SelfUpdate,
 }
 
 fn main() -> Result<()> {
@@ -144,6 +148,10 @@ fn main() -> Result<()> {
                 let adapter = factory.make(*eco);
                 otf_release_core::snapshot::run(adapter.as_ref(), &root, &config)?;
             }
+            Ok(())
+        }
+        Command::SelfUpdate => {
+            self_update::run()?;
             Ok(())
         }
 
