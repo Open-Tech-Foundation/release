@@ -39,33 +39,137 @@ pub fn render(plan: &Plan) -> String {
     let mut out = String::new();
 
     if !plan.changes.is_empty() {
-        let name_w = plan.changes.iter().map(|c| c.name.len()).max().unwrap_or(7).max(7);
-        let old_w = plan.changes.iter().map(|c| c.old_version.len()).max().unwrap_or(3).max(3);
-        let new_w = plan.changes.iter().map(|c| c.new_version.len()).max().unwrap_or(3).max(3);
+        let name_w = plan
+            .changes
+            .iter()
+            .map(|c| c.name.len())
+            .max()
+            .unwrap_or(7)
+            .max(7);
+        let old_w = plan
+            .changes
+            .iter()
+            .map(|c| c.old_version.len())
+            .max()
+            .unwrap_or(3)
+            .max(3);
+        let new_w = plan
+            .changes
+            .iter()
+            .map(|c| c.new_version.len())
+            .max()
+            .unwrap_or(3)
+            .max(3);
 
         out.push_str("\nVersion Bumps (Direct & Indirect):\n");
-        out.push_str(&format!("  {:<name_w$} | {:<old_w$} | {:<new_w$} | {}\n", "Package", "Old", "New", "Reason", name_w=name_w, old_w=old_w, new_w=new_w));
-        out.push_str(&format!("  {:-<name_w$}-+-{:-<old_w$}-+-{:-<new_w$}-+--------------------------------\n", "", "", "", name_w=name_w, old_w=old_w, new_w=new_w));
+        out.push_str(&format!(
+            "  {:<name_w$} | {:<old_w$} | {:<new_w$} | {}\n",
+            "Package",
+            "Old",
+            "New",
+            "Reason",
+            name_w = name_w,
+            old_w = old_w,
+            new_w = new_w
+        ));
+        out.push_str(&format!(
+            "  {:-<name_w$}-+-{:-<old_w$}-+-{:-<new_w$}-+--------------------------------\n",
+            "",
+            "",
+            "",
+            name_w = name_w,
+            old_w = old_w,
+            new_w = new_w
+        ));
 
         for c in &plan.changes {
-            out.push_str(&format!("  {:<name_w$} | {:<old_w$} | {:<new_w$} | {}\n", c.name, c.old_version, c.new_version, c.note, name_w=name_w, old_w=old_w, new_w=new_w));
+            out.push_str(&format!(
+                "  {:<name_w$} | {:<old_w$} | {:<new_w$} | {}\n",
+                c.name,
+                c.old_version,
+                c.new_version,
+                c.note,
+                name_w = name_w,
+                old_w = old_w,
+                new_w = new_w
+            ));
         }
         out.push('\n');
     }
 
     if !plan.range_updates.is_empty() {
-        let cons_w = plan.range_updates.iter().map(|c| c.consumer.len()).max().unwrap_or(8).max(8);
-        let dep_w = plan.range_updates.iter().map(|c| c.dep.len()).max().unwrap_or(10).max(10);
-        let old_w = plan.range_updates.iter().map(|c| c.old_range.len()).max().unwrap_or(3).max(3);
-        let new_w = plan.range_updates.iter().map(|c| c.new_range.len()).max().unwrap_or(3).max(3);
+        let cons_w = plan
+            .range_updates
+            .iter()
+            .map(|c| c.consumer.len())
+            .max()
+            .unwrap_or(8)
+            .max(8);
+        let dep_w = plan
+            .range_updates
+            .iter()
+            .map(|c| c.dep.len())
+            .max()
+            .unwrap_or(10)
+            .max(10);
+        let old_w = plan
+            .range_updates
+            .iter()
+            .map(|c| c.old_range.len())
+            .max()
+            .unwrap_or(3)
+            .max(3);
+        let new_w = plan
+            .range_updates
+            .iter()
+            .map(|c| c.new_range.len())
+            .max()
+            .unwrap_or(3)
+            .max(3);
 
         out.push_str("Internal Range Updates:\n");
-        out.push_str(&format!("  {:<cons_w$} | {:<dep_w$} | {:<old_w$} | {:<new_w$} | {}\n", "Consumer", "Dependency", "Old", "New", "Notes", cons_w=cons_w, dep_w=dep_w, old_w=old_w, new_w=new_w));
-        out.push_str(&format!("  {:-<cons_w$}-+-{:-<dep_w$}-+-{:-<old_w$}-+-{:-<new_w$}-+------------------------\n", "", "", "", "", cons_w=cons_w, dep_w=dep_w, old_w=old_w, new_w=new_w));
+        out.push_str(&format!(
+            "  {:<cons_w$} | {:<dep_w$} | {:<old_w$} | {:<new_w$} | {}\n",
+            "Consumer",
+            "Dependency",
+            "Old",
+            "New",
+            "Notes",
+            cons_w = cons_w,
+            dep_w = dep_w,
+            old_w = old_w,
+            new_w = new_w
+        ));
+        out.push_str(&format!(
+            "  {:-<cons_w$}-+-{:-<dep_w$}-+-{:-<old_w$}-+-{:-<new_w$}-+------------------------\n",
+            "",
+            "",
+            "",
+            "",
+            cons_w = cons_w,
+            dep_w = dep_w,
+            old_w = old_w,
+            new_w = new_w
+        ));
 
         for r in &plan.range_updates {
-            let note = if r.consumer_private { "private app (not published)" } else { "" };
-            out.push_str(&format!("  {:<cons_w$} | {:<dep_w$} | {:<old_w$} | {:<new_w$} | {}\n", r.consumer, r.dep, r.old_range, r.new_range, note, cons_w=cons_w, dep_w=dep_w, old_w=old_w, new_w=new_w));
+            let note = if r.consumer_private {
+                "private app (not published)"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "  {:<cons_w$} | {:<dep_w$} | {:<old_w$} | {:<new_w$} | {}\n",
+                r.consumer,
+                r.dep,
+                r.old_range,
+                r.new_range,
+                note,
+                cons_w = cons_w,
+                dep_w = dep_w,
+                old_w = old_w,
+                new_w = new_w
+            ));
         }
         out.push('\n');
     }

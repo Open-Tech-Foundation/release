@@ -23,14 +23,14 @@ impl HookRunner for ShHookRunner {
             } else {
                 ("sh", "-c")
             };
-            
+
             let status = Command::new(shell)
                 .arg(arg)
                 .arg(cmd)
                 .current_dir(root)
                 .status()
                 .with_context(|| format!("failed to execute hook: {cmd}"))?;
-            
+
             if !status.success() {
                 bail!("hook failed with {status}: {cmd}");
             }
@@ -52,6 +52,12 @@ pub mod fakes {
             Self {
                 executed: RefCell::new(Vec::new()),
             }
+        }
+    }
+
+    impl Default for FakeHookRunner {
+        fn default() -> Self {
+            Self::new()
         }
     }
 

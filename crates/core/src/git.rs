@@ -73,7 +73,10 @@ impl RepoState for GitRepo {
             Some(t) => format!("{t}..HEAD"),
             None => "HEAD".to_string(),
         };
-        let stdout = run_git(&self.root, &["log", &range, "--pretty=format:* %s", "--", pathspec])?;
+        let stdout = run_git(
+            &self.root,
+            &["log", &range, "--pretty=format:* %s", "--", pathspec],
+        )?;
         Ok(stdout.trim().to_string())
     }
 }

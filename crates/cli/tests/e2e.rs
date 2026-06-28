@@ -193,7 +193,16 @@ fn version_then_publish_ships_exactly_the_computed_bumps() {
     .unwrap();
 
     // 2. (merge simulated by staying on the branch) publish reads the bumped working tree.
-    publish::orchestrate(&adapter, &repo, &forge, &root, &PublishOptions::default(), &hooks, &hook_runner).unwrap();
+    publish::orchestrate(
+        &adapter,
+        &repo,
+        &forge,
+        root,
+        &PublishOptions::default(),
+        &hooks,
+        &hook_runner,
+    )
+    .unwrap();
 
     let published = registry.published.lock().unwrap();
     assert!(published.contains("@x/core@2.0.0"), "{published:?}");

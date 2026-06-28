@@ -42,7 +42,10 @@ impl Prompt for StdinPrompt {
         if is_prerelease {
             let pre_part = parts[1];
             let current_channel = pre_part.split('.').next().unwrap();
-            let msg = format!("You are currently on '{}'. What would you like to do?", current_channel);
+            let msg = format!(
+                "You are currently on '{}'. What would you like to do?",
+                current_channel
+            );
             let opts = vec![
                 format!("Continue {}", current_channel),
                 "Switch channel".to_string(),
@@ -50,18 +53,19 @@ impl Prompt for StdinPrompt {
             ];
             let choice = Select::new(&msg, opts).prompt()?;
             if choice == "Exit to stable" {
-                return Ok(Bump::Graduate);
+                Ok(Bump::Graduate)
             } else if choice == "Switch channel" {
                 let ch = Select::new("Which channel?", vec!["alpha", "beta", "rc"]).prompt()?;
-                return Ok(Bump::Prerelease(ch.to_string()));
+                Ok(Bump::Prerelease(ch.to_string()))
             } else {
-                return Ok(Bump::Prerelease(current_channel.to_string()));
+                Ok(Bump::Prerelease(current_channel.to_string()))
             }
         } else {
             let rtype = Select::new(
                 &format!("Release type for {pkg_name}:"),
                 vec!["Stable", "Pre-release"],
-            ).prompt()?;
+            )
+            .prompt()?;
 
             let is_pre = rtype == "Pre-release";
             let channel = if is_pre {
@@ -70,12 +74,9 @@ impl Prompt for StdinPrompt {
                 None
             };
 
-            let bump_str = Select::new(
-                "Bump size:",
-                vec!["Major", "Minor", "Patch"],
-            ).prompt()?;
+            let bump_str = Select::new("Bump size:", vec!["Major", "Minor", "Patch"]).prompt()?;
 
-            return Ok(match (bump_str, channel) {
+            Ok(match (bump_str, channel) {
                 ("Major", None) => Bump::Major,
                 ("Minor", None) => Bump::Minor,
                 ("Patch", None) => Bump::Patch,
@@ -83,7 +84,7 @@ impl Prompt for StdinPrompt {
                 ("Minor", Some(c)) => Bump::PreMinor(c.to_string()),
                 ("Patch", Some(c)) => Bump::PrePatch(c.to_string()),
                 _ => unreachable!(),
-            });
+            })
         }
     }
 

@@ -1,15 +1,15 @@
-use std::path::Path;
 use anyhow::{Context, Result};
+use std::path::Path;
 
 use crate::adapter::Adapter;
 use crate::config::ReleaseConfig;
-use crate::publish;
-use crate::graph::Graph;
 use crate::git;
+use crate::graph::Graph;
+use crate::publish;
 
 pub fn run(adapter: &dyn Adapter, root: &Path, config: &ReleaseConfig) -> Result<()> {
     let tag = config.snapshot_tag.as_deref().unwrap_or("snapshot");
-    
+
     // 1. Get the current short git hash
     let hash = git::short_hash(root).context("failed to get short git hash for snapshot")?;
 

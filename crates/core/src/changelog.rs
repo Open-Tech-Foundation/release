@@ -63,18 +63,18 @@ pub fn prepend_generated(
     } else {
         "# Changelog\n\n".to_string()
     };
-    
+
     let notes = if generated_notes.trim().is_empty() {
         "\n_No changes._\n\n".to_string()
     } else {
         format!("\n{}\n\n", generated_notes.trim())
     };
     let release_section = format!("## [{version}] - {date}{notes}");
-    
+
     let rewritten = if let Some((body_start, body_end)) = find_unreleased(&content) {
         let mut out = String::with_capacity(content.len() + 64);
-        out.push_str(&content[..body_start]); 
-        out.push('\n'); 
+        out.push_str(&content[..body_start]);
+        out.push('\n');
         out.push_str(&release_section);
         out.push_str(&content[body_end..]);
         out
@@ -94,7 +94,7 @@ pub fn prepend_generated(
         out.push_str(&release_section);
         out
     };
-    
+
     fs::write(changelog_path, rewritten)
         .with_context(|| format!("writing {}", changelog_path.display()))
 }

@@ -317,7 +317,7 @@ pub fn orchestrate_many(
 
     // 9. Apply: versions, then internal ranges, then changelogs, then lockfiles.
     for (idx, ctx) in adapter_packages.iter().enumerate() {
-        for (name, _) in &adapter_bumps[idx] {
+        for name in adapter_bumps[idx].keys() {
             let new_ver = &new_versions[name];
             ctx.adapter.write_version(by_name[name.as_str()], new_ver)?;
         }
