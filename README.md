@@ -41,13 +41,18 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 | `otf-release upgrade` | ◐ Partial | Regenerates `release.yml` from the current `release.toml`. |
 | `otf-release self-update` | ✅ Supported | Checks GitHub Releases and reruns the install script when a newer CLI version exists. |
 
+## 🧩 Supported Adapters
+
+| Adapter | Status | Notes |
+| --- | --- | --- |
+| npm | ✅ Supported | Discovers npm workspaces, preserves dependency range operators, resolves `workspace:*`, checks `npm view`, and publishes with `npm publish --access public --no-workspaces`. |
+| Cargo | ✅ Supported | Discovers Cargo workspaces, supports concrete crate versions and `version.workspace = true`, updates path dependency versions, checks `cargo info`, and publishes with `cargo publish -p`. |
+| Generic | ✅ Supported | Versions configured JSON/TOML/text manifest fields and optionally runs a configured publish command for registries such as JSR. Idempotency is tag-based. |
+
 ## ✅ Feature Matrix
 
 | Area | Supported now | Notes |
 | --- | --- | --- |
-| npm adapter | ✅ | Discovers npm workspaces, preserves dependency range operators, resolves `workspace:*`, checks `npm view`, publishes with `npm publish --access public --no-workspaces`. |
-| Cargo adapter | ✅ | Discovers Cargo workspaces, supports concrete crate versions and `version.workspace = true`, updates path dependency versions, checks `cargo info`, publishes with `cargo publish -p`. |
-| Generic adapter | ✅ | Versions a configured manifest field and optionally runs a configured publish command for registries such as JSR. Idempotency is tag-based. |
 | Polyglot versioning | ✅ | `version` runs as one release transaction across all enabled adapters. |
 | Polyglot publishing | ✅ | `publish` loops enabled adapters and publishes each ecosystem in dependency order. |
 | Dependency cascades | ✅ | Adapter-owned rules. npm peer dependencies mirror the dependency bump; normal deps patch dependents. Cargo/generic dependents patch. |
@@ -91,5 +96,5 @@ MIT. See [LICENSE](LICENSE).
 ---
 
 <p align="center">
-Powered by [Open Tech Foundation](https://opentechf.org)
+Powered by <a href="https://opentechf.org">Open Tech Foundation</a>
 </p>
