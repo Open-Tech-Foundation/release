@@ -10,20 +10,21 @@ explains its shape and the reasoning.
 The jobs are derived from `release.toml`:
 
 ```
-build-<pkg>  (one per package with a build step)
+check-release
       │
-      ├─(mode = publish, npm)    ──needs──▶  npm-publish     (otf-release publish)
-      ├─(mode = publish, cargo)  ──needs──▶  cargo-publish   (otf-release publish)
-      └─(mode = build-only)      ──needs──▶  github-release  (gh release create vX.Y.Z)
+      ├──▶ build-<pkg>       (one per package with a build step)
+      │          │
+      │          ├──▶ publish          (otf-release publish)
+      │          └──▶ github-release   (build-only artifacts)
+      │
+      └──▶ publish / github-release when no build job is needed
 ```
 
 - **`build-<pkg>`** — one per `[[package]]` entry. A target **matrix** when `matrix = true`,
   otherwise a single runner. Runs the entry's `command` and uploads its `artifacts`.
-- **`npm-publish`** — present when npm is enabled; runs `otf-release publish`, which releases the
-  publishable npm set in dependency order, attaching staged binaries where they exist on disk.
-  Publishes only `publish`-mode packages (`build-only` ones are skipped).
-- **`cargo-publish`** — present **only** if a cargo package opts into `mode = "publish"`
-  (crates.io). By default the cargo path is `build-only`, so this job usually does not appear.
+- **`publish`** — present when at least one enabled adapter has registry publishing. It runs
+  `otf-release publish` once; the CLI loops enabled adapters internally. It publishes only
+  registry-publish packages (`build-only` ones are skipped).
 - **`github-release`** — present when any package is `build-only`. Downloads the staged artifacts
   and attaches them to a GitHub Release `vX.Y.Z`. **No registry push.**
 
@@ -35,7 +36,7 @@ Trigger: a merge to `main` (i.e. merging a release PR produced by
 | Property | How the single model gives it |
 | --- | --- |
 | **All-or-nothing** | If any matrix leg fails, `publish` never runs. Intrinsic to `needs:`, not bolted on. |
-| **Correct ordering** | "Asset package depends on freshly-published libs" is solved by topological publish in **one run** — libs first, asset package after. No manual two-phase, no "run after libs released." |
+| **Correct ordering** | Registry packages are published in topological order inside `otf-release publish`. Build-only artifacts are gated by their build jobs. |
 | **No guard hack** | Asset packages are first-class publishable packages with a binary target. No `private:true`, no flip-off step. |
 | **Stateless** | `publish` reads what to attach from `.artifacts/<pkg>/` on disk — nothing persisted. |
 
@@ -52,8 +53,8 @@ build-<pkg>  (cross-compile each target on its runner)  ──needs──▶  gi
   maps `*windows*`→`windows-latest`, `*apple*`/`*darwin*`→`macos-latest`, else `ubuntu-latest`).
   Runs the entry's `command` and uploads its `artifacts` glob.
 - **`github-release`** — `needs:` the build job(s); downloads the artifacts and runs `gh release
-  create vX.Y.Z` with them attached. The version line carries an `# edit me` marker (defaulting to
-  the root `Cargo.toml`); the step is **idempotent** (`gh release view` skips an existing tag).
+  create vX.Y.Z` with them attached. The version line carries an `# edit me` marker when the
+  generator cannot infer a source. The step is **idempotent** (`gh release view` skips an existing tag).
   **No crates.io, no `cargo publish`** — the artifacts are how users install the binary per OS.
 
 Auth: the default `GITHUB_TOKEN` with `contents: write` (to create the tag and Release). The git
@@ -68,8 +69,6 @@ Secrets/auth: `NODE_AUTH_TOKEN`.
 - Idempotent `npm view` skip → resumable after a partial failure.
 - `--no-workspaces` → the private root workspace would otherwise skip packages.
 - `--access public` → scoped package first publish.
-- Brotli compression via Node `zlib` → no runner-side CLI dependency.
-
 **Gotcha to drop:** the `private:true` guard flip, entirely.
 
 ## The generated file is yours

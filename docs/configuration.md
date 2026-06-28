@@ -45,7 +45,7 @@ artifacts = "dist/**"
 | `[[package]]` | A package with an explicit build step. |
 | `name` | The package name as discovered by its adapter. |
 | `adapter` | The owning ecosystem (`"npm"` / `"crates.io"` / `"generic"`). |
-| `mode` | `"publish"` → build then push to the registry. `"build-only"` → build, then attach artifacts to a GitHub Release; **never** pushed to a registry. (`generic` is always `build-only` — it has no registry.) |
+| `mode` | `"publish"` → build then push to the registry. `"build-only"` → build, then attach artifacts to a GitHub Release; **never** pushed to a registry. Generic packages can use either mode when a `publish` command is configured. |
 | `matrix` | `true` builds across `targets` (multiple platforms); `false` is a single runner. |
 | `targets` | Cross-compile triples (only when `matrix = true`). |
 | `command` | The build command CI runs. |
@@ -69,9 +69,8 @@ See [adapters/generic.md](./adapters/generic.md).
 
 ## How the commands use it
 
-- **`version`** acts on every enabled adapter — all publishable packages (both modes) are
-  versioned, changelog-rolled, and tagged. (For a polyglot repo, run it per ecosystem, merging
-  each PR before the next; the local branch guard requires a clean `main`.)
+- **`version`** acts on every enabled adapter as one release transaction — all publishable
+  packages (both modes) are versioned, changelog-rolled, committed, pushed, and opened as one PR.
 - **`publish`** acts on every enabled adapter but **skips `build-only` packages** — those ship
   via the GitHub Release the workflow creates, not through a registry.
 

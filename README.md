@@ -1,113 +1,96 @@
-<div align="center">
-
 # OTF Release
 
-</div>
+> Manual-bump, changelog-aware release CLI for polyglot monorepos.
 
-<div align="right">
+`otf-release` is a single Rust binary that helps a repo move from curated release notes to a
+release PR, then to CI-driven publishing. It supports npm workspaces, Cargo workspaces, and
+generic manifest-based packages through a committed `release.toml`.
 
-Part of Open Tech Foundation ecosystem.
+The core rule is simple: humans choose what to release and how much to bump; the tool handles
+dependency cascades, manifest edits, changelog updates, tags, publishing order, and generated
+GitHub workflows.
 
-</div>
+## ⚙️ Installation
 
-> Curated-changelog, manual-bump release CLI for polyglot monorepos.
+**macOS / Linux**
 
-A single-binary release tool for polyglot monorepos. You write your release notes in each package's `[Unreleased]` changelog section and pick the bumps — `otf-release` handles the rest: dependency-aware version cascades, topological publishing across multiple ecosystems (**npm, cargo, generic/JSR**), and a matrix-gated cross-platform GitHub release via a single generated `release.yml`. 
-
-Unlike commit-driven tools, your hand-written notes are the strict source of truth.
-
-## Installation
-
-You can easily install `otf-release` using our automated installation scripts:
-
-**macOS / Linux:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
 ```
 
-**Windows (PowerShell):**
+**Windows PowerShell**
+
 ```powershell
 irm https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.ps1 | iex
 ```
 
-Alternatively, you can compile from source using Cargo:
+**From source**
+
 ```bash
 cargo install --git https://github.com/Open-Tech-Foundation/release
 ```
 
-## Commands
+## 🧭 Command Surface
 
-| Command | Usage | Description |
-|---------|-------|-------------|
-| **`init`** | `otf-release init` | Interactive setup: configure ecosystems, build matrices, and artifacts. Generates `release.toml` and `release.yml`. |
-| **`version`** | `otf-release version` | Interactive local release: choose bumps, cascade dependencies, write changelogs, and automatically open a Release PR. |
-| **`publish`** | `otf-release publish` | Non-interactive CI flow: publishes changed packages in topological order, attaching staged build artifacts. |
-| **`config`** | `otf-release config` | Interactively edit your `release.toml` file without manually typing out OS architecture strings or workflow targets. |
-| **`snapshot`** | `otf-release snapshot` | Non-interactive CI flow: completely automates an ephemeral snapshot release powered by a short git hash (e.g. `1.0.0-snapshot.a1b2c3d`) |
-| **`self-update`** | `otf-release self-update` | Updates your local `otf-release` binary to the latest version published on GitHub Releases. |
-| **`upgrade`** | `otf-release upgrade` | Upgrades your local `release.toml` and regenerates your CI pipeline to match the latest CLI version features. |
+| Command | Status | What it does |
+| --- | --- | --- |
+| `otf-release init` | ✅ Supported | Interactive setup. Writes `release.toml`, `.github/workflows/release.yml`, and `.github/workflows/snapshot.yml`. |
+| `otf-release version` | ✅ Supported | Interactive local release flow. Select packages, choose bumps, cascade dependents, update manifests/changelogs, push a release branch, and open a PR. |
+| `otf-release publish` | ✅ Supported | CI-oriented publish flow. Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. |
+| `otf-release snapshot` | 🧪 Experimental | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |
+| `otf-release config` | ◐ Partial | Interactive editor for common `release.toml` fields such as hooks, enabled ecosystems, and build targets. |
+| `otf-release upgrade` | ◐ Partial | Regenerates `release.yml` from the current `release.toml`. |
+| `otf-release self-update` | ✅ Supported | Checks GitHub Releases and reruns the install script when a newer CLI version exists. |
 
-## Workflow
+## ✅ Feature Matrix
+
+| Area | Supported now | Notes |
+| --- | --- | --- |
+| npm adapter | ✅ | Discovers npm workspaces, preserves dependency range operators, resolves `workspace:*`, checks `npm view`, publishes with `npm publish --access public --no-workspaces`. |
+| Cargo adapter | ✅ | Discovers Cargo workspaces, supports concrete crate versions and `version.workspace = true`, updates path dependency versions, checks `cargo info`, publishes with `cargo publish -p`. |
+| Generic adapter | ✅ | Versions a configured manifest field and optionally runs a configured publish command for registries such as JSR. Idempotency is tag-based. |
+| Polyglot versioning | ✅ | `version` runs as one release transaction across all enabled adapters. |
+| Polyglot publishing | ✅ | `publish` loops enabled adapters and publishes each ecosystem in dependency order. |
+| Dependency cascades | ✅ | Adapter-owned rules. npm peer dependencies mirror the dependency bump; normal deps patch dependents. Cargo/generic dependents patch. |
+| Private packages/apps | ✅ | Never versioned or published; internal ranges are still updated so apps remain buildable. |
+| Curated changelog mode | ✅ | Uses each package's `[Unreleased]` section as the release-note source. |
+| Generated changelog mode | ✅ | Builds notes from git commit messages since the last package tag and prepends generated notes to `CHANGELOG.md`. |
+| Prereleases | ✅ | Supports stable bumps, channel entry (`alpha`, `beta`, `rc`), channel iteration, channel switching, and graduation to stable. |
+| Build-only packages | ✅ | CI can build artifacts and attach them to a GitHub Release instead of publishing to a registry. |
+| Lifecycle hooks | ✅ | `pre_version`, `post_version`, `pre_publish`, and `post_publish` run from `release.toml`. |
+| GitHub workflow generation | ✅ | Generates release and snapshot workflows from `release.toml`; intended as editable scaffolds. |
+| Git providers | GitHub only | Config has a `provider` field, but only GitHub PR/release behavior is implemented. |
+
+## ⚠️ Known Gaps
+
+| Gap | Impact |
+| --- | --- |
+| `--first-release` is not wired through the version flow yet. | First-release ergonomics are still stricter than the CLI help implies. |
+| `publish` lifecycle hooks run per adapter, not once per full command. | Polyglot repos may run global `pre_publish` / `post_publish` hooks more than intended. |
+| `snapshot` is experimental. | Multi-adapter semantics, generated notes, rollback expectations, and workflow polish need more hardening. |
+| Generated `release.yml` still needs stronger validation. | It is useful scaffolding, but complex monorepos may need hand edits. |
+| Build-only GitHub releases use `vX.Y.Z` while package publish tags use `name@X.Y.Z`. | Independent build-only packages can be awkward when multiple packages release at different versions. |
+| `config` does not edit every `release.toml` field. | Users still need to hand-edit package mode, commands, artifacts, generic fields, provider, snapshot tag, and changelog strategy. |
+| Generic manifest parsing is intentionally simple. | Works for common JSON/TOML-style version fields, but is not a full structured parser. |
+| Only GitHub is implemented. | GitLab, Bitbucket, Gitea, and Codeberg are future work. |
+
+## 🔁 Release Flow
 
 ```mermaid
 flowchart TD
-    Init["1️⃣ <b>Init</b><br/>Run <code>otf-release init</code> once to generate configs & CI"]
-    Curate["2️⃣ <b>Curate</b><br/>Write <code>[Unreleased]</code> notes as you develop"]
-    PreVersion{"🪝 pre_version"}
-    Version["3️⃣ <b>Version</b><br/>Run <code>otf-release version</code> to bump & open PR"]
-    PostVersion{"🪝 post_version"}
-    Merge["4️⃣ <b>Merge</b><br/>Review & merge the Release PR to <code>main</code>"]
-    PrePublish{"🪝 pre_publish"}
-    Publish["5️⃣ <b>Publish</b><br/>CI auto-compiles & publishes artifacts natively"]
-    PostPublish{"🪝 post_publish"}
+    Init["⚙️ Init<br/>Generate release.toml and workflows"]
+    Curate["📝 Prepare notes<br/>Curated CHANGELOG or generated commits"]
+    PreVersion{"pre_version hooks"}
+    Version["🏷️ Version<br/>Choose bumps, cascade, update files"]
+    PostVersion{"post_version hooks"}
+    PR["🔍 Release PR<br/>Review and merge"]
+    PrePublish{"pre_publish hooks"}
+    Publish["🚀 Publish<br/>CI publishes registries and/or artifacts"]
+    PostPublish{"post_publish hooks"}
 
-    Init --> Curate --> PreVersion --> Version --> PostVersion --> Merge --> PrePublish --> Publish --> PostPublish
+    Init --> Curate --> PreVersion --> Version --> PostVersion --> PR --> PrePublish --> Publish --> PostPublish
 ```
 
-## Changelog Strategies
+## 📄 License
 
-During `otf-release init`, you can select how you want to manage your release notes via the `changelog_strategy` configuration.
-
-- **Curated (Default):** You manually write release notes inside an `[Unreleased]` section within each package's `CHANGELOG.md` as you develop. `otf-release` acts as a strict curator, consuming these exact notes for the release.
-- **Generated:** `otf-release` automatically reads the git commit history since the last package tag and generates a list of commit messages. These generated notes are used in the Release PR and automatically prepended to the `CHANGELOG.md` upon release.
-
-## Pre-releases
-
-When running `otf-release version`, the interactive prompt will first ask you to select a release channel. By default, it uses the **stable** channel. If you select an alternative channel (e.g. `alpha`, `beta`, `rc`), `otf-release` will automatically compute valid semantic pre-release versions for your bumps.
-
-For example, choosing a `minor` bump on the `beta` channel will transition `1.0.0` into `1.1.0-beta.0`. Once on a pre-release channel, you can select the new `prerelease` bump option to iterate tags (e.g., `beta.0` → `beta.1`).
-
-## Snapshot Releases
-
-To avoid polluting your changelog with every single CI run, you can configure an automated `snapshot` workflow. During `otf-release init`, the wizard will ask you for a snapshot tag (like `snapshot`, `canary`, or `edge`). 
-
-This will automatically scaffold a `.github/workflows/snapshot.yml` that triggers on `main` branch pushes. It runs `otf-release snapshot`, which generates short-hash ephemeral versions (like `1.0.0-canary.a1b2c3d`) and automatically bumps your ecosystem boundaries and pushes to registries without touching your tags or PRs.
-
-## Git Hosting Providers
-
-During `otf-release init`, you will be prompted to select your Git hosting provider. This determines the format of the Release PRs, release links, and CI workflows generated by the CLI. 
-
-Currently, **GitHub** is fully supported as the default provider. Support for GitLab, Bitbucket, Gitea, and Codeberg is planned and will be available in future releases. Your selection is saved as the `provider` field in `release.toml`.
-
-## Lifecycle Hooks
-
-You can define custom shell scripts to run at critical stages of the release process by editing your `release.toml` file. These hooks are executed across all operating systems automatically using your native shell (`sh` on Unix, `powershell` on Windows).
-
-```toml
-[hooks]
-# Runs before the interactive version prompt starts (e.g. to validate repo state)
-pre_version = ["npm run lint", "node scripts/validate.js"]
-
-# Runs after versions and changelogs are updated, but BEFORE they are committed
-post_version = ["python3 scripts/sync-docs.py"]
-
-# Runs in CI before the publish loop begins
-pre_publish = ["npm run test"]
-
-# Runs in CI after everything is successfully published
-post_publish = ["curl -X POST ..."]
-```
-
-## License
-
-MIT License. See [LICENSE](LICENSE) for details.
+MIT. See [LICENSE](LICENSE).

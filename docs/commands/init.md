@@ -57,10 +57,10 @@ artifacts = "target/${{ matrix.target }}/release/otf-release*"
 
 From the config, `init` emits jobs:
 
+- a **`check-release`** job that decides whether downstream jobs should run;
 - a **`build-<pkg>`** job per package with a build step (a matrix when *build matrix* is yes);
-- an **`npm-publish`** job when npm is enabled — runs `otf-release publish` (publishes only
-  `publish`-mode packages);
-- a **`cargo-publish`** job *only* if a cargo package opts into `mode = "publish"` (crates.io);
+- a single **`publish`** job when registry publishing is enabled — runs `otf-release publish`
+  once, and the CLI loops the enabled adapters internally;
 - a **`github-release`** job when any package is `build-only` — attaches its staged artifacts to a
   GitHub Release `vX.Y.Z`, idempotently. The default `GITHUB_TOKEN` + `contents: write`.
 
@@ -81,4 +81,4 @@ and *why*. Read them together when setting up a repo.
 
 - [configuration.md](../configuration.md) — the `release.toml` schema.
 - [ci-workflow.md](../ci-workflow.md) — the generated workflow, explained.
-- [commands/publish.md](./publish.md) — the command the `npm-publish`/`cargo-publish` jobs run.
+- [commands/publish.md](./publish.md) — the command the `publish` job runs.

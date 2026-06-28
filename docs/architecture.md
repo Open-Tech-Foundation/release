@@ -2,7 +2,7 @@
 
 `otf-release` is a single static binary (Rust) split into a registry-agnostic **core** and
 one or more **adapters**. The core orchestrates a release; an adapter knows how one ecosystem
-(npm, in v1) reads manifests, formats version ranges, talks to a registry, and publishes.
+reads manifests, formats version ranges, talks to a registry, and publishes.
 
 ## Design rules
 
@@ -15,8 +15,8 @@ one or more **adapters**. The core orchestrates a release; an adapter knows how 
    `version`, `publish`, and the generated `release.yml` all derive from. Everything else is
    read from disk (manifests, changelogs, `.artifacts/`) and the registry/git (tags); no other
    state is persisted between runs.
-4. **Notes are curated, never inferred.** The hand-written `[Unreleased]` changelog section
-   is the source of truth for release notes. Bumps are chosen by a human.
+4. **Bumps are chosen by a human.** Release notes can be curated from `[Unreleased]` sections
+   or generated from commit history, depending on `release.toml`.
 
 ## Crate layout
 
@@ -37,7 +37,9 @@ crates/
   adapters/  opentf-release-adapters     # registry adapters (lib)
     src/
       lib.rs
-      npm.rs        # the only implemented adapter in v1
+      npm/          # npm workspace adapter
+      cargo.rs      # Cargo workspace adapter
+      generic.rs    # manifest + user-command adapter
   cli/       opentf-release              # binary `otf-release` (clap)
     src/
       main.rs
@@ -52,10 +54,10 @@ cli ──▶ core ◀── adapters
 
 - `core` defines the `Adapter` trait and all domain types. It depends on nothing internal.
 - `adapters` depends on `core` (it implements the trait).
-- `cli` depends on both: it constructs the concrete `NpmAdapter` and hands it to the core
-  command functions as `&dyn Adapter`.
+- `cli` depends on both: it constructs the concrete adapters and hands them to the core command
+  functions as `&dyn Adapter`.
 
-This direction means a new adapter is added **without touching `core`**.
+This direction means a new adapter can usually be added **without touching `core`**.
 
 ## Domain types
 

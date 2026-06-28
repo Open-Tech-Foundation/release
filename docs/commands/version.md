@@ -9,7 +9,7 @@ otf-release version [--dry-run] [--first-release]
 | Flag | Effect |
 | --- | --- |
 | `--dry-run` | Compute and print the plan ([summary](#5-summary--confirm)), write nothing. |
-| `--first-release` | Permit first-release of packages that have no prior git tag. |
+| `--first-release` | Reserved for first-release ergonomics; currently exposed by the CLI but not wired through the flow. |
 
 Implemented in `crates/core/src/version.rs`.
 

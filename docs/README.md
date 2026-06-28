@@ -1,13 +1,11 @@
 # OTF Release — Documentation
 
-Reference documentation for `otf-release`, the curated-changelog, manual-bump release CLI
-for the OpenTF monorepo.
+Reference documentation for `otf-release`, the manual-bump, changelog-aware release CLI for
+polyglot monorepos.
 
-> **Status:** v1 is implemented and tested — `version`, `publish`, and `init`, with the **npm**
-> and **cargo** adapters. Setup is config-driven: `init` writes [`release.toml`](./configuration.md)
-> (the source of truth), with a per-package `publish` vs `build-only` mode. The cargo path supports
-> lockstep workspaces and a GitHub-Release binary distribution (how `otf-release` ships itself).
-> [`implementation-plan.md`](./implementation-plan.md) tracks the phase-by-phase build.
+> **Status:** The implemented command surface includes `init`, `version`, `publish`, `snapshot`,
+> `config`, `upgrade`, and `self-update`. The implemented adapters are **npm**, **cargo**, and
+> **generic**. GitHub is the only fully implemented forge provider.
 
 ## Start here
 
@@ -34,8 +32,8 @@ for the OpenTF monorepo.
 | [changelog-format.md](./changelog-format.md) | Keep a Changelog conventions and rewrite rules. |
 | [preflight.md](./preflight.md) | The strict, all-or-nothing compliance gate. |
 | [ci-workflow.md](./ci-workflow.md) | The single `release.yml` model. |
-| [roadmap.md](./roadmap.md) | Deferred / out-of-scope items. |
-| [implementation-plan.md](./implementation-plan.md) | Phased build plan with acceptance criteria. |
+| [roadmap.md](./roadmap.md) | Known gaps and upcoming work. |
+| [implementation-plan.md](./implementation-plan.md) | Historical phased build plan; useful context, not the current source of truth. |
 
 ## Glossary
 
@@ -47,12 +45,12 @@ for the OpenTF monorepo.
   (cross-compiled in CI and attached at publish time). A first-class package, **not** a
   guarded special case.
 - **Cascade** — propagating a bump from a package to its internal dependents, transitively.
-- **Adapter** — the ecosystem-specific backend (npm in v1) behind which all registry and
-  manifest knowledge lives.
+- **Adapter** — the ecosystem-specific backend behind which registry and manifest knowledge
+  lives.
 
 ## Conventions used in these docs
 
 - The invoked binary is `otf-release`; the published npm package is `@opentf/release`.
 - Code/identifier references point at `crates/<crate>/src/<module>.rs`.
-- "v1" = the current milestone: **npm + cargo** adapters, config-driven via `release.toml`, no
-  pre-releases, local `version` → manual PR.
+- "Current" = npm + cargo + generic adapters, config-driven via `release.toml`, local
+  `version` → release PR → CI `publish`.

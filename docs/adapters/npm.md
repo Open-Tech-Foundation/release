@@ -1,8 +1,7 @@
 # npm adapter
 
-The only implemented adapter in v1. Implemented in `crates/adapters/src/npm.rs`. The rules and
-gotchas below are **already battle-tested** in the existing OpenTF release workflow — they are
-baked in, not to be rediscovered.
+Implemented in `crates/adapters/src/npm/`. The rules and gotchas below are baked into the npm
+adapter so the core release flow can stay ecosystem-agnostic.
 
 ## Cascade rule (`dependent_bump`)
 

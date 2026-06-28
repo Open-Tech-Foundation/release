@@ -1,36 +1,30 @@
-# Roadmap — deferred & out of scope for v1
+# Roadmap and Known Gaps
 
-v1 is deliberately narrow: **npm only**, hand-curated notes, local `version` → manual PR. The
-items below are explicitly out of scope now. The architecture leaves room for them; none are
-implemented.
+This page tracks gaps in the current implementation. The root
+[`README.md`](../README.md) is the product-facing overview; this file is the short engineering
+roadmap.
 
-## Additional adapters
+## Highest priority
 
-The [`Adapter`](./adapters/overview.md) trait isolates ecosystems. **npm** and **cargo** are
-implemented (see [adapters/cargo.md](./adapters/cargo.md)); **PyPI** and others are further out.
+| Area | Gap | Recommendation |
+| --- | --- | --- |
+| First releases | `--first-release` is exposed by the CLI but not wired through the version flow. | Implement the flag or remove it until the behavior is ready. |
+| Publish hooks | `publish` runs hooks once per adapter. | Make `pre_publish` and `post_publish` run once per command, while adapter publishing remains per ecosystem. |
+| Generated CI | `release.yml` is editable scaffolding and still needs stronger validation. | Add workflow shape tests and ensure required setup/install steps are generated. |
 
-The cargo adapter handles both independent (concrete-version) crates and **lockstep workspaces**
-(`version.workspace = true` → bump `[workspace.package] version`, single root `CHANGELOG.md`).
-`cargo publish` needs a concrete `version` on path deps (done in `resolve_workspace_links`); cargo
-has no peerDep concept so all internal dependents take a `Patch`. For a binary tool, the cargo
-`init` workflow ships cross-OS binaries via a **GitHub Release** rather than crates.io.
+## Next
 
-## Pre-releases / snapshots
+| Area | Gap | Recommendation |
+| --- | --- | --- |
+| Snapshot releases | `snapshot` exists, but its multi-adapter behavior and failure model need a clear contract. | Keep it experimental until documented and tested end to end. |
+| Build-only releases | Build-only GitHub releases use `vX.Y.Z`, while package publish tags use `name@X.Y.Z`. | Normalize naming for independent packages to avoid collisions. |
+| Config editing | `otf-release config` edits only common fields. | Extend it to cover package mode, commands, artifacts, generic fields, provider, snapshot tag, and changelog strategy. |
+| Generic manifests | Generic version parsing is simple text matching. | Use structured JSON/TOML parsing when the file type is known. |
 
-`-next`, `-canary`, and similar pre-release channels are **deliberately excluded** from v1.
-Add later if a need appears.
+## Later
 
-## Release-PR bot
-
-A changesets-style, auto-maintained release PR is **not** in v1. v1 is local `version` → a
-manually opened PR. A bot that keeps a running release PR up to date could come later.
-
-## First-release ergonomics
-
-v1 requires `[Unreleased]` for a first release. A dedicated `--first-release` flag (sketched in
-`version.rs`) will make first-time publishing explicit rather than implicit.
-
-## See also
-
-- [adapters/overview.md](./adapters/overview.md) — how to add an adapter when these land.
-- [implementation-plan.md](./implementation-plan.md) — what is being built now.
+| Area | Direction |
+| --- | --- |
+| Additional adapters | PyPI, Maven, Go, and other ecosystems can fit behind the existing `Adapter` trait. |
+| Additional forges | GitLab, Bitbucket, Gitea, and Codeberg need provider-specific PR/release implementations. |
+| Release PR automation | A bot-maintained release PR could be added later; the current flow is local `version` to PR. |
