@@ -104,6 +104,8 @@ enum Command {
     },
     /// Edit release.toml interactively.
     Config,
+    /// Non-interactive, CI: automated ephemeral release via short git hashes.
+    Snapshot,
 }
 
 fn main() -> Result<()> {
@@ -130,6 +132,18 @@ fn main() -> Result<()> {
         }
         Command::Config => {
             otf_release_core::config_cmd::orchestrate(&root)?;
+            Ok(())
+        }
+        Command::Snapshot => {
+            let config = ReleaseConfig::load(&root)?;
+            let factory = CliAdapterFactory {
+                root: root.clone(),
+                generic: generic_pkgs(&config),
+            };
+            for eco in &config.adapters {
+                let adapter = factory.make(*eco);
+                otf_release_core::snapshot::run(adapter.as_ref(), &root, &config)?;
+            }
             Ok(())
         }
 

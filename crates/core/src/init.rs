@@ -87,6 +87,8 @@ pub trait InitPrompt {
     fn generic_packages(&self, found: &[GenericCandidate]) -> Result<Vec<PackageEntry>>;
     /// Confirm overwriting an existing file (only asked when not `--force`).
     fn confirm_overwrite(&self, path: &Path) -> Result<bool>;
+    /// Ask for the tag to use for automated snapshot releases.
+    fn snapshot_tag(&self) -> Result<String>;
 }
 
 /// Wire up the real prompt and run the generator.
@@ -136,6 +138,7 @@ pub fn orchestrate(
         hooks: crate::config::Hooks::default(),
         adapters: enabled,
         packages,
+        snapshot_tag: Some(prompt.snapshot_tag()?),
     };
 
     // 1. Persist the source of truth.
@@ -153,6 +156,16 @@ pub fn orchestrate(
             .with_context(|| format!("creating {}", yml_path.parent().unwrap().display()))?;
         fs::write(&yml_path, yaml).with_context(|| format!("writing {}", yml_path.display()))?;
         println!("Wrote {}", yml_path.display());
+    }
+
+    // 3. Generate snapshot workflow.
+    let snapshot_yaml = render_snapshot_workflow(&config);
+    let snapshot_yml_path = root.join(".github/workflows/snapshot.yml");
+    if write_allowed(&snapshot_yml_path, opts.force, prompt)? {
+        fs::create_dir_all(snapshot_yml_path.parent().unwrap())
+            .with_context(|| format!("creating {}", snapshot_yml_path.parent().unwrap().display()))?;
+        fs::write(&snapshot_yml_path, snapshot_yaml).with_context(|| format!("writing {}", snapshot_yml_path.display()))?;
+        println!("Wrote {}", snapshot_yml_path.display());
     }
     Ok(())
 }
@@ -222,6 +235,49 @@ fn render_check_release_job(s: &mut String, version_cmd: &str) {
 ///   across every enabled ecosystem (npm, crates.io, generic),
 /// - a `github-release` job if any package is `build-only` — attaches its artifacts to a
 ///   GitHub Release `vX.Y.Z`, idempotently. **No registry push for build-only packages.**
+pub fn render_snapshot_workflow(config: &ReleaseConfig) -> String {
+    let mut s = String::new();
+    s.push_str("name: Snapshot Release\n\n");
+    s.push_str("on:\n");
+    s.push_str("  push:\n");
+    s.push_str("    branches: [\"main\"]\n\n");
+    s.push_str("jobs:\n");
+    s.push_str("  snapshot:\n");
+    s.push_str("    runs-on: ubuntu-latest\n");
+    s.push_str("    permissions:\n");
+    s.push_str("      contents: write\n");
+    s.push_str("      id-token: write\n");
+    s.push_str("    steps:\n");
+    s.push_str("      - uses: actions/checkout@v4\n");
+    s.push_str("        with:\n");
+    s.push_str("          fetch-depth: 0\n");
+
+    if config.adapters.contains(&Ecosystem::Cargo) {
+        s.push_str("      - name: Install Rust\n");
+        s.push_str("        run: rustup update stable\n");
+    }
+    if config.adapters.contains(&Ecosystem::Npm) {
+        s.push_str("      - name: Install Node\n");
+        s.push_str("        uses: actions/setup-node@v4\n");
+        s.push_str("        with:\n");
+        s.push_str("          node-version: 'lts/*'\n");
+        s.push_str("          registry-url: 'https://registry.npmjs.org'\n");
+    }
+
+    s.push_str("      - name: Install otf-release\n");
+    s.push_str("        run: curl -LsSf https://github.com/opentf-org/opentf-release/releases/latest/download/otf-release-installer.sh | sh\n");
+    s.push_str("      - name: Snapshot Release\n");
+    s.push_str("        env:\n");
+    if config.adapters.contains(&Ecosystem::Cargo) {
+        s.push_str("          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n");
+    }
+    if config.adapters.contains(&Ecosystem::Npm) {
+        s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n");
+    }
+    s.push_str("        run: otf-release snapshot\n");
+    s
+}
+
 pub fn render_workflow(config: &ReleaseConfig) -> String {
     let any_build_only = config.packages.iter().any(|p| p.mode == Mode::BuildOnly);
     let npm_enabled = config.adapters.contains(&Ecosystem::Npm);
@@ -766,12 +822,25 @@ impl InitPrompt for StdinInitPrompt {
 
     fn confirm_overwrite(&self, path: &Path) -> Result<bool> {
         Ok(Select::new(
-            &format!("{} exists. Overwrite?", path.display()),
+            &format!("{} already exists. Overwrite?", path.display()),
             vec!["No", "Yes"],
         )
         .raw_prompt()?
         .index
             == 1)
+    }
+
+    fn snapshot_tag(&self) -> Result<String> {
+        let tag = Select::new(
+            "What tag should be used for ephemeral CI releases?",
+            vec!["snapshot", "dev", "canary", "custom (type your own)"],
+        ).prompt()?;
+
+        if tag.starts_with("custom") {
+            Ok(inquire::Text::new("Enter custom tag (e.g. edge):").prompt()?)
+        } else {
+            Ok(tag.to_string())
+        }
     }
 }
 
@@ -858,6 +927,9 @@ mod tests {
         fn confirm_overwrite(&self, _: &Path) -> Result<bool> {
             Ok(self.overwrite)
         }
+        fn snapshot_tag(&self) -> Result<String> {
+            Ok("snapshot".to_string())
+        }
     }
 
     fn pkg(name: &str, publishable: bool) -> Pkg {
@@ -933,6 +1005,7 @@ mod tests {
     #[test]
     fn npm_only_renders_publish_job_no_release() {
         let config = ReleaseConfig {
+            snapshot_tag: None,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
             packages: vec![],
@@ -949,6 +1022,7 @@ mod tests {
     #[test]
     fn cargo_build_only_renders_github_release_no_registry() {
         let config = ReleaseConfig {
+            snapshot_tag: None,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
             packages: vec![cargo_build_only("opentf-release")],
@@ -975,6 +1049,7 @@ mod tests {
     #[test]
     fn generic_build_only_renders_no_toolchain_and_manifest_version() {
         let config = ReleaseConfig {
+            snapshot_tag: None,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
             packages: vec![generic_pkg("release", None)],
@@ -994,6 +1069,7 @@ mod tests {
     #[test]
     fn generic_publish_renders_publish_job_with_edit_me_toolchain() {
         let config = ReleaseConfig {
+            snapshot_tag: None,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
             packages: vec![generic_pkg("jsr-lib", Some("npx jsr publish"))],
@@ -1012,6 +1088,7 @@ mod tests {
     #[test]
     fn polyglot_renders_one_publish_job_and_release() {
         let config = ReleaseConfig {
+            snapshot_tag: None,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             packages: vec![cargo_build_only("web-compiler"), npm_publish("docs-site")],

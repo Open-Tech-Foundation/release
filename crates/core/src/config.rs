@@ -159,6 +159,9 @@ pub struct ReleaseConfig {
     /// adapter (no build), in `publish` mode.
     #[serde(default, rename = "package")]
     pub packages: Vec<PackageEntry>,
+    /// Tag used for automated snapshot releases (e.g. "snapshot", "canary").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_tag: Option<String>,
 }
 
 impl ReleaseConfig {
@@ -211,6 +214,7 @@ mod tests {
     #[test]
     fn round_trips_through_toml() {
         let cfg = ReleaseConfig {
+            snapshot_tag: None,
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             hooks: Hooks::default(),
             packages: vec![
@@ -261,6 +265,7 @@ mod tests {
     fn save_and_load_via_disk() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = ReleaseConfig {
+            snapshot_tag: None,
             adapters: vec![Ecosystem::Cargo],
             hooks: Hooks::default(),
             packages: vec![],

@@ -30,6 +30,11 @@ impl GitRepo {
     }
 }
 
+pub fn short_hash(root: &Path) -> Result<String> {
+    let out = run_git(root, &["rev-parse", "--short", "HEAD"])?;
+    Ok(out.trim().to_string())
+}
+
 impl RepoState for GitRepo {
     fn last_tag(&self, pkg_name: &str) -> Result<Option<String>> {
         let prefix = format!("{pkg_name}@");

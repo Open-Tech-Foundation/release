@@ -32,6 +32,7 @@ pub mod init;
 pub mod preflight;
 pub mod prompt;
 pub mod publish;
+pub mod snapshot;
 pub mod summary;
 pub mod upgrade;
 pub mod version;
