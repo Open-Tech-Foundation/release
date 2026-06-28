@@ -17,7 +17,9 @@ use anyhow::{bail, Context, Result};
 use inquire::{MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
-use crate::config::{ChangelogStrategy, Ecosystem, Mode, PackageEntry, ReleaseConfig, Target, DEFAULT_VERSION_FIELD};
+use crate::config::{
+    ChangelogStrategy, Ecosystem, Mode, PackageEntry, ReleaseConfig, Target, DEFAULT_VERSION_FIELD,
+};
 use crate::discover::{scan_generic_candidates, GenericCandidate};
 
 /// A static definition for a default target to offer in the CLI prompt.
@@ -39,14 +41,54 @@ impl TargetDef {
 
 /// A sensible default cross-compile target set (each emitted with an `# edit me` marker).
 pub const DEFAULT_TARGETS: &[TargetDef] = &[
-    TargetDef { label: "Linux x64", name: "linux", arch: "x86_64", rust_triple: "x86_64-unknown-linux-gnu" },
-    TargetDef { label: "Linux ARM64", name: "linux", arch: "aarch64", rust_triple: "aarch64-unknown-linux-gnu" },
-    TargetDef { label: "Linux x86 (32-bit)", name: "linux", arch: "x86", rust_triple: "i686-unknown-linux-gnu" },
-    TargetDef { label: "macOS ARM64", name: "macos", arch: "aarch64", rust_triple: "aarch64-apple-darwin" },
-    TargetDef { label: "macOS x64", name: "macos", arch: "x86_64", rust_triple: "x86_64-apple-darwin" },
-    TargetDef { label: "Windows x64", name: "windows", arch: "x86_64", rust_triple: "x86_64-pc-windows-msvc" },
-    TargetDef { label: "Windows ARM64", name: "windows", arch: "aarch64", rust_triple: "aarch64-pc-windows-msvc" },
-    TargetDef { label: "Windows x86 (32-bit)", name: "windows", arch: "x86", rust_triple: "i686-pc-windows-msvc" },
+    TargetDef {
+        label: "Linux x64",
+        name: "linux",
+        arch: "x86_64",
+        rust_triple: "x86_64-unknown-linux-gnu",
+    },
+    TargetDef {
+        label: "Linux ARM64",
+        name: "linux",
+        arch: "aarch64",
+        rust_triple: "aarch64-unknown-linux-gnu",
+    },
+    TargetDef {
+        label: "Linux x86 (32-bit)",
+        name: "linux",
+        arch: "x86",
+        rust_triple: "i686-unknown-linux-gnu",
+    },
+    TargetDef {
+        label: "macOS ARM64",
+        name: "macos",
+        arch: "aarch64",
+        rust_triple: "aarch64-apple-darwin",
+    },
+    TargetDef {
+        label: "macOS x64",
+        name: "macos",
+        arch: "x86_64",
+        rust_triple: "x86_64-apple-darwin",
+    },
+    TargetDef {
+        label: "Windows x64",
+        name: "windows",
+        arch: "x86_64",
+        rust_triple: "x86_64-pc-windows-msvc",
+    },
+    TargetDef {
+        label: "Windows ARM64",
+        name: "windows",
+        arch: "aarch64",
+        rust_triple: "aarch64-pc-windows-msvc",
+    },
+    TargetDef {
+        label: "Windows x86 (32-bit)",
+        name: "windows",
+        arch: "x86",
+        rust_triple: "i686-pc-windows-msvc",
+    },
 ];
 
 /// Map a target triple to a sensible default GitHub-hosted runner.
@@ -168,9 +210,11 @@ pub fn orchestrate(
     let snapshot_yaml = render_snapshot_workflow(&config);
     let snapshot_yml_path = root.join(".github/workflows/snapshot.yml");
     if write_allowed(&snapshot_yml_path, opts.force, prompt)? {
-        fs::create_dir_all(snapshot_yml_path.parent().unwrap())
-            .with_context(|| format!("creating {}", snapshot_yml_path.parent().unwrap().display()))?;
-        fs::write(&snapshot_yml_path, snapshot_yaml).with_context(|| format!("writing {}", snapshot_yml_path.display()))?;
+        fs::create_dir_all(snapshot_yml_path.parent().unwrap()).with_context(|| {
+            format!("creating {}", snapshot_yml_path.parent().unwrap().display())
+        })?;
+        fs::write(&snapshot_yml_path, snapshot_yaml)
+            .with_context(|| format!("writing {}", snapshot_yml_path.display()))?;
         println!("Wrote {}", snapshot_yml_path.display());
     }
     Ok(())
@@ -342,23 +386,28 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
 /// The shell snippet that reads the release version for the GitHub Release tag, based on the
 /// first build-only package: a manifest field (generic), `package.json` (npm), or `Cargo.toml`.
 fn version_read_cmd(config: &ReleaseConfig) -> String {
-    match config.packages.first() {
+    let entry = config
+        .packages
+        .iter()
+        .find(|p| p.mode == Mode::BuildOnly)
+        .or_else(|| config.packages.iter().find(|p| p.mode == Mode::Publish))
+        .or_else(|| config.packages.first());
+    match entry {
         Some(e) if e.adapter == Ecosystem::Generic => {
             let manifest = e.manifest.as_deref().unwrap_or("deno.json");
             let field = e.version_field.as_deref().unwrap_or("version");
             if manifest.ends_with(".json") {
                 format!("node -p \"require('./{manifest}').{field}\"")
             } else if manifest == "Cargo.toml" && field == "version" {
-                "cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'".to_string()
+                "cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'"
+                    .to_string()
             } else if manifest.ends_with(".toml") {
                 format!("grep -m1 '^{field}' {manifest} | cut -d '\"' -f2 | tr -d '\"'")
             } else {
                 format!("cat {manifest}  # edit me: extract the {field} value")
             }
         }
-        Some(e) if e.adapter == Ecosystem::Npm => {
-            "node -p \"require('./package.json').version\"".to_string()
-        }
+        Some(e) if e.adapter == Ecosystem::Npm => npm_version_read_cmd(&e.name),
         Some(_) => {
             "cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'".to_string()
         }
@@ -368,13 +417,15 @@ fn version_read_cmd(config: &ReleaseConfig) -> String {
         None if config.adapters.contains(&Ecosystem::Cargo) => {
             "cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'".to_string()
         }
-        _ => {
-            "echo 0.0.0  # edit me: where the version lives".to_string()
-        }
+        _ => "echo 0.0.0  # edit me: where the version lives".to_string(),
     }
 }
 
-
+fn npm_version_read_cmd(name: &str) -> String {
+    format!(
+        "node -e \"const fs=require('fs'),path=require('path'),want='{name}'; const read=f=>JSON.parse(fs.readFileSync(f,'utf8')); const root=read('package.json'); const seen=new Set(); const check=d=>{{ const f=path.join(d,'package.json'); if(seen.has(f)||!fs.existsSync(f)) return; seen.add(f); const p=read(f); if(p.name===want) {{ console.log(p.version); process.exit(0); }} }}; check('.'); const patterns=Array.isArray(root.workspaces)?root.workspaces:(root.workspaces&&root.workspaces.packages)||[]; for (const pattern of patterns) {{ const base=pattern.replace(/\\/\\*.*$/, '')||'.'; if (pattern.includes('*')) {{ if(!fs.existsSync(base)) continue; for (const child of fs.readdirSync(base)) check(path.join(base, child)); }} else check(base); }} process.exit(1)\""
+    )
+}
 
 /// One build job: matrix or single runner, runs the package's command, uploads its artifacts.
 fn render_build_job(s: &mut String, entry: &PackageEntry) {
@@ -387,7 +438,7 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
     if entry.matrix {
         s.push_str("    runs-on: ${{ matrix.os }}\n");
         s.push_str("    strategy:\n      matrix:\n        include:\n");
-        
+
         // Print all selected targets
         for target in &entry.targets {
             let rust_triple = DEFAULT_TARGETS
@@ -405,7 +456,8 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
 
         // Print all unselected defaults as commented-out lines
         for def in DEFAULT_TARGETS {
-            let is_selected = entry.targets
+            let is_selected = entry
+                .targets
                 .iter()
                 .any(|t| t.name == def.name && t.arch == def.arch);
             if !is_selected {
@@ -550,8 +602,12 @@ fn render_github_release(s: &mut String, needs: &[String], build_only: &[&Packag
         s.push_str("            echo \"Release $tag already exists; nothing to do.\"\n");
         s.push_str("          else\n");
         if staged {
-            s.push_str(&format!("            rm -rf \".flat-artifacts-{art_slug}\"\n"));
-            s.push_str(&format!("            mkdir -p \".flat-artifacts-{art_slug}\"\n"));
+            s.push_str(&format!(
+                "            rm -rf \".flat-artifacts-{art_slug}\"\n"
+            ));
+            s.push_str(&format!(
+                "            mkdir -p \".flat-artifacts-{art_slug}\"\n"
+            ));
             s.push_str("            shopt -s nullglob globstar\n");
             s.push_str(&format!(
                 "            for file in .artifacts/{art_slug}*/**/*; do\n"
@@ -857,7 +913,8 @@ impl InitPrompt for StdinInitPrompt {
         let tag = Select::new(
             "What tag should be used for ephemeral CI releases?",
             vec!["snapshot", "dev", "canary", "custom (type your own)"],
-        ).prompt()?;
+        )
+        .prompt()?;
 
         if tag.starts_with("custom") {
             Ok(inquire::Text::new("Enter custom tag (e.g. edge):").prompt()?)
@@ -897,7 +954,7 @@ impl InitPrompt for StdinInitPrompt {
             ],
         )
         .prompt()?;
-        
+
         if ans.starts_with("Curated") {
             Ok(ChangelogStrategy::Curated)
         } else {
@@ -1018,8 +1075,14 @@ mod tests {
             mode: Mode::BuildOnly,
             matrix: true,
             targets: vec![
-                crate::config::Target { name: "linux".into(), arch: "x86_64".into() },
-                crate::config::Target { name: "windows".into(), arch: "x86_64".into() },
+                crate::config::Target {
+                    name: "linux".into(),
+                    arch: "x86_64".into(),
+                },
+                crate::config::Target {
+                    name: "windows".into(),
+                    arch: "x86_64".into(),
+                },
             ],
             command: "cargo build --release -p otf-release".into(),
             artifacts: "target/${{ matrix.rust_target }}/release/otf-release*".into(),
@@ -1083,13 +1146,32 @@ mod tests {
         let out = render_workflow(&config);
         assert!(out.contains("  publish:\n"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
-        assert!(out.contains("          version=\"$(node -p \"require('./package.json').version\")\""));
+        assert!(
+            out.contains("          version=\"$(node -p \"require('./package.json').version\")\"")
+        );
         assert!(!out.contains("version=\"$(cargo metadata"));
         assert!(out.contains("      - name: Install otf-release\n"));
         assert!(out.contains("        run: otf-release publish\n"));
         // No build steps, so no needs and no artifact download.
         assert!(out.contains("needs: [check-release]"));
         assert!(!out.contains("github-release"));
+    }
+
+    #[test]
+    fn npm_package_entry_reads_workspace_package_version_by_name() {
+        let config = ReleaseConfig {
+            snapshot_tag: None,
+            provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            hooks: crate::config::Hooks::default(),
+            adapters: vec![Ecosystem::Npm],
+            packages: vec![npm_publish("docs-site")],
+        };
+        let out = render_workflow(&config);
+        assert!(out.contains("want='docs-site'"));
+        assert!(out.contains("p.name===want"));
+        assert!(out.contains("check('.')"));
+        assert!(!out.contains("require('./package.json').version"));
     }
 
     #[test]
@@ -1106,9 +1188,7 @@ mod tests {
         // Build matrix with per-target runners.
         assert!(out.contains("  build-opentf-release:\n"));
         assert!(out.contains("    runs-on: ${{ matrix.os }}\n"));
-        assert!(out.contains(
-            "name: \"windows\", arch: \"x86_64\""
-        ));
+        assert!(out.contains("name: \"windows\", arch: \"x86_64\""));
         assert!(out.contains("        run: cargo build --release -p otf-release"));
         // Ships via a GitHub Release, idempotently — no registry, no cargo publish.
         assert!(out.contains("permissions:\n  contents: write"));

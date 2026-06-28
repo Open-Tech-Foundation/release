@@ -8,14 +8,7 @@ roadmap.
 
 | Area | Gap | Recommendation |
 | --- | --- | --- |
-| Generated CI | `release.yml` is editable scaffolding and still needs stronger validation. | Add workflow shape tests and ensure required setup/install steps are generated. |
-
-## Next
-
-| Area | Gap | Recommendation |
-| --- | --- | --- |
 | Snapshot releases | `snapshot` exists, but its multi-adapter behavior and failure model need a clear contract. | Keep it experimental until documented and tested end to end. |
-| Generic manifests | Generic version parsing is simple text matching. | Use structured JSON/TOML parsing when the file type is known. |
 
 ## Later
 

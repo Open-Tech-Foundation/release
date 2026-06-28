@@ -66,9 +66,6 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 | Gap | Impact |
 | --- | --- |
 | `snapshot` is experimental. | Multi-adapter semantics, generated notes, rollback expectations, and workflow polish need more hardening. |
-| Generated `release.yml` still needs stronger validation. | It is useful scaffolding, but complex monorepos may need hand edits. |
-| `config` does not edit every `release.toml` field. | Users still need to hand-edit package mode, commands, artifacts, generic fields, provider, snapshot tag, and changelog strategy. |
-| Generic manifest parsing is intentionally simple. | Works for common JSON/TOML-style version fields, but is not a full structured parser. |
 | Only GitHub is implemented. | GitLab, Bitbucket, Gitea, and Codeberg are future work. |
 
 ## 🔁 Release Flow

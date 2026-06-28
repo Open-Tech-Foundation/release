@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use serde_json::Value;
+use toml_edit::{value, DocumentMut, Item};
 
 use otf_release_core::adapter::{Adapter, Bump, DepKind, Pkg};
 
@@ -95,6 +97,143 @@ fn version_value_span(text: &str, field: &str) -> Option<std::ops::Range<usize>>
     None
 }
 
+fn field_path(field: &str) -> Vec<&str> {
+    field
+        .split('.')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn read_manifest_version(path: &Path, text: &str, field: &str) -> Result<String> {
+    if field_path(field).is_empty() {
+        bail!("{}: empty version field", path.display());
+    }
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("json") => read_json_version(path, text, field),
+        Some("toml") => read_toml_version(path, text, field),
+        _ => read_text_version(path, text, field),
+    }
+}
+
+fn write_manifest_version(path: &Path, text: &str, field: &str, new: &str) -> Result<String> {
+    if field_path(field).is_empty() {
+        bail!("{}: empty version field", path.display());
+    }
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("json") => write_json_version(path, text, field, new),
+        Some("toml") => write_toml_version(path, text, field, new),
+        _ => write_text_version(path, text, field, new),
+    }
+}
+
+fn read_json_version(path: &Path, text: &str, field: &str) -> Result<String> {
+    let json: Value =
+        serde_json::from_str(text).with_context(|| format!("parsing JSON {}", path.display()))?;
+    let value = field_path(field)
+        .iter()
+        .try_fold(&json, |current, key| current.get(*key))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{}: could not find string JSON field `{}`",
+                path.display(),
+                field
+            )
+        })?;
+    Ok(value.to_string())
+}
+
+fn write_json_version(path: &Path, text: &str, field: &str, new: &str) -> Result<String> {
+    let path_parts = field_path(field);
+    if path_parts.len() == 1 {
+        return write_text_version(path, text, field, new);
+    }
+
+    let mut json: Value =
+        serde_json::from_str(text).with_context(|| format!("parsing JSON {}", path.display()))?;
+    let mut current = &mut json;
+    for key in &path_parts[..path_parts.len() - 1] {
+        current = current.get_mut(*key).ok_or_else(|| {
+            anyhow::anyhow!("{}: could not find JSON object `{}`", path.display(), key)
+        })?;
+    }
+    let leaf = path_parts.last().unwrap();
+    let Some(slot) = current.get_mut(*leaf) else {
+        bail!("{}: no JSON field `{}` to bump", path.display(), field);
+    };
+    if !slot.is_string() {
+        bail!("{}: JSON field `{}` is not a string", path.display(), field);
+    }
+    *slot = Value::String(new.to_string());
+    serde_json::to_string_pretty(&json)
+        .map(|s| format!("{s}\n"))
+        .with_context(|| format!("serializing JSON {}", path.display()))
+}
+
+fn read_toml_version(path: &Path, text: &str, field: &str) -> Result<String> {
+    let doc = text
+        .parse::<DocumentMut>()
+        .with_context(|| format!("parsing TOML {}", path.display()))?;
+    let value = field_path(field)
+        .iter()
+        .try_fold(doc.as_item(), |current, key| current.get(*key))
+        .and_then(Item::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{}: could not find string TOML field `{}`",
+                path.display(),
+                field
+            )
+        })?;
+    Ok(value.to_string())
+}
+
+fn write_toml_version(path: &Path, text: &str, field: &str, new: &str) -> Result<String> {
+    let mut doc = text
+        .parse::<DocumentMut>()
+        .with_context(|| format!("parsing TOML {}", path.display()))?;
+    let path_parts = field_path(field);
+    let mut current = doc.as_item_mut();
+    for key in &path_parts[..path_parts.len() - 1] {
+        current = current.get_mut(*key).ok_or_else(|| {
+            anyhow::anyhow!("{}: could not find TOML table `{}`", path.display(), key)
+        })?;
+    }
+    let leaf = path_parts
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("{}: empty version field", path.display()))?;
+    let Some(slot) = current.get_mut(*leaf) else {
+        bail!("{}: no TOML field `{}` to bump", path.display(), field);
+    };
+    if !slot.is_str() {
+        bail!("{}: TOML field `{}` is not a string", path.display(), field);
+    }
+    *slot = value(new);
+    Ok(doc.to_string())
+}
+
+fn read_text_version(path: &Path, text: &str, field: &str) -> Result<String> {
+    let span = version_value_span(text, field).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{}: could not find a `{}` version field",
+            path.display(),
+            field
+        )
+    })?;
+    Ok(text[span].to_string())
+}
+
+fn write_text_version(path: &Path, text: &str, field: &str, new: &str) -> Result<String> {
+    let span = version_value_span(text, field)
+        .ok_or_else(|| anyhow::anyhow!("{}: no `{}` field to bump", path.display(), field))?;
+    let mut updated = String::with_capacity(text.len());
+    updated.push_str(&text[..span.start]);
+    updated.push_str(new);
+    updated.push_str(&text[span.end..]);
+    Ok(updated)
+}
+
 impl Adapter for GenericAdapter {
     fn discover_packages(&self) -> Result<Vec<Pkg>> {
         let mut out = Vec::new();
@@ -102,16 +241,10 @@ impl Adapter for GenericAdapter {
             let path = self.manifest_path(cfg);
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading generic manifest {}", path.display()))?;
-            let span = version_value_span(&text, &cfg.version_field).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "{}: could not find a `{}` version field",
-                    path.display(),
-                    cfg.version_field
-                )
-            })?;
+            let version = read_manifest_version(&path, &text, &cfg.version_field)?;
             out.push(Pkg {
                 name: cfg.name.clone(),
-                version: text[span].to_string(),
+                version,
                 manifest_path: path,
                 changelog_path: self.root.join("CHANGELOG.md"),
                 publishable: true,
@@ -126,17 +259,7 @@ impl Adapter for GenericAdapter {
         let path = self.manifest_path(cfg);
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let span = version_value_span(&text, &cfg.version_field).ok_or_else(|| {
-            anyhow::anyhow!(
-                "{}: no `{}` field to bump",
-                path.display(),
-                cfg.version_field
-            )
-        })?;
-        let mut updated = String::with_capacity(text.len());
-        updated.push_str(&text[..span.start]);
-        updated.push_str(new);
-        updated.push_str(&text[span.end..]);
+        let updated = write_manifest_version(&path, &text, &cfg.version_field, new)?;
         std::fs::write(&path, updated).with_context(|| format!("writing {}", path.display()))
     }
 
@@ -214,6 +337,15 @@ mod tests {
         }
     }
 
+    fn pkg_with_field(name: &str, manifest: &str, field: &str) -> GenericPkg {
+        GenericPkg {
+            name: name.into(),
+            manifest: manifest.into(),
+            version_field: field.into(),
+            publish: None,
+        }
+    }
+
     #[test]
     fn reads_version_from_json_manifest() {
         let tmp = tempfile::tempdir().unwrap();
@@ -256,6 +388,47 @@ mod tests {
         .unwrap();
         let a = GenericAdapter::new(tmp.path(), vec![pkg("x", "Project.toml", None)]);
         assert_eq!(a.discover_packages().unwrap()[0].version, "0.4.0");
+    }
+
+    #[test]
+    fn reads_and_writes_nested_json_version_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("manifest.json"),
+            "{\n  \"pkg\": {\n    \"version\": \"1.2.3\"\n  }\n}\n",
+        )
+        .unwrap();
+        let a = GenericAdapter::new(
+            tmp.path(),
+            vec![pkg_with_field("x", "manifest.json", "pkg.version")],
+        );
+        let p = a.discover_packages().unwrap().pop().unwrap();
+        assert_eq!(p.version, "1.2.3");
+
+        a.write_version(&p, "1.2.4").unwrap();
+        let after = std::fs::read_to_string(tmp.path().join("manifest.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&after).unwrap();
+        assert_eq!(json["pkg"]["version"], "1.2.4");
+    }
+
+    #[test]
+    fn reads_and_writes_nested_toml_version_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Project.toml"),
+            "[pkg]\nname = \"x\"\nversion = \"0.4.0\"\n",
+        )
+        .unwrap();
+        let a = GenericAdapter::new(
+            tmp.path(),
+            vec![pkg_with_field("x", "Project.toml", "pkg.version")],
+        );
+        let p = a.discover_packages().unwrap().pop().unwrap();
+        assert_eq!(p.version, "0.4.0");
+
+        a.write_version(&p, "0.5.0").unwrap();
+        let after = std::fs::read_to_string(tmp.path().join("Project.toml")).unwrap();
+        assert!(after.contains("version = \"0.5.0\""), "got: {after}");
     }
 
     #[test]
