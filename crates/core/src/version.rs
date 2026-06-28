@@ -159,7 +159,14 @@ pub fn orchestrate_many(
         .iter()
         .flat_map(|ctx| ctx.packages.iter().cloned())
         .collect();
-    let violations = preflight::check(repo, &all_packages, &[])?;
+    let violations = preflight::check_with_options(
+        repo,
+        &all_packages,
+        &[],
+        preflight::CheckOptions {
+            allow_first_release: opts.first_release,
+        },
+    )?;
     if !violations.is_empty() {
         bail!("{}", preflight::format_violations(&violations));
     }

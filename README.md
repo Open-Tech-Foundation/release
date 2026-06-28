@@ -65,7 +65,6 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 
 | Gap | Impact |
 | --- | --- |
-| `--first-release` is not wired through the version flow yet. | First-release ergonomics are still stricter than the CLI help implies. |
 | `publish` lifecycle hooks run per adapter, not once per full command. | Polyglot repos may run global `pre_publish` / `post_publish` hooks more than intended. |
 | `snapshot` is experimental. | Multi-adapter semantics, generated notes, rollback expectations, and workflow polish need more hardening. |
 | Generated `release.yml` still needs stronger validation. | It is useful scaffolding, but complex monorepos may need hand edits. |

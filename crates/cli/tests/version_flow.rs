@@ -12,11 +12,11 @@ use anyhow::Result;
 
 use otf_release_adapters::npm::{CommandOutput, CommandRunner, NpmAdapter};
 use otf_release_core::adapter::{Bump, Pkg};
+use otf_release_core::config::ReleaseConfig;
 use otf_release_core::forge::Forge;
 use otf_release_core::git::GitRepo;
 use otf_release_core::prompt::Prompt;
 use otf_release_core::version::{orchestrate, VersionOptions};
-use otf_release_core::config::ReleaseConfig;
 
 /// Every `npm` invocation "succeeds" (the version flow only calls `update_lockfile`).
 struct OkRunner;
@@ -118,7 +118,7 @@ fn write_workspace(root: &Path) {
     );
 }
 
-/// Init the repo on `main`, commit, and tag sdk so it isn't treated as a first release.
+/// Init the repo on `main`, commit, and tag publishable packages so they are not first releases.
 fn init_repo(root: &Path) {
     git(root, &["init", "-q"]);
     git(root, &["config", "user.email", "t@t"]);
@@ -127,6 +127,7 @@ fn init_repo(root: &Path) {
     git(root, &["add", "-A"]);
     git(root, &["commit", "-q", "-m", "init"]);
     git(root, &["branch", "-M", "main"]);
+    git(root, &["tag", "@x/core@1.0.0"]);
     git(root, &["tag", "@x/sdk@1.0.0"]);
 }
 

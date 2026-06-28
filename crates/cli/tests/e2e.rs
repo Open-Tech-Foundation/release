@@ -155,6 +155,7 @@ fn version_then_publish_ships_exactly_the_computed_bumps() {
     git(root, &["add", "-A"]);
     git(root, &["commit", "-q", "-m", "init"]);
     git(root, &["branch", "-M", "main"]);
+    git(root, &["tag", "@x/core@1.0.0"]);
     git(root, &["tag", "@x/sdk@1.0.0"]);
 
     let remote = tempfile::tempdir().unwrap();

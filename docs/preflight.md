@@ -29,7 +29,8 @@ don't falsely mark a package as changed.
 | --- | --- |
 | Commits since last tag (scoped to pkg path) **but** `[Unreleased]` empty/missing | ✗ **ABORT** |
 | Selected for a bump **but** `[Unreleased]` empty | ✗ **ABORT** |
-| No last tag **and** publishable (first release) | Require `[Unreleased]` (later: explicit `--first-release`) |
+| No last tag **and** publishable (first release) without `--first-release` | ✗ **ABORT** |
+| No last tag **and** publishable with `--first-release` | Require release notes in curated mode |
 | `[Unreleased]` present **with** commits | ✓ OK |
 | Commits in a **private** package | ✓ OK — no changelog demanded |
 

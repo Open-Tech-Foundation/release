@@ -19,12 +19,29 @@ pub struct Violation {
     pub message: String,
 }
 
+/// Preflight behavior switches supplied by the caller.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CheckOptions {
+    /// Permit publishable packages with no prior `name@x.y.z` tag.
+    pub allow_first_release: bool,
+}
+
 /// Run the gate. `selected` is the set of package names the user chose to bump (empty when
 /// preflight runs before the prompt). Returns every violation found; an empty vec means pass.
 pub fn check(
     repo: &dyn RepoState,
     packages: &[Pkg],
     selected: &[String],
+) -> Result<Vec<Violation>> {
+    check_with_options(repo, packages, selected, CheckOptions::default())
+}
+
+/// Run the gate with explicit behavior switches.
+pub fn check_with_options(
+    repo: &dyn RepoState,
+    packages: &[Pkg],
+    selected: &[String],
+    opts: CheckOptions,
 ) -> Result<Vec<Violation>> {
     let mut violations = Vec::new();
 
@@ -39,7 +56,10 @@ pub fn check(
         let pkg_dir = pkg.manifest_path.parent().unwrap_or_else(|| Path::new("."));
 
         let violation = match repo.last_tag(&pkg.name)? {
-            // First release: a publishable package with no prior tag must have notes.
+            // First releases are explicit so accidentally untagged packages do not slip through.
+            None if !opts.allow_first_release => {
+                Some("first release requires --first-release".to_string())
+            }
             None if empty => Some("first release but [Unreleased] is empty".to_string()),
             None => None,
             Some(tag) => {
@@ -143,9 +163,9 @@ mod tests {
             pkg(d, "core", true, Some(EMPTY)), // tag + commits + empty -> commits violation
             pkg(d, "utils", true, Some(WITH_NOTES)), // tag + commits + notes -> ok
             pkg(d, "sdk", true, Some(EMPTY)),  // tag, no commits, empty, selected -> selected
-            pkg(d, "new", true, Some(EMPTY)),  // no tag, empty -> first-release violation
-            pkg(d, "newgood", true, Some(WITH_NOTES)), // no tag, notes -> ok
-            pkg(d, "miss", true, None),        // no tag, missing changelog -> first-release
+            pkg(d, "new", true, Some(EMPTY)),  // no tag -> explicit first-release violation
+            pkg(d, "newgood", true, Some(WITH_NOTES)), // no tag -> explicit first-release violation
+            pkg(d, "miss", true, None),        // no tag -> explicit first-release violation
             pkg(d, "app", false, Some(EMPTY)), // private -> skipped
         ];
 
@@ -166,7 +186,7 @@ mod tests {
         let violations = check(&repo, &packages, &selected).unwrap();
         let msgs = messages(&violations);
 
-        assert_eq!(violations.len(), 4, "got: {msgs:?}");
+        assert_eq!(violations.len(), 5, "got: {msgs:?}");
         assert_eq!(
             msgs.get("core").unwrap(),
             "3 commit(s) since core@1.2.0 but [Unreleased] is empty"
@@ -177,15 +197,50 @@ mod tests {
         );
         assert_eq!(
             msgs.get("new").unwrap(),
-            "first release but [Unreleased] is empty"
+            "first release requires --first-release"
         );
+        assert_eq!(
+            msgs.get("newgood").unwrap(),
+            "first release requires --first-release"
+        );
+        assert_eq!(
+            msgs.get("miss").unwrap(),
+            "first release requires --first-release"
+        );
+        assert!(!msgs.contains_key("utils"));
+        assert!(!msgs.contains_key("app"));
+    }
+
+    #[test]
+    fn first_release_flag_allows_untagged_packages_but_still_requires_notes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        let packages = vec![
+            pkg(d, "new", true, Some(WITH_NOTES)),
+            pkg(d, "miss", true, None),
+        ];
+        let repo = FakeRepo {
+            tags: HashMap::new(),
+            counts: HashMap::new(),
+        };
+
+        let violations = check_with_options(
+            &repo,
+            &packages,
+            &[],
+            CheckOptions {
+                allow_first_release: true,
+            },
+        )
+        .unwrap();
+        let msgs = messages(&violations);
+
+        assert_eq!(violations.len(), 1, "got: {msgs:?}");
         assert_eq!(
             msgs.get("miss").unwrap(),
             "first release but [Unreleased] is empty"
         );
-        assert!(!msgs.contains_key("utils"));
-        assert!(!msgs.contains_key("newgood"));
-        assert!(!msgs.contains_key("app"));
+        assert!(!msgs.contains_key("new"));
     }
 
     #[test]

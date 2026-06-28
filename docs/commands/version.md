@@ -9,7 +9,7 @@ otf-release version [--dry-run] [--first-release]
 | Flag | Effect |
 | --- | --- |
 | `--dry-run` | Compute and print the plan ([summary](#5-summary--confirm)), write nothing. |
-| `--first-release` | Reserved for first-release ergonomics; currently exposed by the CLI but not wired through the flow. |
+| `--first-release` | Permit publishable packages with no prior `name@x.y.z` tag. Curated mode still requires release notes for packages you want to release. |
 
 Implemented in `crates/core/src/version.rs`.
 
