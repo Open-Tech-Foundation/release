@@ -193,19 +193,23 @@ fn main() -> Result<()> {
             // build-only packages ship via the GitHub Release the workflow creates, never a
             // registry — so `publish` skips them.
             let skip = config.build_only_names();
-            for eco in &config.adapters {
-                let adapter = factory.make(*eco);
-                publish::run(
-                    adapter.as_ref(),
-                    &root,
-                    &publish::PublishOptions {
-                        artifacts_dir: artifacts_dir.clone(),
-                        dry_run,
-                        skip: skip.clone(),
-                    },
-                    &config.hooks,
-                )?;
-            }
+            let adapters: Vec<Box<dyn Adapter>> = config
+                .adapters
+                .iter()
+                .map(|eco| factory.make(*eco))
+                .collect();
+            let adapter_refs: Vec<&dyn Adapter> =
+                adapters.iter().map(|adapter| adapter.as_ref()).collect();
+            publish::run_many(
+                &adapter_refs,
+                &root,
+                &publish::PublishOptions {
+                    artifacts_dir,
+                    dry_run,
+                    skip,
+                },
+                &config.hooks,
+            )?;
             Ok(())
         }
     }

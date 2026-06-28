@@ -8,8 +8,6 @@ roadmap.
 
 | Area | Gap | Recommendation |
 | --- | --- | --- |
-| First releases | `--first-release` is exposed by the CLI but not wired through the version flow. | Implement the flag or remove it until the behavior is ready. |
-| Publish hooks | `publish` runs hooks once per adapter. | Make `pre_publish` and `post_publish` run once per command, while adapter publishing remains per ecosystem. |
 | Generated CI | `release.yml` is editable scaffolding and still needs stronger validation. | Add workflow shape tests and ensure required setup/install steps are generated. |
 
 ## Next

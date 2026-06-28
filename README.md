@@ -65,7 +65,6 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 
 | Gap | Impact |
 | --- | --- |
-| `publish` lifecycle hooks run per adapter, not once per full command. | Polyglot repos may run global `pre_publish` / `post_publish` hooks more than intended. |
 | `snapshot` is experimental. | Multi-adapter semantics, generated notes, rollback expectations, and workflow polish need more hardening. |
 | Generated `release.yml` still needs stronger validation. | It is useful scaffolding, but complex monorepos may need hand edits. |
 | Build-only GitHub releases use `vX.Y.Z` while package publish tags use `name@X.Y.Z`. | Independent build-only packages can be awkward when multiple packages release at different versions. |

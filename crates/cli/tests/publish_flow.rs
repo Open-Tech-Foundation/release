@@ -12,9 +12,10 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 
 use otf_release_adapters::npm::{CommandOutput, CommandRunner, NpmAdapter};
+use otf_release_core::adapter::{Adapter, Bump, DepKind, Pkg};
 use otf_release_core::forge::Forge;
 use otf_release_core::git::GitOps;
-use otf_release_core::publish::{orchestrate, PublishOptions};
+use otf_release_core::publish::{orchestrate, orchestrate_many, PublishOptions};
 
 /// A command runner that models the npm registry across runs.
 #[derive(Clone)]
@@ -134,6 +135,76 @@ impl Forge for FakeForge {
     }
 }
 
+struct FakeAdapter {
+    pkg: Pkg,
+    published: RefCell<Vec<String>>,
+}
+
+impl FakeAdapter {
+    fn new(root: &Path, name: &str) -> Self {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        let changelog_path = dir.join("CHANGELOG.md");
+        fs::write(
+            &changelog_path,
+            "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2024-01-01\n- notes\n",
+        )
+        .unwrap();
+        Self {
+            pkg: Pkg {
+                name: name.to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: dir.join("manifest"),
+                changelog_path,
+                publishable: true,
+                internal_deps: vec![],
+            },
+            published: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl Adapter for FakeAdapter {
+    fn discover_packages(&self) -> Result<Vec<Pkg>> {
+        Ok(vec![self.pkg.clone()])
+    }
+
+    fn write_version(&self, _: &Pkg, _: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn update_dep_range(&self, _: &Pkg, _: &str, _: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn format_range(&self, version: &str) -> String {
+        version.to_string()
+    }
+
+    fn resolve_workspace_links(&self, _: &Pkg) -> Result<()> {
+        Ok(())
+    }
+
+    fn update_lockfile(&self, _: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    fn dependent_bump(&self, _: Bump, _: &DepKind) -> Bump {
+        Bump::Patch
+    }
+
+    fn is_published(&self, _: &Pkg, _: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn publish(&self, pkg: &Pkg, _: Option<&Path>) -> Result<()> {
+        self.published
+            .borrow_mut()
+            .push(format!("{}@{}", pkg.name, pkg.version));
+        Ok(())
+    }
+}
+
 fn write(path: PathBuf, content: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, content).unwrap();
@@ -177,7 +248,16 @@ fn publishes_in_topo_order_and_is_idempotent() {
 
     let hooks = otf_release_core::config::Hooks::default();
     let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
-    orchestrate(&adapter, &git, &forge, root, &PublishOptions::default(), &hooks, &hook_runner).unwrap();
+    orchestrate(
+        &adapter,
+        &git,
+        &forge,
+        root,
+        &PublishOptions::default(),
+        &hooks,
+        &hook_runner,
+    )
+    .unwrap();
 
     assert_eq!(
         *runner.publish_log.lock().unwrap(),
@@ -191,7 +271,16 @@ fn publishes_in_topo_order_and_is_idempotent() {
     let tags_before = git.tags.borrow().len();
     let hooks = otf_release_core::config::Hooks::default();
     let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
-    orchestrate(&adapter, &git, &forge, root, &PublishOptions::default(), &hooks, &hook_runner).unwrap();
+    orchestrate(
+        &adapter,
+        &git,
+        &forge,
+        root,
+        &PublishOptions::default(),
+        &hooks,
+        &hook_runner,
+    )
+    .unwrap();
     assert_eq!(runner.publish_log.lock().unwrap().len(), published_before);
     assert_eq!(git.tags.borrow().len(), tags_before);
 }
@@ -210,7 +299,16 @@ fn halts_on_failure_and_resumes_forward() {
     // First run halts at sdk; mid (its dependent) is never attempted.
     let hooks = otf_release_core::config::Hooks::default();
     let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
-    let err = orchestrate(&adapter, &git, &forge, root, &PublishOptions::default(), &hooks, &hook_runner).unwrap_err();
+    let err = orchestrate(
+        &adapter,
+        &git,
+        &forge,
+        root,
+        &PublishOptions::default(),
+        &hooks,
+        &hook_runner,
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("publish"), "got: {err}");
     assert_eq!(*runner.attempts.lock().unwrap(), vec!["core", "sdk"]);
     assert!(runner.published.lock().unwrap().contains("@x/core@1.0.0"));
@@ -218,7 +316,50 @@ fn halts_on_failure_and_resumes_forward() {
     assert!(!runner.published.lock().unwrap().contains("@x/mid@1.0.0"));
 
     // Resume: core is skipped (already published), sdk + mid go through.
-    orchestrate(&adapter, &git, &forge, root, &PublishOptions::default(), &hooks, &hook_runner).unwrap();
+    orchestrate(
+        &adapter,
+        &git,
+        &forge,
+        root,
+        &PublishOptions::default(),
+        &hooks,
+        &hook_runner,
+    )
+    .unwrap();
     assert!(runner.published.lock().unwrap().contains("@x/sdk@1.0.0"));
     assert!(runner.published.lock().unwrap().contains("@x/mid@1.0.0"));
+}
+
+#[test]
+fn multi_adapter_publish_runs_hooks_once_for_the_whole_command() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let a = FakeAdapter::new(root, "a");
+    let b = FakeAdapter::new(root, "b");
+    let git = FakeGit::default();
+    let forge = FakeForge::default();
+    let hooks = otf_release_core::config::Hooks {
+        pre_publish: vec!["pre".to_string()],
+        post_publish: vec!["post".to_string()],
+        ..Default::default()
+    };
+    let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
+
+    orchestrate_many(
+        &[&a, &b],
+        &git,
+        &forge,
+        root,
+        &PublishOptions::default(),
+        &hooks,
+        &hook_runner,
+    )
+    .unwrap();
+
+    assert_eq!(
+        hook_runner.executed.borrow().as_slice(),
+        ["pre".to_string(), "post".to_string()]
+    );
+    assert_eq!(a.published.borrow().as_slice(), ["a@1.0.0".to_string()]);
+    assert_eq!(b.published.borrow().as_slice(), ["b@1.0.0".to_string()]);
 }
