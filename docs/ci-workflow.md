@@ -26,7 +26,8 @@ check-release
   `otf-release publish` once; the CLI loops enabled adapters internally. It publishes only
   registry-publish packages (`build-only` ones are skipped).
 - **`github-release`** — present when any package is `build-only`. Downloads the staged artifacts
-  and attaches them to a GitHub Release `vX.Y.Z`. **No registry push.**
+  and attaches each package's artifacts to a package-scoped GitHub Release (`name@X.Y.Z`).
+  **No registry push.**
 
 Trigger: a merge to `main` (i.e. merging a release PR produced by
 [`version`](./commands/version.md)).
@@ -53,12 +54,13 @@ build-<pkg>  (cross-compile each target on its runner)  ──needs──▶  gi
   maps `*windows*`→`windows-latest`, `*apple*`/`*darwin*`→`macos-latest`, else `ubuntu-latest`).
   Runs the entry's `command` and uploads its `artifacts` glob.
 - **`github-release`** — `needs:` the build job(s); downloads the artifacts and runs `gh release
-  create vX.Y.Z` with them attached. The version line carries an `# edit me` marker when the
-  generator cannot infer a source. The step is **idempotent** (`gh release view` skips an existing tag).
+  create name@X.Y.Z` for each build-only package. The version line carries an `# edit me` marker
+  when the generator cannot infer a source. The step is **idempotent** (`gh release view` skips an
+  existing release).
   **No crates.io, no `cargo publish`** — the artifacts are how users install the binary per OS.
 
 Auth: the default `GITHUB_TOKEN` with `contents: write` (to create the tag and Release). The git
-tag `vX.Y.Z` is created by the Release step, on the merge commit.
+package-scoped tag `name@X.Y.Z` is created by the Release step, on the merge commit.
 
 ## npm specifics
 

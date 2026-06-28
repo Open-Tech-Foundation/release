@@ -223,13 +223,7 @@ fn render_check_release_job(s: &mut String, version_cmd: &str) {
     s.push_str("            echo \"should_release=false\" >> \"$GITHUB_OUTPUT\"\n");
     s.push_str("            exit 0\n");
     s.push_str("          fi\n");
-    s.push_str("          tag=\"v$version\"\n");
-    s.push_str("          if git ls-remote --exit-code --tags origin \"refs/tags/$tag\" >/dev/null 2>&1; then\n");
-    s.push_str("            echo \"Tag $tag already exists; skipping build.\"\n");
-    s.push_str("            echo \"should_release=false\" >> \"$GITHUB_OUTPUT\"\n");
-    s.push_str("          else\n");
-    s.push_str("            echo \"should_release=true\" >> \"$GITHUB_OUTPUT\"\n");
-    s.push_str("          fi\n\n");
+    s.push_str("          echo \"should_release=true\" >> \"$GITHUB_OUTPUT\"\n\n");
 }
 
 /// Render `.github/workflows/release.yml` from the config.
@@ -239,8 +233,9 @@ fn render_check_release_job(s: &mut String, version_cmd: &str) {
 /// - a single `publish` job (if any registry adapter is active) that sets up the needed
 ///   toolchains and runs `otf-release publish` once — it publishes only `publish`-mode packages
 ///   across every enabled ecosystem (npm, crates.io, generic),
-/// - a `github-release` job if any package is `build-only` — attaches its artifacts to a
-///   GitHub Release `vX.Y.Z`, idempotently. **No registry push for build-only packages.**
+/// - a `github-release` job if any package is `build-only` — attaches its artifacts to
+///   package-scoped GitHub Releases (`name@X.Y.Z`), idempotently. **No registry push for
+///   build-only packages.**
 pub fn render_snapshot_workflow(config: &ReleaseConfig) -> String {
     let mut s = String::new();
     s.push_str("name: Snapshot Release\n\n");
@@ -338,7 +333,7 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
             .filter(|p| has_build(p))
             .map(|p| build_job(&p.name))
             .collect();
-        render_github_release(&mut s, &needs);
+        render_github_release(&mut s, &needs, &build_only);
     }
 
     s
@@ -532,9 +527,9 @@ fn render_publish_job(s: &mut String, needs: &[String], npm: bool, cargo: bool, 
     s.push('\n');
 }
 
-/// The GitHub Release job for `build-only` packages: attach the staged artifacts to a tag
-/// `vX.Y.Z`, idempotently (skip an existing tag). No registry push.
-fn render_github_release(s: &mut String, needs: &[String]) {
+/// The GitHub Release job for `build-only` packages: attach each package's staged artifacts to a
+/// package-scoped tag (`name@X.Y.Z`), idempotently (skip an existing release). No registry push.
+fn render_github_release(s: &mut String, needs: &[String], build_only: &[&PackageEntry]) {
     s.push_str("  github-release:\n");
     let mut actual_needs = vec!["check-release".to_string()];
     actual_needs.extend_from_slice(needs);
@@ -547,31 +542,42 @@ fn render_github_release(s: &mut String, needs: &[String]) {
     s.push_str("      - name: Create GitHub Release\n");
     s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     s.push_str("        run: |\n");
-    s.push_str("          tag=\"v${{ needs.check-release.outputs.version }}\"\n");
-    s.push_str("          if gh release view \"$tag\" >/dev/null 2>&1; then\n");
-    s.push_str("            echo \"Release $tag already exists; nothing to do.\"\n");
-    s.push_str("            exit 0\n");
-    s.push_str("          fi\n");
-    if staged {
-        s.push_str("          shopt -s globstar\n");
-        s.push_str("          mkdir -p .flat-artifacts\n");
-        s.push_str("          for file in .artifacts/**/*; do\n");
-        s.push_str("            if [ -f \"$file\" ]; then\n");
-        s.push_str("              dir_name=$(basename \"$(dirname \"$file\")\")\n");
-        s.push_str("              file_name=$(basename \"$file\")\n");
-        s.push_str("              ext=\"${file_name##*.}\"\n");
-        s.push_str("              if [ \"$ext\" = \"$file_name\" ]; then\n");
-        s.push_str("                mv \"$file\" \".flat-artifacts/${dir_name}\"\n");
-        s.push_str("              else\n");
-        s.push_str("                mv \"$file\" \".flat-artifacts/${dir_name}.${ext}\"\n");
-        s.push_str("              fi\n");
-        s.push_str("            fi\n");
-        s.push_str("          done\n");
-        s.push_str(
-            "          gh release create \"$tag\" --target main --title \"$tag\" --generate-notes .flat-artifacts/*\n",
-        );
-    } else {
-        s.push_str("          gh release create \"$tag\" --target main --title \"$tag\" --generate-notes\n");
+    s.push_str("          version=\"${{ needs.check-release.outputs.version }}\"\n");
+    for entry in build_only {
+        let art_slug = slug(&entry.name);
+        s.push_str(&format!("          tag=\"{}@$version\"\n", entry.name));
+        s.push_str("          if gh release view \"$tag\" >/dev/null 2>&1; then\n");
+        s.push_str("            echo \"Release $tag already exists; nothing to do.\"\n");
+        s.push_str("          else\n");
+        if staged {
+            s.push_str(&format!("            rm -rf \".flat-artifacts-{art_slug}\"\n"));
+            s.push_str(&format!("            mkdir -p \".flat-artifacts-{art_slug}\"\n"));
+            s.push_str("            shopt -s nullglob globstar\n");
+            s.push_str(&format!(
+                "            for file in .artifacts/{art_slug}*/**/*; do\n"
+            ));
+            s.push_str("              if [ -f \"$file\" ]; then\n");
+            s.push_str("                dir_name=$(basename \"$(dirname \"$file\")\")\n");
+            s.push_str("                file_name=$(basename \"$file\")\n");
+            s.push_str("                ext=\"${file_name##*.}\"\n");
+            s.push_str("                if [ \"$ext\" = \"$file_name\" ]; then\n");
+            s.push_str(&format!(
+                "                  cp \"$file\" \".flat-artifacts-{art_slug}/${{dir_name}}\"\n"
+            ));
+            s.push_str("                else\n");
+            s.push_str(&format!(
+                "                  cp \"$file\" \".flat-artifacts-{art_slug}/${{dir_name}}.${{ext}}\"\n"
+            ));
+            s.push_str("                fi\n");
+            s.push_str("              fi\n");
+            s.push_str("            done\n");
+            s.push_str(&format!(
+                "            gh release create \"$tag\" --target main --title \"$tag\" --generate-notes .flat-artifacts-{art_slug}/*\n"
+            ));
+        } else {
+            s.push_str("            gh release create \"$tag\" --target main --title \"$tag\" --generate-notes\n");
+        }
+        s.push_str("          fi\n");
     }
 }
 
@@ -1108,7 +1114,11 @@ mod tests {
         assert!(out.contains("permissions:\n  contents: write"));
         assert!(out.contains("  github-release:\n"));
         assert!(out.contains("    needs: [check-release, build-opentf-release]\n"));
+        assert!(out.contains("          tag=\"opentf-release@$version\"\n"));
+        assert!(out.contains("            rm -rf \".flat-artifacts-opentf-release\"\n"));
         assert!(out.contains("          if gh release view \"$tag\" >/dev/null 2>&1; then\n"));
+        assert!(!out.contains("tag=\"v${{ needs.check-release.outputs.version }}\""));
+        assert!(!out.contains("refs/tags/$tag"));
         assert!(!out.contains("cargo publish"));
         assert!(!out.contains("crates.io"));
         // build-only cargo: no publish job at all.
@@ -1133,8 +1143,29 @@ mod tests {
         // Version comes from the configured manifest (deno.json), shipped via a GitHub Release.
         assert!(out.contains("          version=\"$(node -p \"require('./deno.json').version\")\""));
         assert!(out.contains("  github-release:\n"));
+        assert!(out.contains("          tag=\"release@$version\"\n"));
         assert!(!out.contains("  publish:\n"));
         assert!(!out.contains("crates.io"));
+    }
+
+    #[test]
+    fn multiple_build_only_packages_get_package_scoped_releases() {
+        let config = ReleaseConfig {
+            snapshot_tag: None,
+            provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            hooks: crate::config::Hooks::default(),
+            adapters: vec![Ecosystem::Cargo],
+            packages: vec![cargo_build_only("cli-a"), cargo_build_only("cli-b")],
+        };
+        let out = render_workflow(&config);
+        assert!(out.contains("          tag=\"cli-a@$version\"\n"));
+        assert!(out.contains("          tag=\"cli-b@$version\"\n"));
+        assert!(out.contains("            for file in .artifacts/cli-a*/**/*; do\n"));
+        assert!(out.contains("            for file in .artifacts/cli-b*/**/*; do\n"));
+        assert!(out.contains("            rm -rf \".flat-artifacts-cli-a\"\n"));
+        assert!(out.contains("            rm -rf \".flat-artifacts-cli-b\"\n"));
+        assert!(!out.contains("tag=\"v${{ needs.check-release.outputs.version }}\""));
     }
 
     #[test]
@@ -1180,6 +1211,7 @@ mod tests {
         // cargo side is build-only: a GitHub Release depending on the cargo build.
         assert!(out.contains("  github-release:\n"));
         assert!(out.contains("    needs: [check-release, build-web-compiler]\n"));
+        assert!(out.contains("          tag=\"web-compiler@$version\"\n"));
     }
 
     #[test]

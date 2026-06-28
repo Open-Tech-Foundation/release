@@ -62,7 +62,8 @@ From the config, `init` emits jobs:
 - a single **`publish`** job when registry publishing is enabled — runs `otf-release publish`
   once, and the CLI loops the enabled adapters internally;
 - a **`github-release`** job when any package is `build-only` — attaches its staged artifacts to a
-  GitHub Release `vX.Y.Z`, idempotently. The default `GITHUB_TOKEN` + `contents: write`.
+  package-scoped GitHub Release (`name@X.Y.Z`), idempotently. The default `GITHUB_TOKEN` +
+  `contents: write`.
 
 ## Explicit caveats (surfaced to the user)
 
