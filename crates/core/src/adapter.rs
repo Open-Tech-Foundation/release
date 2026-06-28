@@ -98,6 +98,16 @@ pub trait Adapter {
     /// given a dependency's bump and the edge kind, what bump does the dependent take?
     fn dependent_bump(&self, dep_bump: Bump, kind: &DepKind) -> Bump;
 
+    /// Sets of packages that are versioned in lockstep and must always move to the **same**
+    /// version together — e.g. cargo crates that inherit `version.workspace = true` and share
+    /// one `[workspace.package] version`. Each inner vec is one such group, named by package.
+    ///
+    /// Default: no groups (every package is versioned independently). The `version` flow uses
+    /// this to reconcile a group's members to a single bump, so they cannot diverge.
+    fn version_groups(&self) -> Result<Vec<Vec<String>>> {
+        Ok(Vec::new())
+    }
+
     /// Registry check: is `version` of `pkg` already published? Used to make publish idempotent.
     fn is_published(&self, pkg: &Pkg, version: &str) -> Result<bool>;
 

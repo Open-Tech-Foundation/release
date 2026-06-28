@@ -225,7 +225,9 @@ pub fn orchestrate_many(
             .map(|(name, bump)| (name.clone(), bump.clone()))
             .collect();
         let graph = Graph::build(&ctx.packages)?;
-        let bumps = graph.cascade(ctx.adapter, &selected_for_adapter)?;
+        let mut bumps = graph.cascade(ctx.adapter, &selected_for_adapter)?;
+        // Lockstep crates share one version; reconcile their bumps so they can't diverge.
+        reconcile_version_groups(&mut bumps, &ctx.adapter.version_groups()?);
         for (name, bump) in &bumps {
             let pkg = by_name[name.as_str()];
             new_versions.insert(name.clone(), apply_bump(&pkg.version, bump)?);
@@ -388,6 +390,29 @@ pub fn orchestrate_many(
     Ok(())
 }
 
+/// Raise every bumped member of each lockstep group to the strongest (max) bump in its group, so
+/// packages versioned together (cargo `version.workspace = true`) resolve to one deterministic
+/// version instead of diverging by the order their manifests were written. Members that received
+/// no bump are left untouched — the adapter still moves them on disk via the shared version, and
+/// `publish` ships them from the bumped working tree.
+fn reconcile_version_groups(bumps: &mut HashMap<String, Bump>, groups: &[Vec<String>]) {
+    for group in groups {
+        let Some(max) = group
+            .iter()
+            .filter_map(|name| bumps.get(name))
+            .max()
+            .cloned()
+        else {
+            continue; // no member of this group was bumped
+        };
+        for name in group {
+            if let Some(slot) = bumps.get_mut(name) {
+                *slot = max.clone();
+            }
+        }
+    }
+}
+
 /// Apply a bump to an `x.y.z` version (pre-release/build metadata is dropped unless entering/iterating prerelease).
 fn apply_bump(version: &str, bump: &Bump) -> Result<String> {
     let mut parts = version.split('-');
@@ -480,6 +505,7 @@ mod tests {
 
     struct FakeVersionAdapter {
         packages: Vec<Pkg>,
+        groups: Vec<Vec<String>>,
         writes: RefCell<Vec<(String, String)>>,
         lockfile_updates: RefCell<usize>,
     }
@@ -492,9 +518,15 @@ mod tests {
         fn with_packages(packages: Vec<Pkg>) -> Self {
             Self {
                 packages,
+                groups: Vec::new(),
                 writes: RefCell::new(Vec::new()),
                 lockfile_updates: RefCell::new(0),
             }
+        }
+
+        fn with_lockstep_group(mut self, names: &[&str]) -> Self {
+            self.groups = vec![names.iter().map(|n| n.to_string()).collect()];
+            self
         }
     }
 
@@ -529,6 +561,10 @@ mod tests {
 
         fn dependent_bump(&self, _: Bump, _: &DepKind) -> Bump {
             Bump::Patch
+        }
+
+        fn version_groups(&self) -> Result<Vec<Vec<String>>> {
+            Ok(self.groups.clone())
         }
 
         fn is_published(&self, _: &Pkg, _: &str) -> Result<bool> {
@@ -621,6 +657,25 @@ mod tests {
 
         fn choose_bump(&self, _: &str, _: &str) -> Result<Bump> {
             Ok(Bump::Patch)
+        }
+
+        fn confirm(&self, _: &str) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// Selects every pending package and returns a per-package bump from a scripted map.
+    struct ScriptedBumpPrompt {
+        bumps: HashMap<String, Bump>,
+    }
+
+    impl Prompt for ScriptedBumpPrompt {
+        fn select_packages(&self, pending: &[&Pkg]) -> Result<Vec<String>> {
+            Ok(pending.iter().map(|pkg| pkg.name.clone()).collect())
+        }
+
+        fn choose_bump(&self, name: &str, _: &str) -> Result<Bump> {
+            Ok(self.bumps[name].clone())
         }
 
         fn confirm(&self, _: &str) -> Result<bool> {
@@ -836,6 +891,80 @@ mod tests {
         assert!(
             after.contains("- shared change"),
             "the curated notes must survive:\n{after}"
+        );
+    }
+
+    #[test]
+    fn reconcile_version_groups_raises_bumped_members_to_max() {
+        let mut bumps = HashMap::from([
+            ("a".to_string(), Bump::Minor),
+            ("b".to_string(), Bump::Major),
+            ("loner".to_string(), Bump::Patch),
+        ]);
+        let groups = vec![
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec!["loner".to_string()],
+        ];
+        reconcile_version_groups(&mut bumps, &groups);
+
+        // a and b were both bumped → both raised to the group max (major).
+        assert_eq!(bumps["a"], Bump::Major);
+        assert_eq!(bumps["b"], Bump::Major);
+        // c got no bump and stays absent (the adapter still moves it via the shared version).
+        assert!(!bumps.contains_key("c"));
+        // A singleton group is unaffected.
+        assert_eq!(bumps["loner"], Bump::Patch);
+    }
+
+    #[test]
+    fn lockstep_group_selected_with_different_bumps_resolves_to_one_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Two lockstep crates at the same shared version, picked with *different* bumps.
+        let adapter = FakeVersionAdapter::with_packages(vec![
+            test_pkg(root, "crate-a"),
+            test_pkg(root, "crate-b"),
+        ])
+        .with_lockstep_group(&["crate-a", "crate-b"]);
+        let git = FakeGit::new();
+        let forge = FakeForge {
+            prs: RefCell::new(Vec::new()),
+        };
+        let prompt = ScriptedBumpPrompt {
+            bumps: HashMap::from([
+                ("crate-a".to_string(), Bump::Major),
+                ("crate-b".to_string(), Bump::Minor),
+            ]),
+        };
+        let config = crate::config::ReleaseConfig {
+            changelog_strategy: crate::config::ChangelogStrategy::Curated,
+            ..Default::default()
+        };
+
+        orchestrate_many(
+            &[&adapter],
+            &FakeRepo,
+            &git,
+            &forge,
+            &prompt,
+            root,
+            "2026-06-28",
+            &VersionOptions::default(),
+            &config,
+            &crate::hooks::fakes::FakeHookRunner::new(),
+        )
+        .unwrap();
+
+        // Both crates are written to the same version — the strongest (major) bump wins — instead
+        // of diverging (2.0.0 vs 1.1.0) by write order.
+        let mut writes = adapter.writes.borrow().clone();
+        writes.sort();
+        assert_eq!(
+            writes,
+            [
+                ("crate-a".to_string(), "2.0.0".to_string()),
+                ("crate-b".to_string(), "2.0.0".to_string()),
+            ]
         );
     }
 }

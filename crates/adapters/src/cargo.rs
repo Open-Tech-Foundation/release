@@ -358,6 +358,31 @@ impl Adapter for CargoAdapter {
         Bump::Patch
     }
 
+    fn version_groups(&self) -> Result<Vec<Vec<String>>> {
+        let root = CargoManifest::read(&self.root.join("Cargo.toml"))?;
+        // Without a shared `[workspace.package] version` nothing is locked together.
+        if root.workspace_version().is_none() {
+            return Ok(Vec::new());
+        }
+        // Every crate that inherits `version.workspace = true` shares the one workspace version,
+        // so they form a single lockstep group.
+        let mut group = Vec::new();
+        for dir in self.member_dirs()? {
+            let manifest = CargoManifest::read(&dir.join("Cargo.toml"))?;
+            if manifest.version_is_inherited() {
+                if let Some(name) = manifest.package_name() {
+                    group.push(name);
+                }
+            }
+        }
+        group.sort();
+        Ok(if group.is_empty() {
+            Vec::new()
+        } else {
+            vec![group]
+        })
+    }
+
     fn is_published(&self, pkg: &Pkg, version: &str) -> Result<bool> {
         let spec = format!("{}@{}", pkg.name, version);
         let out = self.runner.run("cargo", &["info", &spec], &self.root)?;
@@ -545,6 +570,42 @@ mod tests {
             crate_toml.contains("version.workspace = true"),
             "crate manifest must stay inherited: {crate_toml}"
         );
+    }
+
+    #[test]
+    fn version_groups_locks_only_inherited_crates_together() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\nversion = \"1.2.3\"\n",
+        );
+        // Two crates inherit the workspace version; one pins its own.
+        write(
+            root.join("crates/a/Cargo.toml"),
+            "[package]\nname = \"a\"\nversion.workspace = true\n",
+        );
+        write(
+            root.join("crates/b/Cargo.toml"),
+            "[package]\nname = \"b\"\nversion.workspace = true\n",
+        );
+        write(
+            root.join("crates/c/Cargo.toml"),
+            "[package]\nname = \"c\"\nversion = \"0.4.0\"\n",
+        );
+
+        let groups = CargoAdapter::new(root).version_groups().unwrap();
+        assert_eq!(groups, vec![vec!["a".to_string(), "b".to_string()]]);
+    }
+
+    #[test]
+    fn version_groups_empty_without_shared_workspace_version() {
+        // The default `workspace()` fixture pins concrete versions and has no inheriting crate.
+        let tmp = workspace();
+        assert!(CargoAdapter::new(tmp.path())
+            .version_groups()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
