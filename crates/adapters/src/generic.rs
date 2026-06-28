@@ -10,7 +10,8 @@
 //! - **Publish** is an optional shell command (`publish`, e.g. `npx jsr publish`). When present
 //!   the package publishes through `otf-release publish` (which then tags + makes the GitHub
 //!   Release); when absent the package is build-only.
-//! - **No dependency graph / lockfile / ranges.**
+//! - **No dependency graph / ranges.** A generic package that versions a root `Cargo.toml`
+//!   refreshes `Cargo.lock` after version writes so Rust build-only releases stay consistent.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,6 +21,8 @@ use serde_json::Value;
 use toml_edit::{value, DocumentMut, Item};
 
 use otf_release_core::adapter::{Adapter, Bump, DepKind, Pkg};
+
+use crate::command::{CommandRunner, SystemRunner};
 
 /// One generic project, as configured in `release.toml`.
 #[derive(Debug, Clone)]
@@ -37,6 +40,7 @@ pub struct GenericPkg {
 pub struct GenericAdapter {
     root: PathBuf,
     packages: Vec<GenericPkg>,
+    runner: Box<dyn CommandRunner>,
 }
 
 impl GenericAdapter {
@@ -44,6 +48,19 @@ impl GenericAdapter {
         Self {
             root: root.into(),
             packages,
+            runner: Box::new(SystemRunner),
+        }
+    }
+
+    pub fn with_runner(
+        root: impl Into<PathBuf>,
+        packages: Vec<GenericPkg>,
+        runner: Box<dyn CommandRunner>,
+    ) -> Self {
+        Self {
+            root: root.into(),
+            packages,
+            runner,
         }
     }
 
@@ -56,6 +73,15 @@ impl GenericAdapter {
 
     fn manifest_path(&self, pkg: &GenericPkg) -> PathBuf {
         self.root.join(&pkg.manifest)
+    }
+
+    fn updates_cargo_lockfile(&self, root: &Path) -> bool {
+        root.join("Cargo.lock").exists()
+            && self.packages.iter().any(|pkg| {
+                pkg.manifest
+                    .file_name()
+                    .is_some_and(|name| name == "Cargo.toml")
+            })
     }
 }
 
@@ -276,7 +302,13 @@ impl Adapter for GenericAdapter {
         Ok(())
     }
 
-    fn update_lockfile(&self, _root: &Path) -> Result<()> {
+    fn update_lockfile(&self, root: &Path) -> Result<()> {
+        if self.updates_cargo_lockfile(root) {
+            let out = self.runner.run("cargo", &["update", "--workspace"], root)?;
+            if !out.success {
+                bail!("`cargo update --workspace` failed:\n{}", out.stderr);
+            }
+        }
         Ok(())
     }
 
@@ -327,6 +359,40 @@ impl Adapter for GenericAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::{CommandOutput, CommandRunner};
+    use std::sync::{Arc, Mutex};
+
+    type Calls = Arc<Mutex<Vec<(String, Vec<String>, PathBuf)>>>;
+
+    #[derive(Clone)]
+    struct FakeRunner {
+        out: CommandOutput,
+        calls: Calls,
+    }
+
+    impl FakeRunner {
+        fn new(success: bool, stdout: &str, stderr: &str) -> Self {
+            Self {
+                out: CommandOutput {
+                    success,
+                    stdout: stdout.into(),
+                    stderr: stderr.into(),
+                },
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl CommandRunner for FakeRunner {
+        fn run(&self, program: &str, args: &[&str], cwd: &Path) -> Result<CommandOutput> {
+            self.calls.lock().unwrap().push((
+                program.to_string(),
+                args.iter().map(|arg| arg.to_string()).collect(),
+                cwd.to_path_buf(),
+            ));
+            Ok(self.out.clone())
+        }
+    }
 
     fn pkg(name: &str, manifest: &str, publish: Option<&str>) -> GenericPkg {
         GenericPkg {
@@ -388,6 +454,49 @@ mod tests {
         .unwrap();
         let a = GenericAdapter::new(tmp.path(), vec![pkg("x", "Project.toml", None)]);
         assert_eq!(a.discover_packages().unwrap()[0].version, "0.4.0");
+    }
+
+    #[test]
+    fn cargo_toml_manifest_refreshes_cargo_lockfile() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "version = \"0.1.0\"\n").unwrap();
+        std::fs::write(tmp.path().join("Cargo.lock"), "").unwrap();
+        let runner = FakeRunner::new(true, "", "");
+        let calls = runner.calls.clone();
+        let a = GenericAdapter::with_runner(
+            tmp.path(),
+            vec![pkg("x", "Cargo.toml", None)],
+            Box::new(runner),
+        );
+
+        a.update_lockfile(tmp.path()).unwrap();
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![(
+                "cargo".to_string(),
+                vec!["update".to_string(), "--workspace".to_string()],
+                tmp.path().to_path_buf()
+            )]
+        );
+    }
+
+    #[test]
+    fn non_cargo_manifest_does_not_refresh_lockfile() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("deno.json"), "{\"version\":\"1.0.0\"}").unwrap();
+        std::fs::write(tmp.path().join("Cargo.lock"), "").unwrap();
+        let runner = FakeRunner::new(true, "", "");
+        let calls = runner.calls.clone();
+        let a = GenericAdapter::with_runner(
+            tmp.path(),
+            vec![pkg("x", "deno.json", None)],
+            Box::new(runner),
+        );
+
+        a.update_lockfile(tmp.path()).unwrap();
+
+        assert!(calls.lock().unwrap().is_empty());
     }
 
     #[test]

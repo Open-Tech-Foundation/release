@@ -18,7 +18,10 @@ a release PR, and a publish/release workflow scaffold. Implemented in
   package is `publish` mode and ships through `otf-release publish`, which runs your command and
   then tags + creates the GitHub Release. When omitted, the package is `build-only`.
 - **Build** is optional — `command` + `artifacts`, like any other adapter, for staging files.
-- **No dependency graph, lockfile, or ranges** — those trait methods are no-ops.
+- **No dependency graph or ranges** — those trait methods are no-ops.
+- **Lockfile** is normally a no-op. If a generic package versions a root `Cargo.toml` and
+  `Cargo.lock` exists, `otf-release version` runs `cargo update --workspace` so the lockfile is
+  refreshed in the release commit.
 
 ## `release.toml`
 

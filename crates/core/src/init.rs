@@ -475,6 +475,23 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
 
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n");
+    if entry.matrix
+        && entry
+            .targets
+            .iter()
+            .any(|target| target.name == "linux" && target.arch == "aarch64")
+    {
+        s.push_str("      - name: Install Linux aarch64 cross toolchain\n");
+        s.push_str("        if: matrix.rust_target == 'aarch64-unknown-linux-gnu'\n");
+        s.push_str("        run: |\n");
+        s.push_str("          sudo apt-get update\n");
+        s.push_str("          sudo apt-get install -y gcc-aarch64-linux-gnu\n");
+        s.push_str("      - name: Configure Linux aarch64 linker\n");
+        s.push_str("        if: matrix.rust_target == 'aarch64-unknown-linux-gnu'\n");
+        s.push_str(
+            "        run: echo \"CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc\" >> \"$GITHUB_ENV\"\n",
+        );
+    }
     match entry.adapter {
         Ecosystem::Cargo => {
             s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");

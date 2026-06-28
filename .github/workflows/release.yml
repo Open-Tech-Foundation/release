@@ -49,6 +49,14 @@ jobs:
           # - { rust_target: "i686-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "x86" }  # edit me
     steps:
       - uses: actions/checkout@v4
+      - name: Install Linux aarch64 cross toolchain
+        if: matrix.rust_target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Configure Linux aarch64 linker
+        if: matrix.rust_target == 'aarch64-unknown-linux-gnu'
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
       - name: Build otf-release
         run: rustup target add ${{ matrix.rust_target }} && cargo build --release --target ${{ matrix.rust_target }}  # edit me: cross-compile with ${{ matrix.rust_target }}
       - uses: actions/upload-artifact@v4
