@@ -38,7 +38,7 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 | `otf-release version` | ✅ Supported | Interactive local release flow. Select packages, choose bumps, cascade dependents, update manifests/changelogs, push a release branch, and open a PR. |
 | `otf-release publish` | ✅ Supported | CI-oriented publish flow. Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. |
 | `otf-release snapshot` | 🧪 Experimental | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |
-| `otf-release config` | ◐ Partial | Interactive editor for common `release.toml` fields such as hooks, enabled ecosystems, and build targets. |
+| `otf-release config` | ✅ Supported | Interactive editor for hooks, ecosystems, package build fields, generic package fields, provider, snapshot tag, and changelog strategy. |
 | `otf-release upgrade` | ◐ Partial | Regenerates `release.yml` from the current `release.toml`. |
 | `otf-release self-update` | ✅ Supported | Checks GitHub Releases and reruns the install script when a newer CLI version exists. |
 

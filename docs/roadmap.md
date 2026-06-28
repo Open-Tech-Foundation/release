@@ -15,7 +15,6 @@ roadmap.
 | Area | Gap | Recommendation |
 | --- | --- | --- |
 | Snapshot releases | `snapshot` exists, but its multi-adapter behavior and failure model need a clear contract. | Keep it experimental until documented and tested end to end. |
-| Config editing | `otf-release config` edits only common fields. | Extend it to cover package mode, commands, artifacts, generic fields, provider, snapshot tag, and changelog strategy. |
 | Generic manifests | Generic version parsing is simple text matching. | Use structured JSON/TOML parsing when the file type is known. |
 
 ## Later
