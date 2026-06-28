@@ -3,8 +3,7 @@
 > Manual-bump, changelog-aware release CLI for polyglot monorepos.
 
 `otf-release` is a single Rust binary that helps a repo move from curated release notes to a
-release PR, then to CI-driven publishing. It supports npm workspaces, Cargo workspaces, and
-generic manifest-based packages through a committed `release.toml`.
+release PR, then to CI-driven publishing.
 
 The core rule is simple: humans choose what to release and how much to bump; the tool handles
 dependency cascades, manifest edits, changelog updates, tags, publishing order, and generated
@@ -88,3 +87,9 @@ flowchart TD
 ## 📄 License
 
 MIT. See [LICENSE](LICENSE).
+
+---
+
+<p align="center">
+Powered by [Open Tech Foundation](https://opentechf.org)
+</p>
