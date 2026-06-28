@@ -510,6 +510,8 @@ fn render_publish_job(s: &mut String, needs: &[String], npm: bool, cargo: bool, 
     if npm {
         s.push_str("      - run: npm ci\n");
     }
+    s.push_str("      - name: Install otf-release\n");
+    s.push_str("        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash\n");
     s.push_str("      - name: Publish\n");
     if staged {
         s.push_str("        run: otf-release publish --artifacts-dir .artifacts\n");
@@ -1077,6 +1079,7 @@ mod tests {
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         assert!(out.contains("          version=\"$(node -p \"require('./package.json').version\")\""));
         assert!(!out.contains("version=\"$(cargo metadata"));
+        assert!(out.contains("      - name: Install otf-release\n"));
         assert!(out.contains("        run: otf-release publish\n"));
         // No build steps, so no needs and no artifact download.
         assert!(out.contains("needs: [check-release]"));
@@ -1149,6 +1152,7 @@ mod tests {
         // A unified publish job runs `otf-release publish` (which runs the configured command).
         assert!(out.contains("  publish:\n"));
         assert!(out.contains("    needs: [check-release, build-jsr-lib]\n"));
+        assert!(out.contains("      - name: Install otf-release\n"));
         assert!(out.contains("        run: otf-release publish --artifacts-dir .artifacts\n"));
         // The tool can't know a generic registry's toolchain/secret → edit-me markers.
         assert!(out.contains("# edit me: set up the toolchain your generic publish command needs"));
@@ -1172,6 +1176,7 @@ mod tests {
         assert!(out.contains("  publish:\n"));
         assert!(out.contains("    needs: [check-release, build-docs-site]\n"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
+        assert!(out.contains("      - name: Install otf-release\n"));
         // cargo side is build-only: a GitHub Release depending on the cargo build.
         assert!(out.contains("  github-release:\n"));
         assert!(out.contains("    needs: [check-release, build-web-compiler]\n"));
