@@ -327,8 +327,20 @@ pub fn orchestrate_many(
         ctx.adapter
             .update_dep_range(by_name[consumer.as_str()], dep, &new_versions[dep])?;
     }
-    for (name, new_ver) in &new_versions {
+    // Several packages can map to a single CHANGELOG.md — cargo lockstep crates and generic
+    // packages share the root file. Each rewrite moves `[Unreleased]` into a dated section, so
+    // writing the same file twice would garble it (the second pass operates on the freshly
+    // emptied `[Unreleased]`). Write each changelog exactly once. Names are visited in sorted
+    // order so the package that "owns" a shared file is deterministic.
+    let mut changelog_names: Vec<&String> = new_versions.keys().collect();
+    changelog_names.sort();
+    let mut written_changelogs: HashSet<&Path> = HashSet::new();
+    for name in changelog_names {
         let pkg = by_name[name.as_str()];
+        if !written_changelogs.insert(pkg.changelog_path.as_path()) {
+            continue; // already rewritten via another package sharing this file
+        }
+        let new_ver = &new_versions[name];
         if is_generated {
             let gen = generated_notes
                 .get(name.as_str())
@@ -474,8 +486,12 @@ mod tests {
 
     impl FakeVersionAdapter {
         fn new(pkg: Pkg) -> Self {
+            Self::with_packages(vec![pkg])
+        }
+
+        fn with_packages(packages: Vec<Pkg>) -> Self {
             Self {
-                packages: vec![pkg],
+                packages,
                 writes: RefCell::new(Vec::new()),
                 lockfile_updates: RefCell::new(0),
             }
@@ -759,5 +775,67 @@ mod tests {
         );
         assert_eq!(*a.lockfile_updates.borrow(), 1);
         assert_eq!(*b.lockfile_updates.borrow(), 1);
+    }
+
+    #[test]
+    fn shared_changelog_is_rewritten_exactly_once() {
+        // Two packages mapping to one CHANGELOG.md (the cargo-lockstep / generic case). The file
+        // must be moved into a single dated section, not rewritten once per package — a second
+        // pass would operate on the freshly emptied [Unreleased] and emit a duplicate heading.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let changelog = root.join("CHANGELOG.md");
+        std::fs::write(
+            &changelog,
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n- shared change\n",
+        )
+        .unwrap();
+        let mk = |name: &str| Pkg {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: root.join(name).join("manifest"),
+            changelog_path: changelog.clone(),
+            publishable: true,
+            internal_deps: vec![],
+        };
+        let adapter = FakeVersionAdapter::with_packages(vec![mk("lib-a"), mk("lib-b")]);
+        let git = FakeGit::new();
+        let forge = FakeForge {
+            prs: RefCell::new(Vec::new()),
+        };
+        let config = crate::config::ReleaseConfig {
+            changelog_strategy: crate::config::ChangelogStrategy::Curated,
+            ..Default::default()
+        };
+
+        orchestrate_many(
+            &[&adapter],
+            &FakeRepo,
+            &git,
+            &forge,
+            &FakePrompt,
+            root,
+            "2026-06-28",
+            &VersionOptions::default(),
+            &config,
+            &crate::hooks::fakes::FakeHookRunner::new(),
+        )
+        .unwrap();
+
+        let after = std::fs::read_to_string(&changelog).unwrap();
+        assert_eq!(
+            after.matches("## [1.0.1] - 2026-06-28").count(),
+            1,
+            "shared changelog must get exactly one dated section:\n{after}"
+        );
+        assert_eq!(
+            after.matches("## [Unreleased]").count(),
+            1,
+            "a single fresh [Unreleased] must remain:\n{after}"
+        );
+        assert!(
+            after.contains("- shared change"),
+            "the curated notes must survive:\n{after}"
+        );
     }
 }
