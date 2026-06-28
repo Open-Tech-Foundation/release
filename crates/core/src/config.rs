@@ -165,6 +165,20 @@ pub struct ReleaseConfig {
     /// Git hosting provider (e.g. "github", "gitlab").
     #[serde(default = "default_provider")]
     pub provider: String,
+    /// How the changelog is managed.
+    #[serde(default)]
+    pub changelog_strategy: ChangelogStrategy,
+}
+
+/// The strategy for managing changelogs.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChangelogStrategy {
+    /// Read [Unreleased] sections from hand-written CHANGELOG.md files.
+    #[default]
+    Curated,
+    /// Automatically generate from Git commits since the last tag.
+    Generated,
 }
 
 fn default_provider() -> String {
@@ -223,6 +237,7 @@ mod tests {
         let cfg = ReleaseConfig {
             snapshot_tag: None,
             provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             hooks: Hooks::default(),
             packages: vec![
@@ -275,6 +290,7 @@ mod tests {
         let cfg = ReleaseConfig {
             snapshot_tag: None,
             provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
             adapters: vec![Ecosystem::Cargo],
             hooks: Hooks::default(),
             packages: vec![],

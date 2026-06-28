@@ -102,6 +102,9 @@ mod tests {
         fn commit_count_since(&self, tag: &str, _pkg_dir: &Path) -> Result<usize> {
             Ok(self.counts.get(tag).copied().unwrap_or(0))
         }
+        fn commits_since(&self, _: Option<&str>, _: &Path) -> Result<String> {
+            Ok(String::new())
+        }
     }
 
     const EMPTY: &str = "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2024-01-01\n- x\n";

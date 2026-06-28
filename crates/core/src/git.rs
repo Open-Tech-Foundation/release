@@ -17,6 +17,9 @@ pub trait RepoState {
     /// Number of commits since `tag` that touched `pkg_dir` (scoped to the package directory,
     /// so shared root files like the lockfile or CI config don't falsely dirty it).
     fn commit_count_since(&self, tag: &str, pkg_dir: &Path) -> Result<usize>;
+
+    /// Get the formatted commits touching `pkg_dir` since `tag` (or all if None).
+    fn commits_since(&self, tag: Option<&str>, pkg_dir: &Path) -> Result<String>;
 }
 
 /// The real `git`-backed implementation, rooted at the repository root.
@@ -59,6 +62,19 @@ impl RepoState for GitRepo {
         let range = format!("{tag}..HEAD");
         let stdout = run_git(&self.root, &["rev-list", "--count", &range, "--", pathspec])?;
         Ok(stdout.trim().parse().unwrap_or(0))
+    }
+
+    fn commits_since(&self, tag: Option<&str>, pkg_dir: &Path) -> Result<String> {
+        let rel = pkg_dir.strip_prefix(&self.root).unwrap_or(pkg_dir);
+        let pathspec = rel
+            .to_str()
+            .with_context(|| format!("non-UTF-8 package path: {}", rel.display()))?;
+        let range = match tag {
+            Some(t) => format!("{t}..HEAD"),
+            None => "HEAD".to_string(),
+        };
+        let stdout = run_git(&self.root, &["log", &range, "--pretty=format:* %s", "--", pathspec])?;
+        Ok(stdout.trim().to_string())
     }
 }
 

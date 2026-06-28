@@ -51,6 +51,54 @@ pub fn release_unreleased(
         .with_context(|| format!("writing {}", changelog_path.display()))
 }
 
+/// Prepend generated git commits to the changelog as a new release section.
+pub fn prepend_generated(
+    changelog_path: &Path,
+    version: &str,
+    date: &str,
+    generated_notes: &str,
+) -> Result<()> {
+    let content = if changelog_path.exists() {
+        read(changelog_path)?
+    } else {
+        "# Changelog\n\n".to_string()
+    };
+    
+    let notes = if generated_notes.trim().is_empty() {
+        "\n_No changes._\n\n".to_string()
+    } else {
+        format!("\n{}\n\n", generated_notes.trim())
+    };
+    let release_section = format!("## [{version}] - {date}{notes}");
+    
+    let rewritten = if let Some((body_start, body_end)) = find_unreleased(&content) {
+        let mut out = String::with_capacity(content.len() + 64);
+        out.push_str(&content[..body_start]); 
+        out.push('\n'); 
+        out.push_str(&release_section);
+        out.push_str(&content[body_end..]);
+        out
+    } else if let Some(idx) = content.find("## ") {
+        let mut out = content[..idx].to_string();
+        if !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        out.push_str(&release_section);
+        out.push_str(&content[idx..]);
+        out
+    } else {
+        let mut out = content.clone();
+        if !out.ends_with("\n\n") {
+            out.push_str("\n\n");
+        }
+        out.push_str(&release_section);
+        out
+    };
+    
+    fs::write(changelog_path, rewritten)
+        .with_context(|| format!("writing {}", changelog_path.display()))
+}
+
 /// The trimmed body of a dated `## [version] - …` section, for a GitHub Release body.
 /// Returns `None` if there is no such section.
 pub fn dated_section_notes(changelog_path: &Path, version: &str) -> Result<Option<String>> {

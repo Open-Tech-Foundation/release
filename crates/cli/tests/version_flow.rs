@@ -16,6 +16,7 @@ use otf_release_core::forge::Forge;
 use otf_release_core::git::GitRepo;
 use otf_release_core::prompt::Prompt;
 use otf_release_core::version::{orchestrate, VersionOptions};
+use otf_release_core::config::{Hooks, ReleaseConfig};
 
 /// Every `npm` invocation "succeeds" (the version flow only calls `update_lockfile`).
 struct OkRunner;
@@ -165,7 +166,10 @@ fn version_flow_releases_on_a_branch_and_never_touches_main() {
         root,
         "2026-06-24",
         &VersionOptions::default(),
-        &hooks,
+        &ReleaseConfig {
+            hooks,
+            ..Default::default()
+        },
         &hook_runner,
     )
     .unwrap();
@@ -235,7 +239,10 @@ fn dry_run_prints_the_plan_and_writes_nothing() {
             first_release: false,
             skip_pr: false,
         },
-        &hooks,
+        &ReleaseConfig {
+            hooks,
+            ..Default::default()
+        },
         &hook_runner,
     )
     .unwrap();

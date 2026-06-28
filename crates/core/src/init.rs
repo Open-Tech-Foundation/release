@@ -17,7 +17,7 @@ use anyhow::{bail, Context, Result};
 use inquire::{MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
-use crate::config::{Ecosystem, Mode, PackageEntry, ReleaseConfig, Target, DEFAULT_VERSION_FIELD};
+use crate::config::{ChangelogStrategy, Ecosystem, Mode, PackageEntry, ReleaseConfig, Target, DEFAULT_VERSION_FIELD};
 use crate::discover::{scan_generic_candidates, GenericCandidate};
 
 /// A static definition for a default target to offer in the CLI prompt.
@@ -91,6 +91,8 @@ pub trait InitPrompt {
     fn snapshot_tag(&self) -> Result<String>;
     /// Ask for the git hosting provider.
     fn prompt_provider(&self) -> Result<String>;
+    /// Ask for the changelog management strategy.
+    fn prompt_changelog_strategy(&self) -> Result<ChangelogStrategy>;
 }
 
 /// Wire up the real prompt and run the generator.
@@ -142,6 +144,7 @@ pub fn orchestrate(
         packages,
         snapshot_tag: Some(prompt.snapshot_tag()?),
         provider: prompt.prompt_provider()?,
+        changelog_strategy: prompt.prompt_changelog_strategy()?,
     };
 
     // 1. Persist the source of truth.
@@ -867,6 +870,23 @@ impl InitPrompt for StdinInitPrompt {
             }
         }
     }
+
+    fn prompt_changelog_strategy(&self) -> Result<ChangelogStrategy> {
+        let ans = Select::new(
+            "How would you like to manage your changelogs?",
+            vec![
+                "Curated (Write them by hand in [Unreleased] sections of CHANGELOG.md)",
+                "Generated (Automatically parse Git commits since the last tag)",
+            ],
+        )
+        .prompt()?;
+        
+        if ans.starts_with("Curated") {
+            Ok(ChangelogStrategy::Curated)
+        } else {
+            Ok(ChangelogStrategy::Generated)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -958,6 +978,9 @@ mod tests {
         fn prompt_provider(&self) -> Result<String> {
             Ok("github".to_string())
         }
+        fn prompt_changelog_strategy(&self) -> Result<ChangelogStrategy> {
+            Ok(ChangelogStrategy::Curated)
+        }
     }
 
     fn pkg(name: &str, publishable: bool) -> Pkg {
@@ -1035,6 +1058,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
             packages: vec![],
@@ -1053,6 +1077,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
             packages: vec![cargo_build_only("opentf-release")],
@@ -1081,6 +1106,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
             packages: vec![generic_pkg("release", None)],
@@ -1102,6 +1128,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
             packages: vec![generic_pkg("jsr-lib", Some("npx jsr publish"))],
@@ -1122,6 +1149,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             packages: vec![cargo_build_only("web-compiler"), npm_publish("docs-site")],

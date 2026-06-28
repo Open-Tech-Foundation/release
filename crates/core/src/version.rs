@@ -34,7 +34,7 @@ pub struct VersionOptions {
 }
 
 /// Wire up the real adapter/git/forge/prompt and run the flow.
-pub fn run(adapter: &dyn Adapter, root: &Path, opts: &VersionOptions, hooks: &crate::config::Hooks) -> Result<()> {
+pub fn run(adapter: &dyn Adapter, root: &Path, opts: &VersionOptions, config: &crate::config::ReleaseConfig) -> Result<()> {
     let mut opts = opts.clone();
     let prompt = StdinPrompt;
     if std::process::Command::new("gh")
@@ -51,7 +51,7 @@ pub fn run(adapter: &dyn Adapter, root: &Path, opts: &VersionOptions, hooks: &cr
     let forge = GhForge::new(root);
     let hook_runner = crate::hooks::ShHookRunner;
     let today = date::today();
-    orchestrate(adapter, &repo, &repo, &forge, &prompt, root, &today, &opts, hooks, &hook_runner)
+    orchestrate(adapter, &repo, &repo, &forge, &prompt, root, &today, &opts, config, &hook_runner)
 }
 
 /// The testable core of the `version` flow. `today` is injected for deterministic output.
@@ -65,11 +65,11 @@ pub fn orchestrate(
     root: &Path,
     today: &str,
     opts: &VersionOptions,
-    hooks: &crate::config::Hooks,
+    config: &crate::config::ReleaseConfig,
     hook_runner: &dyn crate::hooks::HookRunner,
 ) -> Result<()> {
-    if !hooks.pre_version.is_empty() {
-        hook_runner.run_hooks(root, &hooks.pre_version)?;
+    if !config.hooks.pre_version.is_empty() {
+        hook_runner.run_hooks(root, &config.hooks.pre_version)?;
     }
 
     let packages = adapter.discover_packages()?;
@@ -82,8 +82,18 @@ pub fn orchestrate(
 
     // 2. Pending = publishable packages that carry curated [Unreleased] notes.
     let mut empties: HashMap<&str, bool> = HashMap::new();
+    let mut generated_notes: HashMap<&str, String> = HashMap::new();
+    let is_generated = config.changelog_strategy == crate::config::ChangelogStrategy::Generated;
+
     for p in &packages {
-        empties.insert(p.name.as_str(), unreleased_is_empty(&p.changelog_path)?);
+        if is_generated {
+            let last = repo.last_tag(&p.name)?;
+            let notes = repo.commits_since(last.as_deref(), p.manifest_path.parent().unwrap())?;
+            generated_notes.insert(p.name.as_str(), notes.clone());
+            empties.insert(p.name.as_str(), notes.is_empty());
+        } else {
+            empties.insert(p.name.as_str(), unreleased_is_empty(&p.changelog_path)?);
+        }
     }
     let pending: Vec<&Pkg> = packages
         .iter()
@@ -130,12 +140,19 @@ pub fn orchestrate(
         .map(|(name, bump)| {
             let pkg = by_name[name.as_str()];
             let is_selected = selected.contains_key(name);
+            let mut note = change_note(pkg, bump, is_selected, &new_versions);
+            if is_generated && is_selected {
+                let gen = generated_notes.get(name.as_str()).cloned().unwrap_or_default();
+                if !gen.is_empty() {
+                    note = format!("{note}\n\nGenerated notes:\n{gen}");
+                }
+            }
             VersionChange {
                 name: name.clone(),
                 old_version: pkg.version.clone(),
                 new_version: new_versions[name].clone(),
                 selected: is_selected,
-                note: change_note(pkg, bump, is_selected, &new_versions),
+                note,
             }
         })
         .collect();
@@ -195,13 +212,18 @@ pub fn orchestrate(
     }
     for (name, new_ver) in &new_versions {
         let pkg = by_name[name.as_str()];
-        // Auto-bumped-only packages (empty [Unreleased]) get the stub.
-        changelog::release_unreleased(&pkg.changelog_path, new_ver, today, empties[name.as_str()])?;
+        if is_generated {
+            let gen = generated_notes.get(name.as_str()).cloned().unwrap_or_default();
+            crate::changelog::prepend_generated(&pkg.changelog_path, new_ver, today, &gen)?;
+        } else {
+            // Auto-bumped-only packages (empty [Unreleased]) get the stub.
+            changelog::release_unreleased(&pkg.changelog_path, new_ver, today, empties[name.as_str()])?;
+        }
     }
     adapter.update_lockfile(root)?;
 
-    if !hooks.post_version.is_empty() {
-        hook_runner.run_hooks(root, &hooks.post_version)?;
+    if !config.hooks.post_version.is_empty() {
+        hook_runner.run_hooks(root, &config.hooks.post_version)?;
     }
 
     // 11. Commit, push, open the PR.

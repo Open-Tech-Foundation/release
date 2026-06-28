@@ -172,7 +172,7 @@ fn main() -> Result<()> {
             };
             for eco in &config.adapters {
                 let adapter = factory.make(*eco);
-                version::run(adapter.as_ref(), &root, &opts, &config.hooks)?;
+                version::run(adapter.as_ref(), &root, &opts, &config)?;
             }
             Ok(())
         }

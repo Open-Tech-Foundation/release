@@ -64,6 +64,13 @@ flowchart TD
     Init --> Curate --> PreVersion --> Version --> PostVersion --> Merge --> PrePublish --> Publish --> PostPublish
 ```
 
+## Changelog Strategies
+
+During `otf-release init`, you can select how you want to manage your release notes via the `changelog_strategy` configuration.
+
+- **Curated (Default):** You manually write release notes inside an `[Unreleased]` section within each package's `CHANGELOG.md` as you develop. `otf-release` acts as a strict curator, consuming these exact notes for the release.
+- **Generated:** `otf-release` automatically reads the git commit history since the last package tag and generates a list of commit messages. These generated notes are used in the Release PR and automatically prepended to the `CHANGELOG.md` upon release.
+
 ## Pre-releases
 
 When running `otf-release version`, the interactive prompt will first ask you to select a release channel. By default, it uses the **stable** channel. If you select an alternative channel (e.g. `alpha`, `beta`, `rc`), `otf-release` will automatically compute valid semantic pre-release versions for your bumps.
