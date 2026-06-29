@@ -16,7 +16,7 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ### Fixed
 - **version** — Modified `git checkout -b` to `git checkout -B` so that release branch creation gracefully handles previously abandoned branches by resetting them instead of crashing.
 - **version** — Removed the startup `gh` confirmation prompt and moved confirmation to a final
-  review that shows the computed plan, changed files, and full git diff before commit/push/PR.
+  review that shows the computed plan and changed-file stats before commit/push/PR.
 - **init/npm** — npm workspace discovery now skips workspace manifests that are not release
   packages because they lack `name` or `version`, prints each skipped manifest with the reason,
   and still fails on malformed `package.json` files.

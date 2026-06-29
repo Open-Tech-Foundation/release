@@ -109,9 +109,6 @@ impl GitOps for FakeGit {
     fn diff_stat(&self) -> Result<String> {
         Ok(String::new())
     }
-    fn diff(&self) -> Result<String> {
-        Ok(String::new())
-    }
     fn reset_hard(&self) -> Result<()> {
         Ok(())
     }

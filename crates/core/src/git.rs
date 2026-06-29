@@ -91,7 +91,6 @@ pub trait GitOps {
     fn create_branch(&self, name: &str) -> Result<()>;
     fn checkout_branch(&self, name: &str) -> Result<()>;
     fn diff_stat(&self) -> Result<String>;
-    fn diff(&self) -> Result<String>;
     fn reset_hard(&self) -> Result<()>;
     fn add_all(&self) -> Result<()>;
     fn commit(&self, message: &str) -> Result<()>;
@@ -123,10 +122,6 @@ impl GitOps for GitRepo {
 
     fn diff_stat(&self) -> Result<String> {
         run_git(&self.root, &["diff", "--stat"])
-    }
-
-    fn diff(&self) -> Result<String> {
-        run_git(&self.root, &["diff"])
     }
 
     fn reset_hard(&self) -> Result<()> {

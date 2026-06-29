@@ -210,7 +210,7 @@ fn version_flow_releases_on_a_branch_and_never_touches_main() {
     let confirmations = prompt.confirmations.borrow();
     assert_eq!(confirmations.len(), 1);
     assert!(confirmations[0].contains("Changed Files:"));
-    assert!(confirmations[0].contains("Diff:"));
+    assert!(!confirmations[0].contains("Diff:"));
     assert!(confirmations[0].contains("packages/core/package.json"));
 
     // main is untouched: core is still 1.0.0 there.

@@ -366,7 +366,7 @@ pub fn orchestrate_many(
 
     // 9. Final review: show the actual files and diff produced by the release edits. On cancel,
     // discard only the generated release-branch changes and return to the original branch.
-    let review_text = render_final_review(&summary_text, &git.diff_stat()?, &git.diff()?, opts);
+    let review_text = render_final_review(&summary_text, &git.diff_stat()?, opts);
     if !prompt.confirm(&review_text)? {
         git.reset_hard()?;
         git.checkout_branch(&branch)?;
@@ -395,12 +395,7 @@ pub fn orchestrate_many(
     Ok(())
 }
 
-fn render_final_review(
-    summary_text: &str,
-    diff_stat: &str,
-    diff: &str,
-    opts: &VersionOptions,
-) -> String {
+fn render_final_review(summary_text: &str, diff_stat: &str, opts: &VersionOptions) -> String {
     let mut out = String::new();
     out.push_str(summary_text);
     if opts.skip_pr {
@@ -415,15 +410,6 @@ fn render_final_review(
         for line in diff_stat.lines() {
             out.push_str("  ");
             out.push_str(line);
-            out.push('\n');
-        }
-    }
-    out.push_str("\nDiff:\n");
-    if diff.trim().is_empty() {
-        out.push_str("  (empty diff)\n");
-    } else {
-        out.push_str(diff);
-        if !diff.ends_with('\n') {
             out.push('\n');
         }
     }
@@ -673,10 +659,6 @@ mod tests {
 
         fn diff_stat(&self) -> Result<String> {
             Ok(" CHANGELOG.md | 2 ++\n 1 file changed, 2 insertions(+)\n".to_string())
-        }
-
-        fn diff(&self) -> Result<String> {
-            Ok("diff --git a/CHANGELOG.md b/CHANGELOG.md\n".to_string())
         }
 
         fn reset_hard(&self) -> Result<()> {

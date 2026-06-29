@@ -42,7 +42,7 @@ Implemented in `crates/core/src/version.rs`.
      stub `_Dependency updates._`. See [changelog-format.md](../changelog-format.md).
    - `adapter.update_lockfile` — refresh the lockfile in the **same commit**, or a CI install
      will drift.
-10. **Final review / confirm** — print the actual `git diff --stat` and `git diff`, then ask
+10. **Final review / confirm** — print the actual `git diff --stat`, then ask
     whether to commit, push, and open the PR. On cancel, generated release-branch changes are
     discarded and the command returns to the original branch.
 11. **Commit** (`chore(release): …`), **push**, and **open a PR** via `gh`.
@@ -66,9 +66,6 @@ Changed Files:
   Cargo.toml      | 2 +-
   CHANGELOG.md    | 8 +++++++-
 
-Diff:
-diff --git a/Cargo.toml b/Cargo.toml
-...
 ```
 
 Three blocks: explicitly **selected** packages, **auto-bumped** dependents (with the reason),
