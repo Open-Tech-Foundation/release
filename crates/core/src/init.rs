@@ -113,6 +113,11 @@ pub struct InitOptions {
 /// adapters); `init` uses it to discover each enabled ecosystem's packages.
 pub trait AdapterFactory {
     fn make(&self, ecosystem: Ecosystem) -> Box<dyn Adapter>;
+
+    /// Human-readable notes from adapter-specific discovery, such as skipped workspace manifests.
+    fn discovery_notes(&self, _: Ecosystem) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
 }
 
 /// The interactive choices `init` needs.
@@ -163,6 +168,9 @@ pub fn orchestrate(
             if pkg.publishable {
                 publishable.push(pkg);
             }
+        }
+        for note in factory.discovery_notes(eco)? {
+            println!("{note}");
         }
     }
 

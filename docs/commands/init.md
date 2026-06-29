@@ -19,6 +19,9 @@ otf-release init [--force]
    recorded in `release.toml`; a polyglot repo can enable several.
 2. **List publishable packages** (discovered across the enabled npm/cargo adapters), then
    **multi-select**: *"Which need a build step before publish?"*
+   npm workspace manifests that are not release packages (for example fixture or benchmark
+   folders without a `version`) are skipped and listed with the reason, so the scan does not abort
+   on non-package workspace members.
 3. For each selected package, prompt for:
    - **mode** — `publish` (build, then push to the ecosystem's registry) or **`build-only`**
      (build, then attach the artifacts to a **GitHub Release** — no registry push);
@@ -72,6 +75,9 @@ From the config, `init` emits jobs:
 - **Repo-specific build steps are yours to refine.** `init` wires the DAG, secrets, and your
   build command/artifacts; the exact runner-per-target and version-discovery line carry
   `# edit me` markers.
+- **npm workspace discovery only imports real packages.** A workspace `package.json` must have a
+  string `name` and `version` to become a release package. Missing fields are reported as skipped;
+  malformed JSON is still treated as a broken manifest and stops the scan.
 
 ## Relationship to the single-workflow model
 

@@ -3,6 +3,16 @@
 Implemented in `crates/adapters/src/npm/`. The rules and gotchas below are baked into the npm
 adapter so the core release flow can stay ecosystem-agnostic.
 
+## Workspace discovery
+
+The adapter expands the root `package.json` `workspaces` globs and treats a member as a release
+package only when its `package.json` has string `name` and `version` fields. During `init`,
+workspace manifests missing either field are skipped and printed with the reason, which keeps
+fixture, benchmark, and tool-only folders from aborting setup.
+
+Malformed JSON still fails discovery. That is a broken workspace manifest, not a non-release
+package.
+
 ## Cascade rule (`dependent_bump`)
 
 ```

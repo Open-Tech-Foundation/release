@@ -10,6 +10,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use otf_release_adapters::generic::{GenericAdapter, GenericPkg};
+use otf_release_adapters::npm::NpmAdapter;
 use otf_release_core::adapter::Adapter;
 use otf_release_core::config::{Ecosystem, ReleaseConfig, DEFAULT_VERSION_FIELD};
 use otf_release_core::init::AdapterFactory;
@@ -27,15 +28,34 @@ struct CliAdapterFactory {
 impl AdapterFactory for CliAdapterFactory {
     fn make(&self, ecosystem: Ecosystem) -> Box<dyn Adapter> {
         match ecosystem {
-            Ecosystem::Npm => Box::new(otf_release_adapters::npm::NpmAdapter::new(
-                self.root.clone(),
-            )),
+            Ecosystem::Npm => Box::new(NpmAdapter::new(self.root.clone())),
             Ecosystem::Cargo => Box::new(otf_release_adapters::cargo::CargoAdapter::new(
                 self.root.clone(),
             )),
             Ecosystem::Generic => {
                 Box::new(GenericAdapter::new(self.root.clone(), self.generic.clone()))
             }
+        }
+    }
+
+    fn discovery_notes(&self, ecosystem: Ecosystem) -> Result<Vec<String>> {
+        match ecosystem {
+            Ecosystem::Npm => {
+                let adapter = NpmAdapter::new(self.root.clone());
+                Ok(adapter
+                    .skipped_workspace_manifests()?
+                    .into_iter()
+                    .map(|skipped| {
+                        let path = skipped
+                            .path
+                            .strip_prefix(&self.root)
+                            .unwrap_or(&skipped.path)
+                            .display();
+                        format!("Skipped npm workspace manifest {path}: {}", skipped.reason)
+                    })
+                    .collect())
+            }
+            _ => Ok(Vec::new()),
         }
     }
 }

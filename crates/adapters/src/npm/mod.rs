@@ -35,6 +35,13 @@ pub struct NpmAdapter {
     runner: Box<dyn CommandRunner>,
 }
 
+/// A workspace manifest that npm discovery intentionally ignored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedWorkspaceManifest {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
 impl NpmAdapter {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -73,6 +80,22 @@ impl NpmAdapter {
         }
         Ok(dirs.into_iter().collect())
     }
+
+    /// Workspace manifests that are valid JSON but are not release packages.
+    pub fn skipped_workspace_manifests(&self) -> Result<Vec<SkippedWorkspaceManifest>> {
+        let mut skipped = Vec::new();
+        for dir in self.member_dirs()? {
+            let manifest_path = dir.join("package.json");
+            let manifest = Manifest::read(&manifest_path)?;
+            if let Some(reason) = skip_reason(&manifest)? {
+                skipped.push(SkippedWorkspaceManifest {
+                    path: manifest_path,
+                    reason,
+                });
+            }
+        }
+        Ok(skipped)
+    }
 }
 
 impl Adapter for NpmAdapter {
@@ -82,6 +105,9 @@ impl Adapter for NpmAdapter {
         for dir in self.member_dirs()? {
             let manifest_path = dir.join("package.json");
             let manifest = Manifest::read(&manifest_path)?;
+            if skip_reason(&manifest)?.is_some() {
+                continue;
+            }
             members.push((dir, manifest));
         }
 
@@ -232,6 +258,19 @@ impl Adapter for NpmAdapter {
         }
         Ok(())
     }
+}
+
+fn skip_reason(manifest: &Manifest) -> Result<Option<String>> {
+    let json = manifest.json_value()?;
+    let missing_name = json.get("name").and_then(Value::as_str).is_none();
+    let missing_version = json.get("version").and_then(Value::as_str).is_none();
+
+    Ok(match (missing_name, missing_version) {
+        (true, true) => Some("missing \"name\" and \"version\"".to_string()),
+        (true, false) => Some("missing \"name\"".to_string()),
+        (false, true) => Some("missing \"version\"".to_string()),
+        (false, false) => None,
+    })
 }
 
 /// `dependencies`/`optionalDependencies` -> `Dep`; `peerDependencies` -> `PeerDep`;
@@ -407,6 +446,72 @@ mod tests {
 
         let c = pkgs.iter().find(|p| p.name == "@x/c").unwrap();
         assert!(!c.publishable, "private app is not publishable");
+    }
+
+    #[test]
+    fn skips_workspace_manifests_without_release_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root.join("package.json"),
+            r#"{ "name": "root", "private": true, "workspaces": ["packages/*"] }"#,
+        );
+        write(
+            root.join("packages/a/package.json"),
+            r#"{ "name": "@x/a", "version": "1.0.0" }"#,
+        );
+        write(
+            root.join("packages/fixture/package.json"),
+            r#"{ "name": "@x/fixture", "private": true }"#,
+        );
+        write(
+            root.join("packages/anonymous/package.json"),
+            r#"{ "version": "0.0.0", "private": true }"#,
+        );
+
+        let adapter = NpmAdapter::new(root);
+        let pkgs = adapter.discover_packages().unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "@x/a");
+
+        let skipped = adapter.skipped_workspace_manifests().unwrap();
+        let skipped_paths: Vec<_> = skipped
+            .iter()
+            .map(|s| {
+                s.path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(
+            skipped_paths,
+            [
+                "packages/anonymous/package.json",
+                "packages/fixture/package.json"
+            ]
+        );
+        assert_eq!(skipped[0].reason, "missing \"name\"");
+        assert_eq!(skipped[1].reason, "missing \"version\"");
+    }
+
+    #[test]
+    fn malformed_workspace_manifest_is_still_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root.join("package.json"),
+            r#"{ "name": "root", "private": true, "workspaces": ["packages/*"] }"#,
+        );
+        write(root.join("packages/broken/package.json"), "{ nope");
+
+        let adapter = NpmAdapter::new(root);
+        let err = adapter.discover_packages().unwrap_err().to_string();
+        assert!(
+            err.contains("parsing") && err.contains("packages/broken/package.json"),
+            "got: {err}"
+        );
     }
 
     #[test]

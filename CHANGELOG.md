@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Fixed
+- **init/npm** — npm workspace discovery now skips workspace manifests that are not release
+  packages because they lack `name` or `version`, prints each skipped manifest with the reason,
+  and still fails on malformed `package.json` files.
+
 ## [0.2.0] - 2026-06-28
 
 ### Added
