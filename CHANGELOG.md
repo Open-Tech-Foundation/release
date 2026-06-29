@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-29
+
 ### Added
 - **config** — Added global `tag_format` to `release.toml` (default `v{version}`) and exposed it
   in `init` and `config`, so preflight, publish, and generated GitHub Release jobs use the repo's
