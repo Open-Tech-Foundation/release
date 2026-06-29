@@ -18,8 +18,8 @@ use inquire::{MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{
-    ChangelogStrategy, Ecosystem, Mode, PackageEntry, ReleaseConfig, Target, DEFAULT_TAG_FORMAT,
-    DEFAULT_VERSION_FIELD,
+    ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode, PackageEntry, ReleaseConfig, Target,
+    DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD,
 };
 use crate::discover::{scan_generic_candidates, GenericCandidate};
 
@@ -143,6 +143,8 @@ pub trait InitPrompt {
     fn prompt_provider(&self) -> Result<String>;
     /// Ask for the changelog management strategy.
     fn prompt_changelog_strategy(&self) -> Result<ChangelogStrategy>;
+    /// Ask how GitHub Release bodies should be generated.
+    fn prompt_github_release_notes(&self) -> Result<GithubReleaseNotes>;
 }
 
 /// Wire up the real prompt and run the generator.
@@ -202,6 +204,7 @@ pub fn orchestrate(
         tag_format,
         provider: prompt.prompt_provider()?,
         changelog_strategy: prompt.prompt_changelog_strategy()?,
+        github_release_notes: prompt.prompt_github_release_notes()?,
     };
 
     // 1. Persist the source of truth.
@@ -392,7 +395,13 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
             .filter(|p| has_build(p))
             .map(|p| build_job(&p.name))
             .collect();
-        render_github_release(&mut s, &needs, &build_only, &config.tag_format);
+        render_github_release(
+            &mut s,
+            &needs,
+            &build_only,
+            &config.tag_format,
+            &config.github_release_notes,
+        );
     }
 
     s
@@ -618,6 +627,7 @@ fn render_github_release(
     needs: &[String],
     build_only: &[&PackageEntry],
     tag_format: &str,
+    github_release_notes: &GithubReleaseNotes,
 ) {
     s.push_str("  github-release:\n");
     let mut actual_needs = vec!["check-release".to_string()];
@@ -634,6 +644,7 @@ fn render_github_release(
     s.push_str("          version=\"${{ needs.check-release.outputs.version }}\"\n");
     for entry in build_only {
         let art_slug = slug(&entry.name);
+        let tag_regex = workflow_tag_regex(tag_format, &entry.name);
         s.push_str(&format!(
             "          tag=\"{}\"\n",
             workflow_tag_expr(tag_format, &entry.name)
@@ -641,6 +652,7 @@ fn render_github_release(
         s.push_str("          if gh release view \"$tag\" >/dev/null 2>&1; then\n");
         s.push_str("            echo \"Release $tag already exists; nothing to do.\"\n");
         s.push_str("          else\n");
+        render_github_release_notes(s, github_release_notes, &tag_regex);
         if staged {
             s.push_str(&format!(
                 "            rm -rf \".flat-artifacts-{art_slug}\"\n"
@@ -668,12 +680,62 @@ fn render_github_release(
             s.push_str("              fi\n");
             s.push_str("            done\n");
             s.push_str(&format!(
-                "            gh release create \"$tag\" --target main --title \"$tag\" --generate-notes .flat-artifacts-{art_slug}/*\n"
+                "            gh release create \"$tag\" --target main --title \"$tag\" \"${{notes_arg[@]}}\" .flat-artifacts-{art_slug}/*\n"
             ));
         } else {
-            s.push_str("            gh release create \"$tag\" --target main --title \"$tag\" --generate-notes\n");
+            s.push_str(
+                "            gh release create \"$tag\" --target main --title \"$tag\" \"${notes_arg[@]}\"\n",
+            );
         }
         s.push_str("          fi\n");
+    }
+}
+
+fn render_github_release_notes(
+    s: &mut String,
+    github_release_notes: &GithubReleaseNotes,
+    tag_regex: &str,
+) {
+    match github_release_notes {
+        GithubReleaseNotes::AutoGenerate => {
+            s.push_str("            notes_arg=(--generate-notes)\n");
+        }
+        GithubReleaseNotes::CuratedChangelog => {
+            s.push_str("            notes_file=\"$(mktemp)\"\n");
+            s.push_str("            if [ -f CHANGELOG.md ]; then\n");
+            s.push_str("              awk -v version=\"$version\" '\n");
+            s.push_str(
+                "                $0 ~ \"^## \\\\[?\" version \"\\\\]?\" { in_section=1; next }\n",
+            );
+            s.push_str("                in_section && /^## / { exit }\n");
+            s.push_str("                in_section { print }\n");
+            s.push_str("              ' CHANGELOG.md | sed '/./,$!d' > \"$notes_file\"\n");
+            s.push_str("            fi\n");
+            s.push_str("            if [ -s \"$notes_file\" ]; then\n");
+            s.push_str("              notes_arg=(--notes-file \"$notes_file\")\n");
+            s.push_str("            else\n");
+            s.push_str("              echo \"No CHANGELOG.md notes found for $version; using GitHub generated notes.\"\n");
+            s.push_str("              notes_arg=(--generate-notes)\n");
+            s.push_str("            fi\n");
+        }
+        GithubReleaseNotes::SemanticCommits => {
+            s.push_str("            notes_file=\"$(mktemp)\"\n");
+            s.push_str(&format!(
+                "            previous_tag=\"$(git tag --merged HEAD --sort=-creatordate | grep -E '{}' | grep -vxF \"$tag\" | head -n 1 || true)\"\n",
+                shell_single_quote(tag_regex)
+            ));
+            s.push_str("            if [ -n \"$previous_tag\" ]; then\n");
+            s.push_str("              range=\"$previous_tag..HEAD\"\n");
+            s.push_str("            else\n");
+            s.push_str("              range=\"HEAD\"\n");
+            s.push_str("            fi\n");
+            s.push_str("            git log --no-merges --pretty=format:'- %s (%h)' \"$range\" > \"$notes_file\"\n");
+            s.push_str("            if [ -s \"$notes_file\" ]; then\n");
+            s.push_str("              notes_arg=(--notes-file \"$notes_file\")\n");
+            s.push_str("            else\n");
+            s.push_str("              notes_arg=(--generate-notes)\n");
+            s.push_str("            fi\n");
+        }
     }
 }
 
@@ -681,6 +743,43 @@ fn workflow_tag_expr(tag_format: &str, name: &str) -> String {
     tag_format
         .replace("{name}", name)
         .replace("{version}", "$version")
+}
+
+fn workflow_tag_regex(tag_format: &str, name: &str) -> String {
+    let mut regex = String::from("^");
+    let mut rest = tag_format;
+    while let Some(start) = rest.find('{') {
+        regex.push_str(&ere_escape(&rest[..start]));
+        rest = &rest[start..];
+        if let Some(stripped) = rest.strip_prefix("{name}") {
+            regex.push_str(&ere_escape(name));
+            rest = stripped;
+        } else if let Some(stripped) = rest.strip_prefix("{version}") {
+            regex.push_str("[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?");
+            rest = stripped;
+        } else {
+            regex.push_str("\\{");
+            rest = &rest[1..];
+        }
+    }
+    regex.push_str(&ere_escape(rest));
+    regex.push('$');
+    regex
+}
+
+fn ere_escape(text: &str) -> String {
+    let mut escaped = String::new();
+    for ch in text.chars() {
+        if ".^$*+?()[]{}|\\".contains(ch) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+fn shell_single_quote(text: &str) -> String {
+    text.replace('\'', "'\"'\"'")
 }
 
 /// Prompt for a generic package's build/publish commands and assemble its [`PackageEntry`].
@@ -1013,6 +1112,26 @@ impl InitPrompt for StdinInitPrompt {
             Ok(ChangelogStrategy::Generated)
         }
     }
+
+    fn prompt_github_release_notes(&self) -> Result<GithubReleaseNotes> {
+        let ans = Select::new(
+            "What should GitHub Release descriptions contain?",
+            vec![
+                "Auto-generate with GitHub release notes",
+                "Copy the curated CHANGELOG.md section",
+                "Semantic-style commit list since the last matching tag",
+            ],
+        )
+        .prompt()?;
+
+        if ans.starts_with("Copy") {
+            Ok(GithubReleaseNotes::CuratedChangelog)
+        } else if ans.starts_with("Semantic") {
+            Ok(GithubReleaseNotes::SemanticCommits)
+        } else {
+            Ok(GithubReleaseNotes::AutoGenerate)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1110,6 +1229,9 @@ mod tests {
         fn prompt_changelog_strategy(&self) -> Result<ChangelogStrategy> {
             Ok(ChangelogStrategy::Curated)
         }
+        fn prompt_github_release_notes(&self) -> Result<GithubReleaseNotes> {
+            Ok(GithubReleaseNotes::AutoGenerate)
+        }
     }
 
     fn pkg(name: &str, publishable: bool) -> Pkg {
@@ -1195,6 +1317,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
             packages: vec![],
@@ -1220,6 +1343,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
             packages: vec![npm_publish("docs-site")],
@@ -1238,6 +1362,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
             packages: vec![cargo_build_only("opentf-release")],
@@ -1264,12 +1389,59 @@ mod tests {
     }
 
     #[test]
+    fn github_release_can_copy_curated_changelog_notes() {
+        let config = ReleaseConfig {
+            snapshot_tag: None,
+            tag_format: "v{version}".to_string(),
+            provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            github_release_notes: GithubReleaseNotes::CuratedChangelog,
+            hooks: crate::config::Hooks::default(),
+            adapters: vec![Ecosystem::Cargo],
+            packages: vec![cargo_build_only("otf-release")],
+        };
+        let out = render_workflow(&config);
+
+        assert!(out.contains("awk -v version=\"$version\""));
+        assert!(out.contains("' CHANGELOG.md | sed '/./,$!d' > \"$notes_file\""));
+        assert!(out.contains("notes_arg=(--notes-file \"$notes_file\")"));
+        assert!(out.contains("notes_arg=(--generate-notes)"));
+        assert!(out.contains(
+            "gh release create \"$tag\" --target main --title \"$tag\" \"${notes_arg[@]}\""
+        ));
+    }
+
+    #[test]
+    fn github_release_can_use_semantic_commit_notes_since_matching_tag() {
+        let config = ReleaseConfig {
+            snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
+            provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            github_release_notes: GithubReleaseNotes::SemanticCommits,
+            hooks: crate::config::Hooks::default(),
+            adapters: vec![Ecosystem::Cargo],
+            packages: vec![cargo_build_only("otf-release")],
+        };
+        let out = render_workflow(&config);
+
+        assert!(
+            out.contains("grep -E '^otf-release@[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$'")
+        );
+        assert!(out.contains(
+            "git log --no-merges --pretty=format:'- %s (%h)' \"$range\" > \"$notes_file\""
+        ));
+        assert!(out.contains("notes_arg=(--notes-file \"$notes_file\")"));
+    }
+
+    #[test]
     fn generic_build_only_renders_no_toolchain_and_manifest_version() {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
             packages: vec![generic_pkg("release", None)],
@@ -1294,6 +1466,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
             packages: vec![cargo_build_only("cli-a"), cargo_build_only("cli-b")],
@@ -1315,6 +1488,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
             packages: vec![generic_pkg("jsr-lib", Some("npx jsr publish"))],
@@ -1338,6 +1512,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             packages: vec![cargo_build_only("web-compiler"), npm_publish("docs-site")],

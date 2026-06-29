@@ -24,13 +24,7 @@ jobs:
             echo "should_release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          tag="v$version"
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "Tag $tag already exists; skipping build."
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-          fi
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
 
   build-otf-release:
     needs: [check-release]
@@ -79,23 +73,39 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v${{ needs.check-release.outputs.version }}"
+          version="${{ needs.check-release.outputs.version }}"
+          tag="v$version"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag already exists; nothing to do."
-            exit 0
-          fi
-          shopt -s globstar
-          mkdir -p .flat-artifacts
-          for file in .artifacts/**/*; do
-            if [ -f "$file" ]; then
-              dir_name=$(basename "$(dirname "$file")")
-              file_name=$(basename "$file")
-              ext="${file_name##*.}"
-              if [ "$ext" = "$file_name" ]; then
-                mv "$file" ".flat-artifacts/${dir_name}"
-              else
-                mv "$file" ".flat-artifacts/${dir_name}.${ext}"
-              fi
+          else
+            notes_file="$(mktemp)"
+            if [ -f CHANGELOG.md ]; then
+              awk -v version="$version" '
+                $0 ~ "^## \\[?" version "\\]?" { in_section=1; next }
+                in_section && /^## / { exit }
+                in_section { print }
+              ' CHANGELOG.md | sed '/./,$!d' > "$notes_file"
             fi
-          done
-          gh release create "$tag" --target main --title "$tag" --generate-notes .flat-artifacts/*
+            if [ -s "$notes_file" ]; then
+              notes_arg=(--notes-file "$notes_file")
+            else
+              echo "No CHANGELOG.md notes found for $version; using GitHub generated notes."
+              notes_arg=(--generate-notes)
+            fi
+            rm -rf ".flat-artifacts-otf-release"
+            mkdir -p ".flat-artifacts-otf-release"
+            shopt -s nullglob globstar
+            for file in .artifacts/otf-release*/**/*; do
+              if [ -f "$file" ]; then
+                dir_name=$(basename "$(dirname "$file")")
+                file_name=$(basename "$file")
+                ext="${file_name##*.}"
+                if [ "$ext" = "$file_name" ]; then
+                  cp "$file" ".flat-artifacts-otf-release/${dir_name}"
+                else
+                  cp "$file" ".flat-artifacts-otf-release/${dir_name}.${ext}"
+                fi
+              fi
+            done
+            gh release create "$tag" --target main --title "$tag" "${notes_arg[@]}" .flat-artifacts-otf-release/*
+          fi

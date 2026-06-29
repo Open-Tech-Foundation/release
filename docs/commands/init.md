@@ -39,6 +39,9 @@ otf-release init [--force]
    re-running warns before overwrite (`--force` to replace).
 6. **Choose a global git tag format**. The default is `v{version}`; use `{name}@{version}` if the
    repo needs package-scoped tags.
+7. **Choose what GitHub Release descriptions contain** for `build-only` packages:
+   auto-generated GitHub notes, the curated root `CHANGELOG.md` release section, or a
+   semantic-style commit list since the previous matching configured tag.
 
 ## `release.toml`
 
@@ -56,6 +59,9 @@ matrix    = true
 targets   = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
 command   = "cargo build --release -p opentf-release --target ${{ matrix.target }}"
 artifacts = "target/${{ matrix.target }}/release/otf-release*"
+
+# "auto-generate" | "curated-changelog" | "semantic-commits"
+github_release_notes = "auto-generate"
 ```
 
 ## Generated workflow shape
@@ -68,7 +74,7 @@ From the config, `init` emits jobs:
   once, and the CLI loops the enabled adapters internally;
 - a **`github-release`** job when any package is `build-only` — attaches its staged artifacts to a
   GitHub Release tagged from `tag_format`, idempotently. The default `GITHUB_TOKEN` +
-  `contents: write`.
+  `contents: write`. Its release body follows the global `github_release_notes` setting.
 
 ## Explicit caveats (surfaced to the user)
 

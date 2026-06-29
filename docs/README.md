@@ -24,6 +24,7 @@ polyglot monorepos.
 | [commands/version.md](./commands/version.md) | The interactive, local `version` command. |
 | [commands/publish.md](./commands/publish.md) | The non-interactive, CI `publish` command. |
 | [commands/init.md](./commands/init.md) | Interactive setup: writes `release.toml`, generates `release.yml`. |
+| [commands/config.md](./commands/config.md) | Interactive editor for `release.toml`. |
 | [configuration.md](./configuration.md) | The `release.toml` schema — the committed source of truth. |
 | [adapters/overview.md](./adapters/overview.md) | The `Adapter` trait and domain types. |
 | [adapters/npm.md](./adapters/npm.md) | The npm adapter — rules, gotchas, commands. |

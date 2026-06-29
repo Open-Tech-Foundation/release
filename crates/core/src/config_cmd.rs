@@ -4,8 +4,8 @@ use anyhow::Result;
 use inquire::{MultiSelect, Select, Text};
 
 use crate::config::{
-    format_tag, ChangelogStrategy, Ecosystem, Mode, PackageEntry, ReleaseConfig, Target,
-    DEFAULT_VERSION_FIELD,
+    format_tag, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode, PackageEntry,
+    ReleaseConfig, Target, DEFAULT_VERSION_FIELD,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +44,7 @@ pub enum GlobalField {
     SnapshotTag,
     TagFormat,
     ChangelogStrategy,
+    GithubReleaseNotes,
     Back,
 }
 
@@ -56,6 +57,7 @@ pub trait ConfigPrompt {
     fn mode(&self, current: Mode) -> Result<Mode>;
     fn global_field(&self) -> Result<GlobalField>;
     fn changelog_strategy(&self, current: &ChangelogStrategy) -> Result<ChangelogStrategy>;
+    fn github_release_notes(&self, current: &GithubReleaseNotes) -> Result<GithubReleaseNotes>;
     fn text(&self, prompt: &str, current: &str) -> Result<String>;
 }
 
@@ -182,6 +184,7 @@ impl ConfigPrompt for StdinConfigPrompt {
             "Snapshot tag",
             "Tag format",
             "Changelog strategy",
+            "GitHub Release notes",
             "Back",
         ];
         Ok(
@@ -190,6 +193,7 @@ impl ConfigPrompt for StdinConfigPrompt {
                 "Snapshot tag" => GlobalField::SnapshotTag,
                 "Tag format" => GlobalField::TagFormat,
                 "Changelog strategy" => GlobalField::ChangelogStrategy,
+                "GitHub Release notes" => GlobalField::GithubReleaseNotes,
                 _ => GlobalField::Back,
             },
         )
@@ -208,6 +212,25 @@ impl ConfigPrompt for StdinConfigPrompt {
             {
                 "generated" => ChangelogStrategy::Generated,
                 _ => ChangelogStrategy::Curated,
+            },
+        )
+    }
+
+    fn github_release_notes(&self, current: &GithubReleaseNotes) -> Result<GithubReleaseNotes> {
+        let choices = vec!["auto-generate", "curated-changelog", "semantic-commits"];
+        let default = match current {
+            GithubReleaseNotes::AutoGenerate => 0,
+            GithubReleaseNotes::CuratedChangelog => 1,
+            GithubReleaseNotes::SemanticCommits => 2,
+        };
+        Ok(
+            match Select::new("GitHub Release notes:", choices)
+                .with_starting_cursor(default)
+                .prompt()?
+            {
+                "curated-changelog" => GithubReleaseNotes::CuratedChangelog,
+                "semantic-commits" => GithubReleaseNotes::SemanticCommits,
+                _ => GithubReleaseNotes::AutoGenerate,
             },
         )
     }
@@ -341,6 +364,11 @@ fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfi
             config.changelog_strategy = prompt.changelog_strategy(&config.changelog_strategy)?;
             save(root, config)
         }
+        GlobalField::GithubReleaseNotes => {
+            config.github_release_notes =
+                prompt.github_release_notes(&config.github_release_notes)?;
+            save(root, config)
+        }
         GlobalField::Back => Ok(()),
     }
 }
@@ -409,6 +437,7 @@ mod tests {
         mode: RefCell<Mode>,
         global_field: RefCell<GlobalField>,
         strategy: RefCell<ChangelogStrategy>,
+        github_release_notes: RefCell<GithubReleaseNotes>,
         text: RefCell<Vec<String>>,
     }
 
@@ -421,6 +450,7 @@ mod tests {
                 mode: RefCell::new(Mode::BuildOnly),
                 global_field: RefCell::new(GlobalField::Back),
                 strategy: RefCell::new(ChangelogStrategy::Curated),
+                github_release_notes: RefCell::new(GithubReleaseNotes::AutoGenerate),
                 text: RefCell::new(Vec::new()),
             }
         }
@@ -465,6 +495,13 @@ mod tests {
             Ok(self.strategy.borrow().clone())
         }
 
+        fn github_release_notes(
+            &self,
+            _current: &GithubReleaseNotes,
+        ) -> Result<GithubReleaseNotes> {
+            Ok(self.github_release_notes.borrow().clone())
+        }
+
         fn text(&self, _prompt: &str, _current: &str) -> Result<String> {
             Ok(self.text.borrow_mut().remove(0))
         }
@@ -507,6 +544,7 @@ mod tests {
             actions: RefCell::new(vec![ConfigAction::GlobalSettings, ConfigAction::Exit]),
             global_field: RefCell::new(field),
             strategy: RefCell::new(ChangelogStrategy::Generated),
+            github_release_notes: RefCell::new(GithubReleaseNotes::CuratedChangelog),
             text: RefCell::new(text.into_iter().map(str::to_string).collect()),
             ..FakePrompt::default()
         }
@@ -615,5 +653,16 @@ mod tests {
         .unwrap();
         cfg = ReleaseConfig::load(tmp.path()).unwrap();
         assert_eq!(cfg.changelog_strategy, ChangelogStrategy::Generated);
+
+        orchestrate_with_prompt(
+            tmp.path(),
+            &global_prompt(GlobalField::GithubReleaseNotes, vec![]),
+        )
+        .unwrap();
+        cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.github_release_notes,
+            GithubReleaseNotes::CuratedChangelog
+        );
     }
 }

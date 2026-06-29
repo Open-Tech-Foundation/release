@@ -27,7 +27,9 @@ check-release
   registry-publish packages (`build-only` ones are skipped).
 - **`github-release`** — present when any package is `build-only`. Downloads the staged artifacts
   and attaches each package's artifacts to a GitHub Release tagged from `release.toml`'s
-  `tag_format`.
+  `tag_format`. The release body follows `github_release_notes`: GitHub-generated notes,
+  curated root `CHANGELOG.md` notes for the released version, or a semantic-style commit list
+  since the previous matching configured tag.
   **No registry push.**
 
 Trigger: a merge to `main` (i.e. merging a release PR produced by
@@ -57,7 +59,8 @@ build-<pkg>  (cross-compile each target on its runner)  ──needs──▶  gi
 - **`github-release`** — `needs:` the build job(s); downloads the artifacts and runs `gh release
   create <tag>` using `tag_format` for each build-only package. The version line carries an
   `# edit me` marker when the generator cannot infer a source. The step is **idempotent**
-  (`gh release view` skips an existing release).
+  (`gh release view` skips an existing release). The release body is generated from the global
+  `github_release_notes` setting.
   **No crates.io, no `cargo publish`** — the artifacts are how users install the binary per OS.
 
 Auth: the default `GITHUB_TOKEN` with `contents: write` (to create the tag and Release). The git

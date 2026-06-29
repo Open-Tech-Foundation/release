@@ -14,6 +14,9 @@ adapters = ["npm", "crates.io"]
 # Global git tag format. Supports {version} and optional {name}.
 tag_format = "v{version}"
 
+# GitHub Release body source for build-only packages.
+github_release_notes = "auto-generate"
+
 # Global lifecycle hooks (optional). Array of shell commands executed in order.
 [hooks]
 pre_version = ["npm run lint", "node scripts/validate.js"]
@@ -46,6 +49,7 @@ artifacts = "dist/**"
 | --- | --- |
 | `adapters` | Enabled ecosystems: `"npm"`, `"crates.io"`, `"generic"`. Drives which publish/release jobs `init` generates. |
 | `tag_format` | Global git tag format used by `version`, preflight, `publish`, and generated GitHub Release jobs. Must include `{version}`; may include `{name}` for package-scoped tags, e.g. `{name}@{version}`. |
+| `github_release_notes` | GitHub Release body source for `build-only` packages: `"auto-generate"` lets GitHub generate notes, `"curated-changelog"` copies the released section from root `CHANGELOG.md`, and `"semantic-commits"` writes a commit list since the previous matching `tag_format` tag. `init` asks for this and `config` can edit it later. |
 | `[[package]]` | A package with an explicit build step. |
 | `name` | The package name as discovered by its adapter. |
 | `adapter` | The owning ecosystem (`"npm"` / `"crates.io"` / `"generic"`). |

@@ -1,5 +1,6 @@
 adapters = ["generic"]
 tag_format = "v{version}"
+github_release_notes = "curated-changelog"
 
 [[package]]
 name = "otf-release"

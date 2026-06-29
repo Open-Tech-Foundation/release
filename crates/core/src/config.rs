@@ -68,6 +68,19 @@ pub const DEFAULT_VERSION_FIELD: &str = "version";
 /// The default git tag format for releases.
 pub const DEFAULT_TAG_FORMAT: &str = "v{version}";
 
+/// How generated GitHub Releases should get their body text.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GithubReleaseNotes {
+    /// Let GitHub generate the body from merged PRs and commits.
+    #[default]
+    AutoGenerate,
+    /// Copy the dated section for the released version from `CHANGELOG.md`.
+    CuratedChangelog,
+    /// Build a commit-subject list from the previous matching configured tag.
+    SemanticCommits,
+}
+
 /// What `publish`/CI does with a package after its build step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
@@ -174,6 +187,9 @@ pub struct ReleaseConfig {
     /// How the changelog is managed.
     #[serde(default)]
     pub changelog_strategy: ChangelogStrategy,
+    /// How GitHub Release bodies are generated in CI.
+    #[serde(default)]
+    pub github_release_notes: GithubReleaseNotes,
 }
 
 /// The strategy for managing changelogs.
@@ -205,6 +221,7 @@ impl Default for ReleaseConfig {
             tag_format: default_tag_format(),
             provider: default_provider(),
             changelog_strategy: ChangelogStrategy::default(),
+            github_release_notes: GithubReleaseNotes::default(),
         }
     }
 }
@@ -270,6 +287,7 @@ mod tests {
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             hooks: Hooks::default(),
             packages: vec![
@@ -309,9 +327,11 @@ mod tests {
         assert!(text.contains("adapter = \"crates.io\""));
         assert!(text.contains("mode = \"build-only\""));
         assert!(text.contains("mode = \"publish\""));
+        assert!(text.contains("github_release_notes = \"auto-generate\""));
 
         let back: ReleaseConfig = toml::from_str(&text).unwrap();
         assert_eq!(back.adapters, cfg.adapters);
+        assert_eq!(back.github_release_notes, GithubReleaseNotes::AutoGenerate);
         assert_eq!(back.packages.len(), 2);
         assert_eq!(back.build_only_names(), vec!["web-compiler".to_string()]);
     }
@@ -324,6 +344,7 @@ mod tests {
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
             adapters: vec![Ecosystem::Cargo],
             hooks: Hooks::default(),
             packages: vec![],
