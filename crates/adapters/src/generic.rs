@@ -201,10 +201,9 @@ fn read_toml_version(path: &Path, text: &str, field: &str) -> Result<String> {
     let doc = text
         .parse::<DocumentMut>()
         .with_context(|| format!("parsing TOML {}", path.display()))?;
-    let value = field_path(field)
-        .iter()
-        .try_fold(doc.as_item(), |current, key| current.get(*key))
-        .and_then(Item::as_str)
+    let path_parts = field_path(field);
+    let value = toml_string_at(doc.as_item(), &path_parts)
+        .or_else(|| cargo_toml_version_field(path, field, doc.as_item()))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "{}: could not find string TOML field `{}`",
@@ -220,23 +219,80 @@ fn write_toml_version(path: &Path, text: &str, field: &str, new: &str) -> Result
         .parse::<DocumentMut>()
         .with_context(|| format!("parsing TOML {}", path.display()))?;
     let path_parts = field_path(field);
-    let mut current = doc.as_item_mut();
-    for key in &path_parts[..path_parts.len() - 1] {
-        current = current.get_mut(*key).ok_or_else(|| {
-            anyhow::anyhow!("{}: could not find TOML table `{}`", path.display(), key)
-        })?;
+    if is_legacy_cargo_version_field(path, field) {
+        if !set_toml_string_at_if_string(doc.as_item_mut(), &path_parts, new)?
+            && !set_cargo_toml_version_field(path, field, doc.as_item_mut(), new)?
+        {
+            bail!("{}: no TOML field `{}` to bump", path.display(), field);
+        }
+    } else if !set_toml_string_at(doc.as_item_mut(), &path_parts, new)? {
+        if !set_cargo_toml_version_field(path, field, doc.as_item_mut(), new)? {
+            bail!("{}: no TOML field `{}` to bump", path.display(), field);
+        }
     }
-    let leaf = path_parts
-        .last()
-        .ok_or_else(|| anyhow::anyhow!("{}: empty version field", path.display()))?;
-    let Some(slot) = current.get_mut(*leaf) else {
-        bail!("{}: no TOML field `{}` to bump", path.display(), field);
+    Ok(doc.to_string())
+}
+
+fn toml_string_at<'a>(item: &'a Item, path: &[&str]) -> Option<&'a str> {
+    path.iter()
+        .try_fold(item, |current, key| current.get(*key))
+        .and_then(Item::as_str)
+}
+
+fn toml_item_at_mut<'a>(mut item: &'a mut Item, path: &[&str]) -> Option<&'a mut Item> {
+    for key in path {
+        item = item.get_mut(*key)?;
+    }
+    Some(item)
+}
+
+fn set_toml_string_at(item: &mut Item, path: &[&str], new: &str) -> Result<bool> {
+    let Some(slot) = toml_item_at_mut(item, path) else {
+        return Ok(false);
     };
     if !slot.is_str() {
-        bail!("{}: TOML field `{}` is not a string", path.display(), field);
+        bail!("TOML field `{}` is not a string", path.join("."));
     }
     *slot = value(new);
-    Ok(doc.to_string())
+    Ok(true)
+}
+
+fn set_toml_string_at_if_string(item: &mut Item, path: &[&str], new: &str) -> Result<bool> {
+    let Some(slot) = toml_item_at_mut(item, path) else {
+        return Ok(false);
+    };
+    if !slot.is_str() {
+        return Ok(false);
+    }
+    *slot = value(new);
+    Ok(true)
+}
+
+fn cargo_toml_version_field<'a>(path: &Path, field: &str, item: &'a Item) -> Option<&'a str> {
+    if !is_legacy_cargo_version_field(path, field) {
+        return None;
+    }
+    toml_string_at(item, &["package", "version"])
+        .or_else(|| toml_string_at(item, &["workspace", "package", "version"]))
+}
+
+fn set_cargo_toml_version_field(
+    path: &Path,
+    field: &str,
+    item: &mut Item,
+    new: &str,
+) -> Result<bool> {
+    if !is_legacy_cargo_version_field(path, field) {
+        return Ok(false);
+    }
+    if set_toml_string_at_if_string(item, &["package", "version"], new)? {
+        return Ok(true);
+    }
+    set_toml_string_at(item, &["workspace", "package", "version"], new)
+}
+
+fn is_legacy_cargo_version_field(path: &Path, field: &str) -> bool {
+    field == "version" && path.file_name().is_some_and(|name| name == "Cargo.toml")
 }
 
 fn read_text_version(path: &Path, text: &str, field: &str) -> Result<String> {
@@ -538,6 +594,51 @@ mod tests {
         a.write_version(&p, "0.5.0").unwrap();
         let after = std::fs::read_to_string(tmp.path().join("Project.toml")).unwrap();
         assert!(after.contains("version = \"0.5.0\""), "got: {after}");
+    }
+
+    #[test]
+    fn cargo_toml_version_field_supports_workspace_package_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\nversion = \"0.2.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let a = GenericAdapter::new(tmp.path(), vec![pkg("tool", "Cargo.toml", None)]);
+        let p = a.discover_packages().unwrap().pop().unwrap();
+        assert_eq!(p.version, "0.2.0");
+
+        a.write_version(&p, "0.3.0").unwrap();
+        let after = std::fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap();
+        assert!(
+            after.contains("[workspace.package]\nversion = \"0.3.0\""),
+            "got: {after}"
+        );
+        assert!(after.contains("edition = \"2021\""), "got: {after}");
+    }
+
+    #[test]
+    fn explicit_toml_version_field_path_still_works() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace.package]\nversion = \"0.2.0\"\n",
+        )
+        .unwrap();
+        let a = GenericAdapter::new(
+            tmp.path(),
+            vec![pkg_with_field(
+                "tool",
+                "Cargo.toml",
+                "workspace.package.version",
+            )],
+        );
+        let p = a.discover_packages().unwrap().pop().unwrap();
+        assert_eq!(p.version, "0.2.0");
+
+        a.write_version(&p, "0.3.0").unwrap();
+        let after = std::fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap();
+        assert!(after.contains("version = \"0.3.0\""), "got: {after}");
     }
 
     #[test]

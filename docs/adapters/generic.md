@@ -14,6 +14,9 @@ a release PR, and a publish/release workflow scaffold. Implemented in
   (defaults to `version`). The adapter reads it (this is the **git-tag source**) and bumps it
   **in place** with a targeted text replace, preserving the file's formatting. Works for any
   `"version": "x.y.z"` (JSON) or `version = "x.y.z"` (TOML) style manifest.
+  For a root `Cargo.toml`, the legacy `version_field = "version"` setting also reads/writes
+  `[package].version` or `[workspace.package].version`; explicit paths such as
+  `workspace.package.version` work too.
 - **Publish** is an optional shell command — `publish` (e.g. `npx jsr publish`). When set, the
   package is `publish` mode and ships through `otf-release publish`, which runs your command and
   then tags + creates the GitHub Release. When omitted, the package is `build-only`.
@@ -60,8 +63,10 @@ not just unsupported ones:
 A `Cargo.toml`/`package.json` shows up here too — pick the generic adapter when you want custom
 commands for it instead of the cargo/npm adapter's built-in flow. (A crate that inherits
 `version.workspace = true` has no literal version and is skipped.) You can still **add packages by
-hand** for anything the scan misses, or edit `release.toml` directly. Scanning skips `node_modules`,
-`target`, hidden dirs, and other build output. Implemented in `crates/core/src/discover.rs`.
+hand** for anything the scan misses, or edit `release.toml` directly; for a root Cargo workspace
+manifest, `manifest = "Cargo.toml"` with `version_field = "version"` tracks
+`[workspace.package].version`. Scanning skips `node_modules`, `target`, hidden dirs, and other
+build output. Implemented in `crates/core/src/discover.rs`.
 
 ## In the generated workflow
 
