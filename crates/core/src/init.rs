@@ -18,7 +18,8 @@ use inquire::{MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{
-    ChangelogStrategy, Ecosystem, Mode, PackageEntry, ReleaseConfig, Target, DEFAULT_VERSION_FIELD,
+    ChangelogStrategy, Ecosystem, Mode, PackageEntry, ReleaseConfig, Target, DEFAULT_TAG_FORMAT,
+    DEFAULT_VERSION_FIELD,
 };
 use crate::discover::{scan_generic_candidates, GenericCandidate};
 
@@ -136,6 +137,8 @@ pub trait InitPrompt {
     fn confirm_overwrite(&self, path: &Path) -> Result<bool>;
     /// Ask for the tag to use for automated snapshot releases.
     fn snapshot_tag(&self) -> Result<String>;
+    /// Ask for the git tag format used by version/preflight/publish.
+    fn tag_format(&self) -> Result<String>;
     /// Ask for the git hosting provider.
     fn prompt_provider(&self) -> Result<String>;
     /// Ask for the changelog management strategy.
@@ -188,11 +191,15 @@ pub fn orchestrate(
         packages.extend(prompt.generic_packages(&found)?);
     }
 
+    let tag_format = prompt.tag_format()?;
+    crate::config::format_tag(&tag_format, "package", "1.2.3")?;
+
     let config = ReleaseConfig {
         hooks: crate::config::Hooks::default(),
         adapters: enabled,
         packages,
         snapshot_tag: Some(prompt.snapshot_tag()?),
+        tag_format,
         provider: prompt.prompt_provider()?,
         changelog_strategy: prompt.prompt_changelog_strategy()?,
     };
@@ -286,7 +293,7 @@ fn render_check_release_job(s: &mut String, version_cmd: &str) {
 ///   toolchains and runs `otf-release publish` once — it publishes only `publish`-mode packages
 ///   across every enabled ecosystem (npm, crates.io, generic),
 /// - a `github-release` job if any package is `build-only` — attaches its artifacts to
-///   package-scoped GitHub Releases (`name@X.Y.Z`), idempotently. **No registry push for
+///   GitHub Releases tagged from `tag_format`, idempotently. **No registry push for
 ///   build-only packages.**
 pub fn render_snapshot_workflow(config: &ReleaseConfig) -> String {
     let mut s = String::new();
@@ -385,7 +392,7 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
             .filter(|p| has_build(p))
             .map(|p| build_job(&p.name))
             .collect();
-        render_github_release(&mut s, &needs, &build_only);
+        render_github_release(&mut s, &needs, &build_only, &config.tag_format);
     }
 
     s
@@ -605,8 +612,13 @@ fn render_publish_job(s: &mut String, needs: &[String], npm: bool, cargo: bool, 
 }
 
 /// The GitHub Release job for `build-only` packages: attach each package's staged artifacts to a
-/// package-scoped tag (`name@X.Y.Z`), idempotently (skip an existing release). No registry push.
-fn render_github_release(s: &mut String, needs: &[String], build_only: &[&PackageEntry]) {
+/// configured release tag, idempotently (skip an existing release). No registry push.
+fn render_github_release(
+    s: &mut String,
+    needs: &[String],
+    build_only: &[&PackageEntry],
+    tag_format: &str,
+) {
     s.push_str("  github-release:\n");
     let mut actual_needs = vec!["check-release".to_string()];
     actual_needs.extend_from_slice(needs);
@@ -622,7 +634,10 @@ fn render_github_release(s: &mut String, needs: &[String], build_only: &[&Packag
     s.push_str("          version=\"${{ needs.check-release.outputs.version }}\"\n");
     for entry in build_only {
         let art_slug = slug(&entry.name);
-        s.push_str(&format!("          tag=\"{}@$version\"\n", entry.name));
+        s.push_str(&format!(
+            "          tag=\"{}\"\n",
+            workflow_tag_expr(tag_format, &entry.name)
+        ));
         s.push_str("          if gh release view \"$tag\" >/dev/null 2>&1; then\n");
         s.push_str("            echo \"Release $tag already exists; nothing to do.\"\n");
         s.push_str("          else\n");
@@ -660,6 +675,12 @@ fn render_github_release(s: &mut String, needs: &[String], build_only: &[&Packag
         }
         s.push_str("          fi\n");
     }
+}
+
+fn workflow_tag_expr(tag_format: &str, name: &str) -> String {
+    tag_format
+        .replace("{name}", name)
+        .replace("{version}", "$version")
 }
 
 /// Prompt for a generic package's build/publish commands and assemble its [`PackageEntry`].
@@ -948,6 +969,12 @@ impl InitPrompt for StdinInitPrompt {
         }
     }
 
+    fn tag_format(&self) -> Result<String> {
+        Ok(Text::new("Git tag format ({version}, optional {name}):")
+            .with_default(DEFAULT_TAG_FORMAT)
+            .prompt()?)
+    }
+
     fn prompt_provider(&self) -> Result<String> {
         loop {
             let ans = Select::new(
@@ -1074,6 +1101,9 @@ mod tests {
         fn snapshot_tag(&self) -> Result<String> {
             Ok("snapshot".to_string())
         }
+        fn tag_format(&self) -> Result<String> {
+            Ok(DEFAULT_TAG_FORMAT.to_string())
+        }
         fn prompt_provider(&self) -> Result<String> {
             Ok("github".to_string())
         }
@@ -1162,6 +1192,7 @@ mod tests {
     fn npm_only_renders_publish_job_no_release() {
         let config = ReleaseConfig {
             snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             hooks: crate::config::Hooks::default(),
@@ -1186,6 +1217,7 @@ mod tests {
     fn npm_package_entry_reads_workspace_package_version_by_name() {
         let config = ReleaseConfig {
             snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             hooks: crate::config::Hooks::default(),
@@ -1203,6 +1235,7 @@ mod tests {
     fn cargo_build_only_renders_github_release_no_registry() {
         let config = ReleaseConfig {
             snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             hooks: crate::config::Hooks::default(),
@@ -1234,6 +1267,7 @@ mod tests {
     fn generic_build_only_renders_no_toolchain_and_manifest_version() {
         let config = ReleaseConfig {
             snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             hooks: crate::config::Hooks::default(),
@@ -1257,6 +1291,7 @@ mod tests {
     fn multiple_build_only_packages_get_package_scoped_releases() {
         let config = ReleaseConfig {
             snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             hooks: crate::config::Hooks::default(),
@@ -1277,6 +1312,7 @@ mod tests {
     fn generic_publish_renders_publish_job_with_edit_me_toolchain() {
         let config = ReleaseConfig {
             snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             hooks: crate::config::Hooks::default(),
@@ -1299,6 +1335,7 @@ mod tests {
     fn polyglot_renders_one_publish_job_and_release() {
         let config = ReleaseConfig {
             snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             hooks: crate::config::Hooks::default(),
@@ -1338,6 +1375,7 @@ mod tests {
         assert_eq!(cfg.adapters, vec![Ecosystem::Cargo]);
         assert_eq!(cfg.packages.len(), 1);
         assert_eq!(cfg.build_only_names(), vec!["opentf-release".to_string()]);
+        assert_eq!(cfg.tag_format, DEFAULT_TAG_FORMAT);
 
         // workflow generated from it.
         let yml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();

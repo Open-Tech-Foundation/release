@@ -4,7 +4,8 @@ use anyhow::Result;
 use inquire::{MultiSelect, Select, Text};
 
 use crate::config::{
-    ChangelogStrategy, Ecosystem, Mode, PackageEntry, ReleaseConfig, Target, DEFAULT_VERSION_FIELD,
+    format_tag, ChangelogStrategy, Ecosystem, Mode, PackageEntry, ReleaseConfig, Target,
+    DEFAULT_VERSION_FIELD,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,7 @@ pub enum PackageField {
 pub enum GlobalField {
     Provider,
     SnapshotTag,
+    TagFormat,
     ChangelogStrategy,
     Back,
 }
@@ -175,11 +177,18 @@ impl ConfigPrompt for StdinConfigPrompt {
     }
 
     fn global_field(&self) -> Result<GlobalField> {
-        let choices = vec!["Provider", "Snapshot tag", "Changelog strategy", "Back"];
+        let choices = vec![
+            "Provider",
+            "Snapshot tag",
+            "Tag format",
+            "Changelog strategy",
+            "Back",
+        ];
         Ok(
             match Select::new("Which global setting?", choices).prompt()? {
                 "Provider" => GlobalField::Provider,
                 "Snapshot tag" => GlobalField::SnapshotTag,
+                "Tag format" => GlobalField::TagFormat,
                 "Changelog strategy" => GlobalField::ChangelogStrategy,
                 _ => GlobalField::Back,
             },
@@ -320,6 +329,12 @@ fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfi
         GlobalField::SnapshotTag => {
             let current = config.snapshot_tag.as_deref().unwrap_or("");
             config.snapshot_tag = optional_text(prompt.text("Snapshot tag:", current)?);
+            save(root, config)
+        }
+        GlobalField::TagFormat => {
+            let tag_format = prompt.text("Tag format:", &config.tag_format)?;
+            format_tag(&tag_format, "package", "1.2.3")?;
+            config.tag_format = tag_format;
             save(root, config)
         }
         GlobalField::ChangelogStrategy => {
@@ -584,6 +599,14 @@ mod tests {
         .unwrap();
         cfg = ReleaseConfig::load(tmp.path()).unwrap();
         assert_eq!(cfg.snapshot_tag.as_deref(), Some("canary"));
+
+        orchestrate_with_prompt(
+            tmp.path(),
+            &global_prompt(GlobalField::TagFormat, vec!["{name}@{version}"]),
+        )
+        .unwrap();
+        cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(cfg.tag_format, "{name}@{version}");
 
         orchestrate_with_prompt(
             tmp.path(),

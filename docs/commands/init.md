@@ -37,6 +37,8 @@ otf-release init [--force]
    [adapters/generic.md](../adapters/generic.md).
 5. **Persist `release.toml`** and **generate `release.yml`** from it. Both writes are guarded:
    re-running warns before overwrite (`--force` to replace).
+6. **Choose a global git tag format**. The default is `v{version}`; use `{name}@{version}` if the
+   repo needs package-scoped tags.
 
 ## `release.toml`
 
@@ -65,7 +67,7 @@ From the config, `init` emits jobs:
 - a single **`publish`** job when registry publishing is enabled — runs `otf-release publish`
   once, and the CLI loops the enabled adapters internally;
 - a **`github-release`** job when any package is `build-only` — attaches its staged artifacts to a
-  package-scoped GitHub Release (`name@X.Y.Z`), idempotently. The default `GITHUB_TOKEN` +
+  GitHub Release tagged from `tag_format`, idempotently. The default `GITHUB_TOKEN` +
   `contents: write`.
 
 ## Explicit caveats (surfaced to the user)

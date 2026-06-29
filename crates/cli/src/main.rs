@@ -226,6 +226,7 @@ fn main() -> Result<()> {
                 &publish::PublishOptions {
                     artifacts_dir,
                     dry_run,
+                    tag_format: config.tag_format.clone(),
                     skip,
                 },
                 &config.hooks,

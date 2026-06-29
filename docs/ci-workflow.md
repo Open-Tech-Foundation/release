@@ -26,7 +26,8 @@ check-release
   `otf-release publish` once; the CLI loops enabled adapters internally. It publishes only
   registry-publish packages (`build-only` ones are skipped).
 - **`github-release`** — present when any package is `build-only`. Downloads the staged artifacts
-  and attaches each package's artifacts to a package-scoped GitHub Release (`name@X.Y.Z`).
+  and attaches each package's artifacts to a GitHub Release tagged from `release.toml`'s
+  `tag_format`.
   **No registry push.**
 
 Trigger: a merge to `main` (i.e. merging a release PR produced by
@@ -54,13 +55,13 @@ build-<pkg>  (cross-compile each target on its runner)  ──needs──▶  gi
   maps `*windows*`→`windows-latest`, `*apple*`/`*darwin*`→`macos-latest`, else `ubuntu-latest`).
   Runs the entry's `command` and uploads its `artifacts` glob.
 - **`github-release`** — `needs:` the build job(s); downloads the artifacts and runs `gh release
-  create name@X.Y.Z` for each build-only package. The version line carries an `# edit me` marker
-  when the generator cannot infer a source. The step is **idempotent** (`gh release view` skips an
-  existing release).
+  create <tag>` using `tag_format` for each build-only package. The version line carries an
+  `# edit me` marker when the generator cannot infer a source. The step is **idempotent**
+  (`gh release view` skips an existing release).
   **No crates.io, no `cargo publish`** — the artifacts are how users install the binary per OS.
 
 Auth: the default `GITHUB_TOKEN` with `contents: write` (to create the tag and Release). The git
-package-scoped tag `name@X.Y.Z` is created by the Release step, on the merge commit.
+tag rendered from `tag_format` is created by the Release step, on the merge commit.
 
 ## npm specifics
 

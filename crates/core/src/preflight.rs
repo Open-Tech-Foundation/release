@@ -1,6 +1,7 @@
 //! Strict preflight gate — all-or-nothing, runs before any prompt or mutation.
 //!
-//! For every non-private package, state is derived from its last git tag `name@x.y.z`.
+//! For every non-private package, state is derived from its last git tag matching the configured
+//! tag format.
 //! A single violation collects *all* violations, prints them, and exits non-zero before
 //! any `release/*` branch is created or any file is written. See `docs/preflight.md`.
 
@@ -20,10 +21,21 @@ pub struct Violation {
 }
 
 /// Preflight behavior switches supplied by the caller.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone)]
 pub struct CheckOptions {
-    /// Permit publishable packages with no prior `name@x.y.z` tag.
+    /// Permit publishable packages with no prior matching release tag.
     pub allow_first_release: bool,
+    /// Configured git tag format.
+    pub tag_format: String,
+}
+
+impl Default for CheckOptions {
+    fn default() -> Self {
+        Self {
+            allow_first_release: false,
+            tag_format: crate::config::DEFAULT_TAG_FORMAT.to_string(),
+        }
+    }
 }
 
 /// Run the gate. `selected` is the set of package names the user chose to bump (empty when
@@ -55,7 +67,7 @@ pub fn check_with_options(
         let selected_for_bump = selected.iter().any(|name| name == &pkg.name);
         let pkg_dir = pkg.manifest_path.parent().unwrap_or_else(|| Path::new("."));
 
-        let violation = match repo.last_tag(&pkg.name)? {
+        let violation = match repo.last_tag(&pkg.name, &opts.tag_format)? {
             // First releases are explicit so accidentally untagged packages do not slip through.
             None if !opts.allow_first_release => {
                 Some("first release requires --first-release".to_string())
@@ -116,7 +128,7 @@ mod tests {
     }
 
     impl RepoState for FakeRepo {
-        fn last_tag(&self, pkg_name: &str) -> Result<Option<String>> {
+        fn last_tag(&self, pkg_name: &str, _: &str) -> Result<Option<String>> {
             Ok(self.tags.get(pkg_name).cloned())
         }
         fn commit_count_since(&self, tag: &str, _pkg_dir: &Path) -> Result<usize> {
@@ -230,6 +242,7 @@ mod tests {
             &[],
             CheckOptions {
                 allow_first_release: true,
+                ..Default::default()
             },
         )
         .unwrap();

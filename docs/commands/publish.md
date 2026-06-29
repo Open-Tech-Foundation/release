@@ -29,8 +29,8 @@ Implemented in `crates/core/src/publish.rs`. Triggered by a merge to `main` (see
    - `adapter.publish(pkg, staged_assets)` — where `staged_assets` is `<artifacts-dir>/<pkg>/`
      **if that directory exists on disk**, else `None` (registry-only). **State comes from
      disk, not config.**
-   - On success: push the git tag `name@x.y.z` and (optionally) create a GitHub Release from
-     the package's new changelog section.
+   - On success: push the git tag rendered from `release.toml`'s `tag_format` and (optionally)
+     create a GitHub Release from the package's new changelog section.
 
 ## Failure model — halt, never roll back
 

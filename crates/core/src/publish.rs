@@ -10,17 +10,20 @@ use anyhow::Result;
 
 use crate::adapter::Adapter;
 use crate::changelog;
+use crate::config::{format_tag, DEFAULT_TAG_FORMAT};
 use crate::forge::{Forge, GhForge};
 use crate::git::{GitOps, GitRepo};
 use crate::graph::Graph;
 
 /// Options for a `publish` run.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PublishOptions {
     /// Root of the staged-artifact tree (`.artifacts/`), if the workflow staged binaries.
     pub artifacts_dir: Option<PathBuf>,
     /// Resolve the plan and print it, but do not publish or push tags.
     pub dry_run: bool,
+    /// Git tag format for releases.
+    pub tag_format: String,
     /// Package names to skip — `build-only` packages from `release.toml`. They ship via the
     /// GitHub Release the workflow creates, never through a registry, so `publish` leaves them
     /// alone even though their manifests look publishable.
@@ -35,6 +38,17 @@ pub fn run(
     hooks: &crate::config::Hooks,
 ) -> Result<()> {
     run_many(&[adapter], root, opts, hooks)
+}
+
+impl Default for PublishOptions {
+    fn default() -> Self {
+        Self {
+            artifacts_dir: None,
+            dry_run: false,
+            tag_format: DEFAULT_TAG_FORMAT.to_string(),
+            skip: Vec::new(),
+        }
+    }
 }
 
 /// Wire up the real git/forge and run the flow across every enabled adapter.
@@ -141,7 +155,7 @@ pub fn orchestrate_many(
                 .filter(|path| path.exists());
             plan.adapter.publish(&pkg, staged.as_deref())?; // halt on failure (no rollback)
 
-            let tag = format!("{}@{}", pkg.name, pkg.version);
+            let tag = format_tag(&opts.tag_format, &pkg.name, &pkg.version)?;
             git.create_tag(&tag)?;
             git.push_tag(&tag)?;
 

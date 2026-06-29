@@ -1,8 +1,8 @@
 //! Git access for preflight (and, later, the `version` branch/commit flow).
 //!
-//! Preflight derives each package's state from its last version tag `name@x.y.z`. That access
-//! is behind the [`RepoState`] trait so the rule engine can be unit-tested with a fake, while
-//! [`GitRepo`] provides the real `git`-backed implementation.
+//! Preflight derives each package's state from its last version tag matching the configured tag
+//! format. That access is behind the [`RepoState`] trait so the rule engine can be unit-tested
+//! with a fake, while [`GitRepo`] provides the real `git`-backed implementation.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,8 +11,9 @@ use anyhow::{bail, Context, Result};
 
 /// Read-only repository state preflight needs.
 pub trait RepoState {
-    /// The highest-versioned tag `name@x.y.z` for a package, or `None` if it has never shipped.
-    fn last_tag(&self, pkg_name: &str) -> Result<Option<String>>;
+    /// The highest-versioned tag matching the configured tag format, or `None` if it has never
+    /// shipped.
+    fn last_tag(&self, pkg_name: &str, tag_format: &str) -> Result<Option<String>>;
 
     /// Number of commits since `tag` that touched `pkg_dir` (scoped to the package directory,
     /// so shared root files like the lockfile or CI config don't falsely dirty it).
@@ -39,13 +40,12 @@ pub fn short_hash(root: &Path) -> Result<String> {
 }
 
 impl RepoState for GitRepo {
-    fn last_tag(&self, pkg_name: &str) -> Result<Option<String>> {
-        let prefix = format!("{pkg_name}@");
-        let stdout = run_git(&self.root, &["tag", "--list", &format!("{prefix}*")])?;
+    fn last_tag(&self, pkg_name: &str, tag_format: &str) -> Result<Option<String>> {
+        let stdout = run_git(&self.root, &["tag", "--list"])?;
         let best = stdout
             .lines()
             .filter_map(|line| {
-                let version = line.strip_prefix(&prefix)?;
+                let version = version_from_tag(line, tag_format, pkg_name)?;
                 parse_semver(version).map(|sv| (sv, line.to_string()))
             })
             .max_by_key(|(sv, _)| *sv)
@@ -168,6 +168,13 @@ fn run_git(root: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+fn version_from_tag<'a>(tag: &'a str, tag_format: &str, pkg_name: &str) -> Option<&'a str> {
+    let (before_version, after_version) = tag_format.split_once("{version}")?;
+    let prefix = before_version.replace("{name}", pkg_name);
+    let suffix = after_version.replace("{name}", pkg_name);
+    tag.strip_prefix(&prefix)?.strip_suffix(&suffix)
+}
+
 /// Parse `x.y.z` (ignoring any pre-release suffix, which v1 doesn't produce) for tag ordering.
 fn parse_semver(version: &str) -> Option<(u64, u64, u64)> {
     let core = version.split('-').next().unwrap_or(version);
@@ -232,8 +239,17 @@ mod tests {
         git(root, &["tag", "a@1.10.0"]); // numeric, not lexical, ordering
 
         let repo = GitRepo::new(root);
-        assert_eq!(repo.last_tag("a").unwrap().as_deref(), Some("a@1.10.0"));
-        assert_eq!(repo.last_tag("ghost").unwrap(), None);
+        assert_eq!(
+            repo.last_tag("a", "{name}@{version}").unwrap().as_deref(),
+            Some("a@1.10.0")
+        );
+        assert_eq!(repo.last_tag("ghost", "{name}@{version}").unwrap(), None);
+        git(root, &["tag", "v2.0.0"]);
+        git(root, &["tag", "v1.9.0"]);
+        assert_eq!(
+            repo.last_tag("a", "v{version}").unwrap().as_deref(),
+            Some("v2.0.0")
+        );
 
         // A commit touching only a root file must NOT count against the package.
         write(root.join("pnpm-lock.yaml"), "lock: 1\n");

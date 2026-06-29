@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Added
+- **config** — Added global `tag_format` to `release.toml` (default `v{version}`) and exposed it
+  in `init` and `config`, so preflight, publish, and generated GitHub Release jobs use the repo's
+  configured tag convention instead of an implicit package-scoped format.
+
 ### Fixed
 - **version** — Removed the startup `gh` confirmation prompt and moved confirmation to a final
   review that shows the computed plan, changed files, and full git diff before commit/push/PR.

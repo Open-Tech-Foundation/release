@@ -1,4 +1,5 @@
 adapters = ["generic"]
+tag_format = "v{version}"
 
 [[package]]
 name = "otf-release"

@@ -14,11 +14,15 @@ Every violation is collected and printed at once; the process exits non-zero **b
 
 ## State derivation
 
-For every **non-private** package, state comes from its last git tag `name@x.y.z`:
+For every **non-private** package, state comes from its last git tag matching
+`release.toml`'s global `tag_format`:
 
 ```
 git log <tag>.. -- <pkg path>
 ```
+
+The default format is `v{version}`. Repos that want package-scoped tags can set
+`tag_format = "{name}@{version}"`.
 
 The diff is **scoped to the package directory** so shared root files (lockfile, CI config)
 don't falsely mark a package as changed.
@@ -39,7 +43,7 @@ don't falsely mark a package as changed.
 ```
 release aborted — preflight violations:
 
-  core: 3 commits since core@1.2.0 but [Unreleased] is empty
+  core: 3 commits since v1.2.0 but [Unreleased] is empty
   cli:  selected for bump but [Unreleased] is empty
 
 no release/* branch created, no files written.

@@ -137,6 +137,13 @@ impl GitOps for FakeGit {
 struct FakeForge {
     releases: RefCell<Vec<String>>,
 }
+
+fn package_tag_options() -> PublishOptions {
+    PublishOptions {
+        tag_format: "{name}@{version}".to_string(),
+        ..PublishOptions::default()
+    }
+}
 impl Forge for FakeForge {
     fn open_pr(&self, _branch: &str, _title: &str, _body: &str) -> Result<()> {
         Ok(())
@@ -265,7 +272,7 @@ fn publishes_in_topo_order_and_is_idempotent() {
         &git,
         &forge,
         root,
-        &PublishOptions::default(),
+        &package_tag_options(),
         &hooks,
         &hook_runner,
     )
@@ -288,7 +295,7 @@ fn publishes_in_topo_order_and_is_idempotent() {
         &git,
         &forge,
         root,
-        &PublishOptions::default(),
+        &package_tag_options(),
         &hooks,
         &hook_runner,
     )
@@ -316,7 +323,7 @@ fn halts_on_failure_and_resumes_forward() {
         &git,
         &forge,
         root,
-        &PublishOptions::default(),
+        &package_tag_options(),
         &hooks,
         &hook_runner,
     )
@@ -333,7 +340,7 @@ fn halts_on_failure_and_resumes_forward() {
         &git,
         &forge,
         root,
-        &PublishOptions::default(),
+        &package_tag_options(),
         &hooks,
         &hook_runner,
     )
@@ -362,7 +369,7 @@ fn multi_adapter_publish_runs_hooks_once_for_the_whole_command() {
         &git,
         &forge,
         root,
-        &PublishOptions::default(),
+        &package_tag_options(),
         &hooks,
         &hook_runner,
     )

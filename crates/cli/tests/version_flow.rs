@@ -172,6 +172,7 @@ fn version_flow_releases_on_a_branch_and_never_touches_main() {
         &VersionOptions::default(),
         &ReleaseConfig {
             hooks,
+            tag_format: "{name}@{version}".to_string(),
             ..Default::default()
         },
         &hook_runner,
@@ -251,6 +252,7 @@ fn dry_run_prints_the_plan_and_writes_nothing() {
         },
         &ReleaseConfig {
             hooks,
+            tag_format: "{name}@{version}".to_string(),
             ..Default::default()
         },
         &hook_runner,

@@ -11,6 +11,9 @@ live here. The file is plain, hand-editable TOML; parsed by `crates/core/src/con
 # Ecosystems enabled for this repo (multi): "npm", "crates.io", "generic".
 adapters = ["npm", "crates.io"]
 
+# Global git tag format. Supports {version} and optional {name}.
+tag_format = "v{version}"
+
 # Global lifecycle hooks (optional). Array of shell commands executed in order.
 [hooks]
 pre_version = ["npm run lint", "node scripts/validate.js"]
@@ -42,6 +45,7 @@ artifacts = "dist/**"
 | Key | Meaning |
 | --- | --- |
 | `adapters` | Enabled ecosystems: `"npm"`, `"crates.io"`, `"generic"`. Drives which publish/release jobs `init` generates. |
+| `tag_format` | Global git tag format used by `version`, preflight, `publish`, and generated GitHub Release jobs. Must include `{version}`; may include `{name}` for package-scoped tags, e.g. `{name}@{version}`. |
 | `[[package]]` | A package with an explicit build step. |
 | `name` | The package name as discovered by its adapter. |
 | `adapter` | The owning ecosystem (`"npm"` / `"crates.io"` / `"generic"`). |

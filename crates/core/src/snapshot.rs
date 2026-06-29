@@ -68,6 +68,7 @@ pub fn run(adapter: &dyn Adapter, root: &Path, config: &ReleaseConfig) -> Result
         &publish::PublishOptions {
             artifacts_dir: None,
             dry_run: false,
+            tag_format: config.tag_format.clone(),
             skip,
         },
         &config.hooks,

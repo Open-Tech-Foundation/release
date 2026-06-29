@@ -27,7 +27,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// The committed config file name, at the workspace root.
@@ -64,6 +64,9 @@ impl Ecosystem {
 
 /// The default version field/key for a generic manifest.
 pub const DEFAULT_VERSION_FIELD: &str = "version";
+
+/// The default git tag format for releases.
+pub const DEFAULT_TAG_FORMAT: &str = "v{version}";
 
 /// What `publish`/CI does with a package after its build step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,7 +151,7 @@ pub struct Hooks {
 }
 
 /// The whole `release.toml`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseConfig {
     /// Ecosystems enabled for this repo.
     pub adapters: Vec<Ecosystem>,
@@ -162,6 +165,9 @@ pub struct ReleaseConfig {
     /// Tag used for automated snapshot releases (e.g. "snapshot", "canary").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_tag: Option<String>,
+    /// Git tag format for releases. Supports `{version}` and optional `{name}` placeholders.
+    #[serde(default = "default_tag_format")]
+    pub tag_format: String,
     /// Git hosting provider (e.g. "github", "gitlab").
     #[serde(default = "default_provider")]
     pub provider: String,
@@ -183,6 +189,31 @@ pub enum ChangelogStrategy {
 
 fn default_provider() -> String {
     "github".to_string()
+}
+
+fn default_tag_format() -> String {
+    DEFAULT_TAG_FORMAT.to_string()
+}
+
+impl Default for ReleaseConfig {
+    fn default() -> Self {
+        Self {
+            adapters: Vec::new(),
+            hooks: Hooks::default(),
+            packages: Vec::new(),
+            snapshot_tag: None,
+            tag_format: default_tag_format(),
+            provider: default_provider(),
+            changelog_strategy: ChangelogStrategy::default(),
+        }
+    }
+}
+
+pub fn format_tag(format: &str, name: &str, version: &str) -> Result<String> {
+    if !format.contains("{version}") {
+        bail!("tag_format must contain `{{version}}`");
+    }
+    Ok(format.replace("{name}", name).replace("{version}", version))
 }
 
 impl ReleaseConfig {
@@ -236,6 +267,7 @@ mod tests {
     fn round_trips_through_toml() {
         let cfg = ReleaseConfig {
             snapshot_tag: None,
+            tag_format: DEFAULT_TAG_FORMAT.to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
@@ -289,6 +321,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = ReleaseConfig {
             snapshot_tag: None,
+            tag_format: DEFAULT_TAG_FORMAT.to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             adapters: vec![Ecosystem::Cargo],

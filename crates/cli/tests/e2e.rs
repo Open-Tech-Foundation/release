@@ -186,6 +186,7 @@ fn version_then_publish_ships_exactly_the_computed_bumps() {
         &VersionOptions::default(),
         &ReleaseConfig {
             hooks: hooks.clone(),
+            tag_format: "{name}@{version}".to_string(),
             ..Default::default()
         },
         &hook_runner,
@@ -198,7 +199,10 @@ fn version_then_publish_ships_exactly_the_computed_bumps() {
         &repo,
         &forge,
         root,
-        &PublishOptions::default(),
+        &PublishOptions {
+            tag_format: "{name}@{version}".to_string(),
+            ..PublishOptions::default()
+        },
         &hooks,
         &hook_runner,
     )
