@@ -397,11 +397,10 @@ pub fn orchestrate_many(
 
 fn render_final_review(summary_text: &str, diff_stat: &str, opts: &VersionOptions) -> String {
     let mut out = String::new();
-    out.push_str(summary_text);
+    out.push_str(summary_text.trim_end());
+    out.push_str("\n\n");
     if opts.skip_pr {
-        out.push_str(
-            "⚠️  GitHub CLI (`gh`) is unavailable, so PR creation will be skipped after push.\n\n",
-        );
+        out.push_str("⚠️  GitHub CLI (`gh`) is unavailable, so PR creation will be skipped after push.\n\n\n");
     }
     out.push_str("Changed Files:\n");
     if diff_stat.trim().is_empty() {
@@ -413,7 +412,7 @@ fn render_final_review(summary_text: &str, diff_stat: &str, opts: &VersionOption
             out.push('\n');
         }
     }
-    out.push('\n');
+    out.push_str("\n\n");
     out
 }
 
