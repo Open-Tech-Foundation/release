@@ -1,20 +1,37 @@
 adapters = ["generic"]
 tag_format = "v{version}"
+provider = "github"
+changelog_strategy = "curated"
 github_release_notes = "curated-changelog"
+
+[hooks]
 
 [[package]]
 name = "otf-release"
 adapter = "generic"
 mode = "build-only"
 matrix = true
-targets = [
-    { name = "linux", arch = "x86_64" },
-    { name = "linux", arch = "aarch64" },
-    { name = "macos", arch = "x86_64" },
-    { name = "macos", arch = "aarch64" },
-    { name = "windows", arch = "x86_64" },
-]
 command = "rustup target add ${{ matrix.rust_target }} && cargo build --release --target ${{ matrix.rust_target }}"
 artifacts = "target/${{ matrix.rust_target }}/release/otf-release${{ matrix.ext }}"
 manifest = "Cargo.toml"
 version_field = "version"
+
+[[package.targets]]
+name = "linux"
+arch = "x86_64"
+
+[[package.targets]]
+name = "linux"
+arch = "aarch64"
+
+[[package.targets]]
+name = "macos"
+arch = "x86_64"
+
+[[package.targets]]
+name = "macos"
+arch = "aarch64"
+
+[[package.targets]]
+name = "windows"
+arch = "x86_64"
