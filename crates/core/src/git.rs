@@ -114,7 +114,7 @@ impl GitOps for GitRepo {
     }
 
     fn create_branch(&self, name: &str) -> Result<()> {
-        run_git(&self.root, &["checkout", "-b", name]).map(|_| ())
+        run_git(&self.root, &["checkout", "-B", name]).map(|_| ())
     }
 
     fn checkout_branch(&self, name: &str) -> Result<()> {
