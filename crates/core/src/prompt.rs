@@ -24,9 +24,10 @@ impl Prompt for StdinPrompt {
     fn select_packages(&self, pending: &[&Pkg]) -> Result<Vec<String>> {
         let labels: Vec<String> = pending
             .iter()
-            .map(|p| format!("{} ({})", p.name, p.version))
+            .map(|p| format!("{}  current {}", p.name, p.version))
             .collect();
-        let chosen = MultiSelect::new("Select packages to release:", labels)
+        println!();
+        let chosen = MultiSelect::new("Release candidates", labels)
             .with_help_message("↑↓ move · space toggle · enter confirm")
             .raw_prompt()?;
         Ok(chosen
@@ -36,45 +37,44 @@ impl Prompt for StdinPrompt {
     }
 
     fn choose_bump(&self, pkg_name: &str, current_version: &str) -> Result<Bump> {
+        println!();
         let parts: Vec<&str> = current_version.split('-').collect();
         let is_prerelease = parts.len() > 1;
 
         if is_prerelease {
             let pre_part = parts[1];
             let current_channel = pre_part.split('.').next().unwrap();
-            let msg = format!(
-                "You are currently on '{}'. What would you like to do?",
-                current_channel
-            );
+            let msg =
+                format!("{pkg_name} is currently on the {current_channel} channel. Next step?");
             let opts = vec![
-                format!("Continue {}", current_channel),
-                "Switch channel".to_string(),
-                "Exit to stable".to_string(),
+                format!("Continue {current_channel} prerelease"),
+                "Switch prerelease channel".to_string(),
+                "Graduate to stable".to_string(),
             ];
             let choice = Select::new(&msg, opts).prompt()?;
-            if choice == "Exit to stable" {
+            if choice == "Graduate to stable" {
                 Ok(Bump::Graduate)
-            } else if choice == "Switch channel" {
-                let ch = Select::new("Which channel?", vec!["alpha", "beta", "rc"]).prompt()?;
+            } else if choice == "Switch prerelease channel" {
+                let ch = Select::new("Prerelease channel", vec!["alpha", "beta", "rc"]).prompt()?;
                 Ok(Bump::Prerelease(ch.to_string()))
             } else {
                 Ok(Bump::Prerelease(current_channel.to_string()))
             }
         } else {
             let rtype = Select::new(
-                &format!("Release type for {pkg_name}:"),
+                &format!("{pkg_name} release track"),
                 vec!["Stable", "Pre-release"],
             )
             .prompt()?;
 
             let is_pre = rtype == "Pre-release";
             let channel = if is_pre {
-                Some(Select::new("Channel:", vec!["alpha", "beta", "rc"]).prompt()?)
+                Some(Select::new("Prerelease channel", vec!["alpha", "beta", "rc"]).prompt()?)
             } else {
                 None
             };
 
-            let bump_str = Select::new("Bump size:", vec!["Major", "Minor", "Patch"]).prompt()?;
+            let bump_str = Select::new("Version bump", vec!["Major", "Minor", "Patch"]).prompt()?;
 
             Ok(match (bump_str, channel) {
                 ("Major", None) => Bump::Major,
@@ -90,11 +90,13 @@ impl Prompt for StdinPrompt {
 
     fn confirm(&self, summary: &str) -> Result<bool> {
         print!("{summary}");
-        Ok(
-            Select::new("Commit, push, and open the release PR?", vec!["No", "Yes"])
-                .raw_prompt()?
-                .index
-                == 1,
+        println!();
+        Ok(Select::new(
+            "Commit, push, and open the release PR?",
+            vec!["No, cancel and clean up", "Yes, create release PR"],
         )
+        .raw_prompt()?
+        .index
+            == 1)
     }
 }

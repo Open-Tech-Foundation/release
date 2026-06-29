@@ -209,7 +209,7 @@ fn version_flow_releases_on_a_branch_and_never_touches_main() {
     assert_eq!(calls[0].0, "release/2026-06-24");
     let confirmations = prompt.confirmations.borrow();
     assert_eq!(confirmations.len(), 1);
-    assert!(confirmations[0].contains("Changed Files:"));
+    assert!(confirmations[0].contains("Changed Files"));
     assert!(!confirmations[0].contains("Diff:"));
     assert!(confirmations[0].contains("packages/core/package.json"));
 

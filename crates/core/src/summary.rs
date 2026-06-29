@@ -4,6 +4,11 @@
 //! (selected), auto-bumped dependents, and internal range updates (including private
 //! apps, which are flagged "range updated, NOT published").
 
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::widgets::{Block, Cell, Padding, Row, Table, Widget};
+
 /// A version change for one publishable package.
 #[derive(Debug, Clone)]
 pub struct VersionChange {
@@ -39,141 +44,137 @@ pub fn render(plan: &Plan) -> String {
     let mut out = String::new();
 
     if !plan.changes.is_empty() {
-        let name_w = plan
+        let rows: Vec<Vec<String>> = plan
             .changes
             .iter()
-            .map(|c| c.name.len())
-            .max()
-            .unwrap_or(7)
-            .max(7);
-        let old_w = plan
-            .changes
-            .iter()
-            .map(|c| c.old_version.len())
-            .max()
-            .unwrap_or(3)
-            .max(3);
-        let new_w = plan
-            .changes
-            .iter()
-            .map(|c| c.new_version.len())
-            .max()
-            .unwrap_or(3)
-            .max(3);
+            .map(|c| {
+                vec![
+                    if c.selected {
+                        "● direct".to_string()
+                    } else {
+                        "↳ cascade".to_string()
+                    },
+                    c.name.clone(),
+                    c.old_version.clone(),
+                    "→".to_string(),
+                    c.new_version.clone(),
+                    c.note.clone(),
+                ]
+            })
+            .collect();
 
-        out.push_str("\nVersion Bumps (Direct & Indirect):\n");
-        out.push_str(&format!(
-            "  {:<name_w$} | {:<old_w$} | {:<new_w$} | {}\n",
-            "Package",
-            "Old",
-            "New",
-            "Reason",
-            name_w = name_w,
-            old_w = old_w,
-            new_w = new_w
-        ));
-        out.push_str(&format!(
-            "  {:-<name_w$}-+-{:-<old_w$}-+-{:-<new_w$}-+--------------------------------\n",
-            "",
-            "",
-            "",
-            name_w = name_w,
-            old_w = old_w,
-            new_w = new_w
-        ));
-
-        for c in &plan.changes {
-            out.push_str(&format!(
-                "  {:<name_w$} | {:<old_w$} | {:<new_w$} | {}\n",
-                c.name,
-                c.old_version,
-                c.new_version,
-                c.note,
-                name_w = name_w,
-                old_w = old_w,
-                new_w = new_w
-            ));
-        }
+        out.push('\n');
+        render_table(
+            &mut out,
+            "Version Bumps",
+            &["Kind", "Package", "Old", "", "New", "Reason"],
+            &rows,
+        );
         out.push('\n');
     }
 
     if !plan.range_updates.is_empty() {
-        let cons_w = plan
+        let rows: Vec<Vec<String>> = plan
             .range_updates
             .iter()
-            .map(|c| c.consumer.len())
-            .max()
-            .unwrap_or(8)
-            .max(8);
-        let dep_w = plan
-            .range_updates
-            .iter()
-            .map(|c| c.dep.len())
-            .max()
-            .unwrap_or(10)
-            .max(10);
-        let old_w = plan
-            .range_updates
-            .iter()
-            .map(|c| c.old_range.len())
-            .max()
-            .unwrap_or(3)
-            .max(3);
-        let new_w = plan
-            .range_updates
-            .iter()
-            .map(|c| c.new_range.len())
-            .max()
-            .unwrap_or(3)
-            .max(3);
+            .map(|r| {
+                vec![
+                    r.consumer.clone(),
+                    r.dep.clone(),
+                    r.old_range.clone(),
+                    "→".to_string(),
+                    r.new_range.clone(),
+                    if r.consumer_private {
+                        "private app, not published".to_string()
+                    } else {
+                        "published package".to_string()
+                    },
+                ]
+            })
+            .collect();
 
-        out.push_str("Internal Range Updates:\n");
-        out.push_str(&format!(
-            "  {:<cons_w$} | {:<dep_w$} | {:<old_w$} | {:<new_w$} | {}\n",
-            "Consumer",
-            "Dependency",
-            "Old",
-            "New",
-            "Notes",
-            cons_w = cons_w,
-            dep_w = dep_w,
-            old_w = old_w,
-            new_w = new_w
-        ));
-        out.push_str(&format!(
-            "  {:-<cons_w$}-+-{:-<dep_w$}-+-{:-<old_w$}-+-{:-<new_w$}-+------------------------\n",
-            "",
-            "",
-            "",
-            "",
-            cons_w = cons_w,
-            dep_w = dep_w,
-            old_w = old_w,
-            new_w = new_w
-        ));
-
-        for r in &plan.range_updates {
-            let note = if r.consumer_private {
-                "private app (not published)"
-            } else {
-                ""
-            };
-            out.push_str(&format!(
-                "  {:<cons_w$} | {:<dep_w$} | {:<old_w$} | {:<new_w$} | {}\n",
-                r.consumer,
-                r.dep,
-                r.old_range,
-                r.new_range,
-                note,
-                cons_w = cons_w,
-                dep_w = dep_w,
-                old_w = old_w,
-                new_w = new_w
-            ));
-        }
+        render_table(
+            &mut out,
+            "Internal Range Updates",
+            &["Consumer", "Dependency", "Old", "", "New", "Notes"],
+            &rows,
+        );
         out.push('\n');
     }
 
+    out
+}
+
+fn render_table(out: &mut String, title: &str, headers: &[&str], rows: &[Vec<String>]) {
+    let widths = column_widths(headers, rows);
+    let constraints: Vec<Constraint> = widths
+        .iter()
+        .map(|width| Constraint::Length(*width as u16))
+        .collect();
+    let table_rows = rows
+        .iter()
+        .map(|row| Row::new(row.iter().map(|cell| Cell::from(cell.clone()))).bottom_margin(1));
+    let header = Row::new(headers.iter().copied().map(Cell::from))
+        .style(Style::new().add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+    let table = Table::new(table_rows, constraints)
+        .header(header)
+        .block(
+            Block::bordered()
+                .title(title)
+                .padding(Padding::new(2, 2, 1, 1)),
+        )
+        .column_spacing(4);
+    let width = table_width(&widths, headers.len());
+    let height = table_height(rows.len());
+    let area = Rect::new(0, 0, width, height);
+    let mut buffer = Buffer::empty(area);
+    table.render(area, &mut buffer);
+    out.push_str(&buffer_to_string(&buffer));
+}
+
+fn column_widths(headers: &[&str], rows: &[Vec<String>]) -> Vec<usize> {
+    headers
+        .iter()
+        .enumerate()
+        .map(|(idx, header)| {
+            rows.iter()
+                .filter_map(|row| row.get(idx))
+                .map(|cell| cell.chars().count())
+                .max()
+                .unwrap_or(0)
+                .max(header.chars().count())
+        })
+        .collect()
+}
+
+fn table_width(widths: &[usize], columns: usize) -> u16 {
+    let content_width = widths.iter().sum::<usize>();
+    let spacing_width = columns.saturating_sub(1) * 4;
+    let border_width = 2;
+    let horizontal_padding = 4;
+    (content_width + spacing_width + border_width + horizontal_padding) as u16
+}
+
+fn table_height(row_count: usize) -> u16 {
+    let border_height = 2;
+    let vertical_padding = 2;
+    let header_height = 2;
+    let row_height = row_count * 2;
+    (border_height + vertical_padding + header_height + row_height) as u16
+}
+
+fn buffer_to_string(buffer: &Buffer) -> String {
+    let area = *buffer.area();
+    let mut out = String::new();
+    for y in area.top()..area.bottom() {
+        let mut line = String::new();
+        for x in area.left()..area.right() {
+            line.push_str(buffer[(x, y)].symbol());
+        }
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
     out
 }
 
@@ -210,11 +211,16 @@ mod tests {
         };
 
         let out = render(&plan);
-        assert!(out.contains("Version Bumps (Direct & Indirect):"));
-        assert!(out.contains("@opentf/core | 1.2.0 | 2.0.0 | major, selected"));
+        assert!(out.contains("Version Bumps"));
+        assert!(out.contains("● direct"));
+        assert!(out.contains("@opentf/core"));
+        assert!(out.contains("1.2.0"));
+        assert!(out.contains("2.0.0"));
+        assert!(out.contains("major, selected"));
+        assert!(out.contains("↳ cascade"));
         assert!(out.contains("mirror major — peerDep on @opentf/core"));
-        assert!(out.contains("Internal Range Updates:"));
-        assert!(out.contains("private app (not published)"));
+        assert!(out.contains("Internal Range Updates"));
+        assert!(out.contains("private app, not published"));
     }
 
     #[test]
@@ -230,7 +236,7 @@ mod tests {
             range_updates: vec![],
         };
         let out = render(&plan);
-        assert!(out.contains("Version Bumps (Direct & Indirect):"));
-        assert!(!out.contains("Internal Range Updates:"));
+        assert!(out.contains("Version Bumps"));
+        assert!(!out.contains("Internal Range Updates"));
     }
 }
