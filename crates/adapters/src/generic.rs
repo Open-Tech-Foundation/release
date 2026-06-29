@@ -225,10 +225,10 @@ fn write_toml_version(path: &Path, text: &str, field: &str, new: &str) -> Result
         {
             bail!("{}: no TOML field `{}` to bump", path.display(), field);
         }
-    } else if !set_toml_string_at(doc.as_item_mut(), &path_parts, new)? {
-        if !set_cargo_toml_version_field(path, field, doc.as_item_mut(), new)? {
-            bail!("{}: no TOML field `{}` to bump", path.display(), field);
-        }
+    } else if !set_toml_string_at(doc.as_item_mut(), &path_parts, new)?
+        && !set_cargo_toml_version_field(path, field, doc.as_item_mut(), new)?
+    {
+        bail!("{}: no TOML field `{}` to bump", path.display(), field);
     }
     Ok(doc.to_string())
 }
