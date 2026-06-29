@@ -55,6 +55,16 @@ pub fn run_many(
 ) -> Result<()> {
     let mut opts = opts.clone();
     let prompt = StdinPrompt;
+    let repo = GitRepo::new(root);
+    if !opts.dry_run {
+        if !repo.is_clean()? {
+            bail!("working tree is not clean; commit or stash first");
+        }
+        let branch = repo.current_branch()?;
+        if branch != "main" {
+            bail!("must be on `main` to start a release (currently on `{branch}`)");
+        }
+    }
     if std::process::Command::new("gh")
         .arg("--version")
         .output()
@@ -65,7 +75,6 @@ pub fn run_many(
         );
         opts.skip_pr = true;
     }
-    let repo = GitRepo::new(root);
     let forge = GhForge::new(root);
     let hook_runner = crate::hooks::ShHookRunner;
     let today = date::today();
@@ -199,6 +208,21 @@ pub fn orchestrate_many(
         return Ok(());
     }
 
+    // Non-dry releases must start from a clean `main` before any interactive prompt. That way a
+    // dirty tree fails immediately instead of after the user has selected packages and bumps.
+    let starting_branch = if opts.dry_run {
+        None
+    } else {
+        if !git.is_clean()? {
+            bail!("working tree is not clean; commit or stash first");
+        }
+        let branch = git.current_branch()?;
+        if branch != "main" {
+            bail!("must be on `main` to start a release (currently on `{branch}`)");
+        }
+        Some(branch)
+    };
+
     // 3. Prompt: multi-select, then a bump per selected package.
     let selected_names = prompt.select_packages(&pending)?;
     if selected_names.is_empty() {
@@ -304,14 +328,8 @@ pub fn orchestrate_many(
         return Ok(());
     }
 
-    // 7. Branch guard: clean tree, on `main`, then cut release/*.
-    if !git.is_clean()? {
-        bail!("working tree is not clean; commit or stash first");
-    }
-    let branch = git.current_branch()?;
-    if branch != "main" {
-        bail!("must be on `main` to start a release (currently on `{branch}`)");
-    }
+    // 7. Cut release/* from the already-validated starting branch.
+    let branch = starting_branch.expect("non-dry release should validate starting branch");
     let release_branch = format!("release/{today}");
     git.create_branch(&release_branch)?;
 
@@ -656,6 +674,7 @@ mod tests {
 
     struct FakeGit {
         branch: RefCell<String>,
+        clean: bool,
         created: RefCell<Vec<String>>,
         commits: RefCell<Vec<String>>,
         pushes: RefCell<Vec<String>>,
@@ -665,16 +684,24 @@ mod tests {
         fn new() -> Self {
             Self {
                 branch: RefCell::new("main".to_string()),
+                clean: true,
                 created: RefCell::new(Vec::new()),
                 commits: RefCell::new(Vec::new()),
                 pushes: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn dirty() -> Self {
+            Self {
+                clean: false,
+                ..Self::new()
             }
         }
     }
 
     impl GitOps for FakeGit {
         fn is_clean(&self) -> Result<bool> {
-            Ok(true)
+            Ok(self.clean)
         }
 
         fn current_branch(&self) -> Result<String> {
@@ -857,6 +884,47 @@ mod tests {
             change_note(&pkg, &Bump::Major, true, &new_versions),
             "major, selected"
         );
+    }
+
+    #[test]
+    fn non_dry_release_checks_clean_tree_before_prompting() {
+        struct PanicPrompt;
+
+        impl Prompt for PanicPrompt {
+            fn select_packages(&self, _: &[&Pkg]) -> Result<Vec<String>> {
+                panic!("prompt should not be reached when the working tree is dirty");
+            }
+
+            fn choose_bump(&self, _: &str, _: &str) -> Result<Bump> {
+                panic!("prompt should not be reached when the working tree is dirty");
+            }
+
+            fn confirm(&self, _: &str) -> Result<bool> {
+                panic!("prompt should not be reached when the working tree is dirty");
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let adapter = FakeVersionAdapter::new(test_pkg(root, "npm-lib"));
+        let err = orchestrate_many(
+            &[&adapter],
+            &FakeRepo,
+            &FakeGit::dirty(),
+            &FakeForge {
+                prs: RefCell::new(Vec::new()),
+            },
+            &PanicPrompt,
+            root,
+            "2026-06-28",
+            &VersionOptions::default(),
+            &crate::config::ReleaseConfig::default(),
+            &crate::hooks::fakes::FakeHookRunner::new(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(err, "working tree is not clean; commit or stash first");
     }
 
     #[test]

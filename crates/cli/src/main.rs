@@ -5,7 +5,9 @@
 //! `init`), the committed source of truth. `init` is interactive and creates that file.
 
 use std::path::PathBuf;
+use std::process::ExitCode;
 
+use anstyle::{AnsiColor, Effects, Style};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -132,7 +134,24 @@ enum Command {
     SelfUpdate,
 }
 
-fn main() -> Result<()> {
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            print_error(&err);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn print_error(err: &anyhow::Error) {
+    let danger = Style::new()
+        .fg_color(Some(AnsiColor::BrightRed.into()))
+        .effects(Effects::BOLD);
+    anstream::eprintln!("{}Error:{} {err}", danger.render(), danger.render_reset());
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     let root = cli.root.unwrap_or_else(|| PathBuf::from("."));
 

@@ -1138,6 +1138,8 @@ dependencies = [
 name = "otf-release"
 version = "0.3.0"
 dependencies = [
+ "anstream",
+ "anstyle",
  "anyhow",
  "clap",
  "otf-release-adapters",

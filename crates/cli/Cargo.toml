@@ -17,6 +17,8 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+anstream.workspace = true
+anstyle.workspace = true
 clap.workspace = true
 otf-release-core.workspace = true
 otf-release-adapters.workspace = true
