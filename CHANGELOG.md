@@ -8,16 +8,26 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Added
+- **config/init** — Added `github_release_notes` to choose GitHub Release body content for
+  build-only packages: GitHub-generated notes, the curated `CHANGELOG.md` release section, or a
+  semantic-style commit list since the previous matching configured tag. The option is prompted
+  during `init` and editable through `config`.
+
+### Changed
+- **config** — Normalized this repo's `release.toml` by writing default global settings
+  explicitly and expanding build targets into standard TOML tables.
+
+### Fixed
+- **generic adapter** — Cleaned up Cargo manifest version-field matching to satisfy clippy without
+  changing behavior.
+
 ## [0.3.0] - 2026-06-29
 
 ### Added
 - **config** — Added global `tag_format` to `release.toml` (default `v{version}`) and exposed it
   in `init` and `config`, so preflight, publish, and generated GitHub Release jobs use the repo's
   configured tag convention instead of an implicit package-scoped format.
-- **config/init** — Added `github_release_notes` to choose GitHub Release body content for
-  build-only packages: GitHub-generated notes, the curated `CHANGELOG.md` release section, or a
-  semantic-style commit list since the previous matching configured tag. The option is prompted
-  during `init` and editable through `config`.
 
 ### Fixed
 - **version** — Modified `git checkout -b` to `git checkout -B` so that release branch creation gracefully handles previously abandoned branches by resetting them instead of crashing.
