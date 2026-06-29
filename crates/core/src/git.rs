@@ -55,20 +55,14 @@ impl RepoState for GitRepo {
 
     fn commit_count_since(&self, tag: &str, pkg_dir: &Path) -> Result<usize> {
         // Use a repo-relative pathspec so git accepts it regardless of the cwd.
-        let rel = pkg_dir.strip_prefix(&self.root).unwrap_or(pkg_dir);
-        let pathspec = rel
-            .to_str()
-            .with_context(|| format!("non-UTF-8 package path: {}", rel.display()))?;
+        let pathspec = repo_pathspec(&self.root, pkg_dir)?;
         let range = format!("{tag}..HEAD");
         let stdout = run_git(&self.root, &["rev-list", "--count", &range, "--", pathspec])?;
         Ok(stdout.trim().parse().unwrap_or(0))
     }
 
     fn commits_since(&self, tag: Option<&str>, pkg_dir: &Path) -> Result<String> {
-        let rel = pkg_dir.strip_prefix(&self.root).unwrap_or(pkg_dir);
-        let pathspec = rel
-            .to_str()
-            .with_context(|| format!("non-UTF-8 package path: {}", rel.display()))?;
+        let pathspec = repo_pathspec(&self.root, pkg_dir)?;
         let range = match tag {
             Some(t) => format!("{t}..HEAD"),
             None => "HEAD".to_string(),
@@ -79,6 +73,15 @@ impl RepoState for GitRepo {
         )?;
         Ok(stdout.trim().to_string())
     }
+}
+
+fn repo_pathspec<'a>(root: &Path, path: &'a Path) -> Result<&'a str> {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    if rel.as_os_str().is_empty() {
+        return Ok(".");
+    }
+    rel.to_str()
+        .with_context(|| format!("non-UTF-8 package path: {}", rel.display()))
 }
 
 /// Mutating git operations used by the `version` command's branch/commit/push flow.
@@ -255,6 +258,11 @@ mod tests {
         write(root.join("pnpm-lock.yaml"), "lock: 1\n");
         commit_all(root, "touch root lockfile");
         assert_eq!(repo.commit_count_since("a@1.10.0", &pkg_dir).unwrap(), 0);
+        assert_eq!(repo.commit_count_since("v2.0.0", root).unwrap(), 1);
+        assert!(repo
+            .commits_since(Some("v2.0.0"), root)
+            .unwrap()
+            .contains("touch root lockfile"));
 
         // A commit touching the package dir does count.
         write(pkg_dir.join("index.js"), "// code\n");
