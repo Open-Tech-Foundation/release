@@ -13,7 +13,7 @@ pub trait Prompt {
     fn select_packages(&self, pending: &[&Pkg]) -> Result<Vec<String>>;
     /// Interactive flow to determine the next version bump for a package.
     fn choose_bump(&self, pkg_name: &str, current_version: &str) -> Result<Bump>;
-    /// Show the summary and ask for final confirmation.
+    /// Show the review text and ask for final confirmation.
     fn confirm(&self, summary: &str) -> Result<bool>;
 }
 
@@ -90,9 +90,11 @@ impl Prompt for StdinPrompt {
 
     fn confirm(&self, summary: &str) -> Result<bool> {
         print!("{summary}");
-        Ok(Select::new("Proceed?", vec!["No", "Yes"])
-            .raw_prompt()?
-            .index
-            == 1)
+        Ok(
+            Select::new("Commit, push, and open the release PR?", vec!["No", "Yes"])
+                .raw_prompt()?
+                .index
+                == 1,
+        )
     }
 }

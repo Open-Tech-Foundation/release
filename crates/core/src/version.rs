@@ -57,9 +57,9 @@ pub fn run_many(
         .output()
         .is_err()
     {
-        if !Prompt::confirm(&prompt, "\nGitHub CLI (`gh`) is not installed. Continue anyway? (You will need to manually open the PR)")? {
-            bail!("Cancelled.");
-        }
+        println!(
+            "GitHub CLI (`gh`) is not installed. PR creation will be skipped; manually open the PR after push."
+        );
         opts.skip_pr = true;
     }
     let repo = GitRepo::new(root);
@@ -300,13 +300,7 @@ pub fn orchestrate_many(
         return Ok(());
     }
 
-    // 7. Confirm. On cancel, write nothing.
-    if !prompt.confirm(&summary_text)? {
-        println!("Cancelled. Nothing written.");
-        return Ok(());
-    }
-
-    // 8. Branch guard: clean tree, on `main`, then cut release/*.
+    // 7. Branch guard: clean tree, on `main`, then cut release/*.
     if !git.is_clean()? {
         bail!("working tree is not clean; commit or stash first");
     }
@@ -317,7 +311,7 @@ pub fn orchestrate_many(
     let release_branch = format!("release/{today}");
     git.create_branch(&release_branch)?;
 
-    // 9. Apply: versions, then internal ranges, then changelogs, then lockfiles.
+    // 8. Apply: versions, then internal ranges, then changelogs, then lockfiles.
     for (idx, ctx) in adapter_packages.iter().enumerate() {
         for name in adapter_bumps[idx].keys() {
             let new_ver = &new_versions[name];
@@ -369,6 +363,16 @@ pub fn orchestrate_many(
         hook_runner.run_hooks(root, &config.hooks.post_version)?;
     }
 
+    // 9. Final review: show the actual files and diff produced by the release edits. On cancel,
+    // discard only the generated release-branch changes and return to the original branch.
+    let review_text = render_final_review(&summary_text, &git.diff_stat()?, &git.diff()?, opts);
+    if !prompt.confirm(&review_text)? {
+        git.reset_hard()?;
+        git.checkout_branch(&branch)?;
+        println!("Cancelled. Generated release changes were discarded.");
+        return Ok(());
+    }
+
     // 10. Commit, push, open the PR.
     let mut titles: Vec<String> = selected
         .keys()
@@ -388,6 +392,42 @@ pub fn orchestrate_many(
     }
 
     Ok(())
+}
+
+fn render_final_review(
+    summary_text: &str,
+    diff_stat: &str,
+    diff: &str,
+    opts: &VersionOptions,
+) -> String {
+    let mut out = String::new();
+    out.push_str(summary_text);
+    if opts.skip_pr {
+        out.push_str(
+            "Note: GitHub CLI (`gh`) is unavailable, so PR creation will be skipped after push.\n\n",
+        );
+    }
+    out.push_str("Changed Files:\n");
+    if diff_stat.trim().is_empty() {
+        out.push_str("  (no file changes)\n");
+    } else {
+        for line in diff_stat.lines() {
+            out.push_str("  ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.push_str("\nDiff:\n");
+    if diff.trim().is_empty() {
+        out.push_str("  (empty diff)\n");
+    } else {
+        out.push_str(diff);
+        if !diff.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out.push('\n');
+    out
 }
 
 /// Raise every bumped member of each lockstep group to the strongest (max) bump in its group, so
@@ -622,6 +662,23 @@ mod tests {
         fn create_branch(&self, name: &str) -> Result<()> {
             self.created.borrow_mut().push(name.to_string());
             *self.branch.borrow_mut() = name.to_string();
+            Ok(())
+        }
+
+        fn checkout_branch(&self, name: &str) -> Result<()> {
+            *self.branch.borrow_mut() = name.to_string();
+            Ok(())
+        }
+
+        fn diff_stat(&self) -> Result<String> {
+            Ok(" CHANGELOG.md | 2 ++\n 1 file changed, 2 insertions(+)\n".to_string())
+        }
+
+        fn diff(&self) -> Result<String> {
+            Ok("diff --git a/CHANGELOG.md b/CHANGELOG.md\n".to_string())
+        }
+
+        fn reset_hard(&self) -> Result<()> {
             Ok(())
         }
 

@@ -33,6 +33,7 @@ impl CommandRunner for OkRunner {
 struct ScriptedPrompt {
     selected: Vec<String>,
     bump: Bump,
+    confirmations: RefCell<Vec<String>>,
 }
 impl Prompt for ScriptedPrompt {
     fn select_packages(&self, _pending: &[&Pkg]) -> Result<Vec<String>> {
@@ -41,7 +42,8 @@ impl Prompt for ScriptedPrompt {
     fn choose_bump(&self, _pkg_name: &str, _current_version: &str) -> Result<Bump> {
         Ok(self.bump.clone())
     }
-    fn confirm(&self, _summary: &str) -> Result<bool> {
+    fn confirm(&self, summary: &str) -> Result<bool> {
+        self.confirmations.borrow_mut().push(summary.to_string());
         Ok(true)
     }
 }
@@ -154,6 +156,7 @@ fn version_flow_releases_on_a_branch_and_never_touches_main() {
     let prompt = ScriptedPrompt {
         selected: vec!["@x/core".to_string()],
         bump: Bump::Major,
+        confirmations: RefCell::new(Vec::new()),
     };
 
     let hooks = otf_release_core::config::Hooks::default();
@@ -203,6 +206,11 @@ fn version_flow_releases_on_a_branch_and_never_touches_main() {
     let calls = forge.calls.borrow();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, "release/2026-06-24");
+    let confirmations = prompt.confirmations.borrow();
+    assert_eq!(confirmations.len(), 1);
+    assert!(confirmations[0].contains("Changed Files:"));
+    assert!(confirmations[0].contains("Diff:"));
+    assert!(confirmations[0].contains("packages/core/package.json"));
 
     // main is untouched: core is still 1.0.0 there.
     assert!(capture(root, &["show", "main:packages/core/package.json"]).contains("\"1.0.0\""));
@@ -223,6 +231,7 @@ fn dry_run_prints_the_plan_and_writes_nothing() {
     let prompt = ScriptedPrompt {
         selected: vec!["@x/core".to_string()],
         bump: Bump::Major,
+        confirmations: RefCell::new(Vec::new()),
     };
 
     let hooks = otf_release_core::config::Hooks::default();
@@ -257,4 +266,5 @@ fn dry_run_prints_the_plan_and_writes_nothing() {
     assert!(read(root.join("packages/core/CHANGELOG.md")).contains("## [Unreleased]\n\n### Added"));
     assert!(capture(root, &["status", "--porcelain"]).is_empty());
     assert!(forge.calls.borrow().is_empty());
+    assert!(prompt.confirmations.borrow().is_empty());
 }

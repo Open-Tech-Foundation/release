@@ -86,6 +86,10 @@ pub trait GitOps {
     fn is_clean(&self) -> Result<bool>;
     fn current_branch(&self) -> Result<String>;
     fn create_branch(&self, name: &str) -> Result<()>;
+    fn checkout_branch(&self, name: &str) -> Result<()>;
+    fn diff_stat(&self) -> Result<String>;
+    fn diff(&self) -> Result<String>;
+    fn reset_hard(&self) -> Result<()>;
     fn add_all(&self) -> Result<()>;
     fn commit(&self, message: &str) -> Result<()>;
     fn push_branch(&self, name: &str) -> Result<()>;
@@ -108,6 +112,22 @@ impl GitOps for GitRepo {
 
     fn create_branch(&self, name: &str) -> Result<()> {
         run_git(&self.root, &["checkout", "-b", name]).map(|_| ())
+    }
+
+    fn checkout_branch(&self, name: &str) -> Result<()> {
+        run_git(&self.root, &["checkout", name]).map(|_| ())
+    }
+
+    fn diff_stat(&self) -> Result<String> {
+        run_git(&self.root, &["diff", "--stat"])
+    }
+
+    fn diff(&self) -> Result<String> {
+        run_git(&self.root, &["diff"])
+    }
+
+    fn reset_hard(&self) -> Result<()> {
+        run_git(&self.root, &["reset", "--hard"]).map(|_| ())
     }
 
     fn add_all(&self) -> Result<()> {
