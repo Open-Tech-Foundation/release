@@ -34,12 +34,29 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 | Command | Status | What it does |
 | --- | --- | --- |
 | `otf-release init` | ✅ Supported | Interactive setup. Writes `release.toml`, `.github/workflows/release.yml`, and `.github/workflows/snapshot.yml`. |
-| `otf-release version` | ✅ Supported | Interactive local release flow. Select packages, choose bumps, cascade dependents, update manifests/changelogs, push a release branch, and open a PR. |
+| `otf-release version` | ✅ Supported | Interactive local release flow. Use `--dry-run` to preview the plan without writing files, and `--first-release` when a package has no prior matching tag. |
 | `otf-release publish` | ✅ Supported | CI-oriented publish flow. Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. |
 | `otf-release snapshot` | 🧪 Experimental | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |
 | `otf-release config` | ✅ Supported | Interactive editor for hooks, ecosystems, package build fields, generic package fields, provider, snapshot tag, changelog strategy, and GitHub Release notes. |
 | `otf-release upgrade` | ◐ Partial | Regenerates `release.yml` from the current `release.toml`. |
 | `otf-release self-update` | ✅ Supported | Checks GitHub Releases and reruns the install script when a newer CLI version exists. |
+
+## Common Local Commands
+
+Preview a release plan without editing files, committing, pushing, or opening a PR:
+
+```bash
+otf-release version --dry-run
+```
+
+Allow the first release of a publishable package that has no previous tag matching
+`release.toml`'s `tag_format`:
+
+```bash
+otf-release version --first-release
+```
+
+Curated changelog mode still requires non-empty `[Unreleased]` notes for packages being released.
 
 ## 🧩 Supported Adapters
 
