@@ -234,9 +234,14 @@ fn write_toml_version(path: &Path, text: &str, field: &str, new: &str) -> Result
 }
 
 fn toml_string_at<'a>(item: &'a Item, path: &[&str]) -> Option<&'a str> {
-    path.iter()
-        .try_fold(item, |current, key| current.get(*key))
-        .and_then(Item::as_str)
+    toml_item_at(item, path).and_then(Item::as_str)
+}
+
+fn toml_item_at<'a>(mut item: &'a Item, path: &[&str]) -> Option<&'a Item> {
+    for key in path {
+        item = item.get(*key)?;
+    }
+    Some(item)
 }
 
 fn toml_item_at_mut<'a>(mut item: &'a mut Item, path: &[&str]) -> Option<&'a mut Item> {
@@ -247,23 +252,26 @@ fn toml_item_at_mut<'a>(mut item: &'a mut Item, path: &[&str]) -> Option<&'a mut
 }
 
 fn set_toml_string_at(item: &mut Item, path: &[&str], new: &str) -> Result<bool> {
-    let Some(slot) = toml_item_at_mut(item, path) else {
+    let Some(existing) = toml_item_at(item, path) else {
         return Ok(false);
     };
-    if !slot.is_str() {
+    if !existing.is_str() {
         bail!("TOML field `{}` is not a string", path.join("."));
     }
+    let slot = toml_item_at_mut(item, path).ok_or_else(|| {
+        anyhow::anyhow!("TOML field `{}` disappeared while editing", path.join("."))
+    })?;
     *slot = value(new);
     Ok(true)
 }
 
 fn set_toml_string_at_if_string(item: &mut Item, path: &[&str], new: &str) -> Result<bool> {
-    let Some(slot) = toml_item_at_mut(item, path) else {
-        return Ok(false);
-    };
-    if !slot.is_str() {
+    if !toml_item_at(item, path).is_some_and(Item::is_str) {
         return Ok(false);
     }
+    let slot = toml_item_at_mut(item, path).ok_or_else(|| {
+        anyhow::anyhow!("TOML field `{}` disappeared while editing", path.join("."))
+    })?;
     *slot = value(new);
     Ok(true)
 }
@@ -614,6 +622,7 @@ mod tests {
             after.contains("[workspace.package]\nversion = \"0.3.0\""),
             "got: {after}"
         );
+        assert!(!after.contains("package = {}"), "got: {after}");
         assert!(after.contains("edition = \"2021\""), "got: {after}");
     }
 
