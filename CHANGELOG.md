@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-29
+
 ### Added
 - **config/init** — Added `github_release_notes` to choose GitHub Release body content for
   build-only packages: GitHub-generated notes, the curated `CHANGELOG.md` release section, or a
