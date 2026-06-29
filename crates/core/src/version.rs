@@ -58,7 +58,7 @@ pub fn run_many(
         .is_err()
     {
         println!(
-            "GitHub CLI (`gh`) is not installed. PR creation will be skipped; manually open the PR after push."
+            "⚠️  GitHub CLI (`gh`) is not installed. PR creation will be skipped; manually open the PR after push."
         );
         opts.skip_pr = true;
     }
@@ -404,7 +404,7 @@ fn render_final_review(
     out.push_str(summary_text);
     if opts.skip_pr {
         out.push_str(
-            "Note: GitHub CLI (`gh`) is unavailable, so PR creation will be skipped after push.\n\n",
+            "⚠️  GitHub CLI (`gh`) is unavailable, so PR creation will be skipped after push.\n\n",
         );
     }
     out.push_str("Changed Files:\n");
