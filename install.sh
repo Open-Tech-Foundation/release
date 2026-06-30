@@ -38,12 +38,20 @@ if ! RELEASE_JSON="$(curl -fsSL "$API_URL")"; then
     exit 1
 fi
 
-DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" | grep "browser_download_url.*$ASSET_NAME\"" | cut -d '"' -f 4)"
+# Extract the release tag, splitting on commas first so this works whether the API returns
+# pretty-printed OR minified JSON. A single-line (minified) response broke the old line-based
+# `grep | cut -f4`: it grabbed the 4th quote-field of the whole blob — the release object's API
+# `url` — and "downloaded" that JSON instead of the binary. Constructing the asset URL from the
+# tag avoids parsing the asset array entirely.
+TAG="$(printf '%s' "$RELEASE_JSON" | tr ',' '\n' | grep '"tag_name"' | head -n1 \
+    | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
 
-if [ -z "$DOWNLOAD_URL" ]; then
-    echo "Error: Could not find release asset for $OS_NAME $ARCH_NAME." >&2
+if [ -z "$TAG" ]; then
+    echo "Error: could not determine the latest release tag from the GitHub API." >&2
     exit 1
 fi
+
+DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/$ASSET_NAME"
 
 echo "Downloading from $DOWNLOAD_URL..."
 if ! curl -fL -o "$TMP_FILE" "$DOWNLOAD_URL"; then

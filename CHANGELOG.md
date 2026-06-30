@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Fixed
+- **installer** — `install.sh` derives the release tag and constructs the asset URL deterministically
+  (robust to minified API JSON), so `self-update` no longer downloads the release API object and
+  refuses to install. `install.ps1` uses a JSON parser and was unaffected.
+
 ## [0.5.0] - 2026-06-30
 
 ### Added
