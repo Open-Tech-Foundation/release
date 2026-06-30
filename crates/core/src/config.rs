@@ -150,92 +150,27 @@ pub struct TargetInfo {
     pub stage_as: &'static str,
     pub ext: &'static str,
     pub cross: bool,
+    /// Whether `init` selects this target by default. Only the widely-supported platforms (the set
+    /// an npm package's `extract.js` resolver typically handles) are on by default; niche targets
+    /// (`win32-arm64`, 32-bit) stay in the registry for explicit opt-in.
+    pub default_on: bool,
 }
 
 /// The single source of truth mapping `(name, arch)` to the three naming systems. `stage_as` is the
 /// Node `process.platform`-`process.arch` directory the package resolver reads — getting it wrong
 /// is the one mistake that publishes a working-looking package no install can use.
+#[rustfmt::skip]
 pub const TARGET_REGISTRY: &[TargetInfo] = &[
-    TargetInfo {
-        label: "Linux x64",
-        name: "linux",
-        arch: "x86_64",
-        triple: "x86_64-unknown-linux-gnu",
-        runner: "ubuntu-latest",
-        stage_as: "linux-x64",
-        ext: "",
-        cross: false,
-    },
-    TargetInfo {
-        label: "Linux ARM64",
-        name: "linux",
-        arch: "aarch64",
-        triple: "aarch64-unknown-linux-gnu",
-        runner: "ubuntu-latest",
-        stage_as: "linux-arm64",
-        ext: "",
-        cross: true,
-    },
-    TargetInfo {
-        label: "Linux x86 (32-bit)",
-        name: "linux",
-        arch: "x86",
-        triple: "i686-unknown-linux-gnu",
-        runner: "ubuntu-latest",
-        stage_as: "linux-ia32",
-        ext: "",
-        cross: true,
-    },
-    TargetInfo {
-        label: "macOS ARM64",
-        name: "macos",
-        arch: "aarch64",
-        triple: "aarch64-apple-darwin",
-        runner: "macos-latest",
-        stage_as: "darwin-arm64",
-        ext: "",
-        cross: false,
-    },
-    TargetInfo {
-        label: "macOS x64",
-        name: "macos",
-        arch: "x86_64",
-        triple: "x86_64-apple-darwin",
-        runner: "macos-latest",
-        stage_as: "darwin-x64",
-        ext: "",
-        cross: false,
-    },
-    TargetInfo {
-        label: "Windows x64",
-        name: "windows",
-        arch: "x86_64",
-        triple: "x86_64-pc-windows-msvc",
-        runner: "windows-latest",
-        stage_as: "win32-x64",
-        ext: ".exe",
-        cross: false,
-    },
-    TargetInfo {
-        label: "Windows ARM64",
-        name: "windows",
-        arch: "aarch64",
-        triple: "aarch64-pc-windows-msvc",
-        runner: "windows-latest",
-        stage_as: "win32-arm64",
-        ext: ".exe",
-        cross: false,
-    },
-    TargetInfo {
-        label: "Windows x86 (32-bit)",
-        name: "windows",
-        arch: "x86",
-        triple: "i686-pc-windows-msvc",
-        runner: "windows-latest",
-        stage_as: "win32-ia32",
-        ext: ".exe",
-        cross: false,
-    },
+    TargetInfo { label: "Linux x64",          name: "linux",   arch: "x86_64",  triple: "x86_64-unknown-linux-gnu",  runner: "ubuntu-latest",  stage_as: "linux-x64",   ext: "",     cross: false, default_on: true },
+    TargetInfo { label: "Linux ARM64",        name: "linux",   arch: "aarch64", triple: "aarch64-unknown-linux-gnu", runner: "ubuntu-latest",  stage_as: "linux-arm64", ext: "",     cross: true,  default_on: true },
+    TargetInfo { label: "Linux x86 (32-bit)", name: "linux",   arch: "x86",     triple: "i686-unknown-linux-gnu",    runner: "ubuntu-latest",  stage_as: "linux-ia32",  ext: "",     cross: true,  default_on: false },
+    TargetInfo { label: "macOS ARM64",        name: "macos",   arch: "aarch64", triple: "aarch64-apple-darwin",      runner: "macos-latest",   stage_as: "darwin-arm64",ext: "",     cross: false, default_on: true },
+    TargetInfo { label: "macOS x64",          name: "macos",   arch: "x86_64",  triple: "x86_64-apple-darwin",       runner: "macos-latest",   stage_as: "darwin-x64",  ext: "",     cross: false, default_on: true },
+    TargetInfo { label: "Windows x64",        name: "windows", arch: "x86_64",  triple: "x86_64-pc-windows-msvc",    runner: "windows-latest", stage_as: "win32-x64",   ext: ".exe", cross: false, default_on: true },
+    // win32-arm64 is rarely in a package's resolver SUPPORTED set and cross-links arm64 on an x64
+    // Windows runner; offered but off by default.
+    TargetInfo { label: "Windows ARM64",      name: "windows", arch: "aarch64", triple: "aarch64-pc-windows-msvc",   runner: "windows-latest", stage_as: "win32-arm64", ext: ".exe", cross: false, default_on: false },
+    TargetInfo { label: "Windows x86 (32-bit)", name: "windows", arch: "x86",   triple: "i686-pc-windows-msvc",      runner: "windows-latest", stage_as: "win32-ia32",  ext: ".exe", cross: false, default_on: false },
 ];
 
 /// Look up the built-in facts for a `(name, arch)` pair.
@@ -369,6 +304,24 @@ pub struct PackageEntry {
     /// `npx jsr publish`. Omitted ⇒ the package is build-only (artifacts -> GitHub Release).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish: Option<String>,
+}
+
+impl PackageEntry {
+    /// Whether this package ships its artifacts via a GitHub Release instead of a registry.
+    ///
+    /// `build-only` means "standalone binaries attached to a GitHub Release" — correct for a cargo
+    /// or generic CLI. It is **meaningless for an npm matrix package**, whose per-platform binaries
+    /// ship *inside the npm tarball* under `bin/<stage_as>/`, not as Release assets. So an
+    /// npm + matrix package is always treated as `publish` regardless of its stored mode, which is
+    /// what keeps its binaries flowing to `npm publish` instead of a cosmetic GitHub Release.
+    pub fn is_build_only(&self) -> bool {
+        self.mode == Mode::BuildOnly && !(self.adapter == Ecosystem::Npm && self.matrix)
+    }
+
+    /// The inverse of [`is_build_only`]: the package is published to its registry.
+    pub fn is_publish(&self) -> bool {
+        !self.is_build_only()
+    }
 }
 
 /// Global lifecycle hook scripts.
@@ -510,7 +463,7 @@ impl ReleaseConfig {
     pub fn build_only_names(&self) -> Vec<String> {
         self.packages
             .iter()
-            .filter(|p| p.mode == Mode::BuildOnly)
+            .filter(|p| p.is_build_only())
             .map(|p| p.name.clone())
             .collect()
     }
@@ -520,7 +473,7 @@ impl ReleaseConfig {
     pub fn matrix_publish_names(&self) -> Vec<String> {
         self.packages
             .iter()
-            .filter(|p| p.matrix && p.mode == Mode::Publish)
+            .filter(|p| p.matrix && p.is_publish())
             .map(|p| p.name.clone())
             .collect()
     }

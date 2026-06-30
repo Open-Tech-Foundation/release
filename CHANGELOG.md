@@ -8,7 +8,24 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Fixed
+- **workflow** — An npm matrix package set to `mode = "build-only"` no longer publishes a
+  binary-less package: `build-only` is meaningless for npm (its per-platform binaries ship inside
+  the tarball, not as GitHub Release assets), so an npm + matrix package is now always routed
+  through the publish job — which `needs` the build, merges the per-target artifacts into
+  `.artifacts/<pkg>`, and runs `otf-release publish --artifacts-dir` — and gets no cosmetic
+  GitHub Release.
+- **workflow** — `check-release` now skips when the release tag already exists on the remote, so
+  ordinary pushes to `main` (docs, chores) don't re-run the full cross-platform build.
+- **workflow** — Removed the stray `# edit me: where the version lives` comment when the version
+  read is a generated npm/cargo/generic-manifest command, and dropped a redundant
+  `download-artifact` in the publish job when only matrix packages feed it.
+
 ### Changed
+- **init** — Default-selected build targets are now the five widely-supported platforms
+  (`linux-x64/arm64`, `darwin-x64/arm64`, `win32-x64`); `win32-arm64` and 32-bit targets remain in
+  the registry for explicit opt-in (they are rarely in a package's resolver set and need extra
+  cross-setup).
 - **version** — The final release review is now an interactive full-screen TUI (raw mode +
   scrollable, color-coded plan: green = publishing, yellow = cascade, dim = range-only/private)
   with `y`/`n` keys, replacing the static boxed text + line prompt.
