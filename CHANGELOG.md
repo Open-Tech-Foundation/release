@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-30
+
 ### Fixed
 - **workflow** — Generated npm release workflows now detect Bun, pnpm, and Yarn lockfiles, use
   Node 24 for Node-based package managers, and use the matching setup/install command instead of
