@@ -71,7 +71,19 @@ pub trait InitPrompt {
 
 /// Wire up the real prompt and run the generator.
 pub fn run(factory: &dyn AdapterFactory, root: &Path, opts: &InitOptions) -> Result<()> {
+    print_intro();
     orchestrate(factory, &StdinInitPrompt, root, opts)
+}
+
+/// A short, friendly preamble so a first-time dev knows what `init` will ask and that nothing is
+/// locked in — every answer has a default and is editable afterward.
+fn print_intro() {
+    println!("\notf-release init — configure releases for this repo.\n");
+    println!(
+        "  • Writes release.toml (the editable source of truth) and a GitHub release workflow."
+    );
+    println!("  • Press Enter to accept the default shown in (parentheses); a hint sits under each prompt.");
+    println!("  • Nothing is permanent — re-run init, edit release.toml by hand, or use `otf-release config`.\n");
 }
 
 /// The testable core of `init`.
@@ -192,7 +204,10 @@ fn select_targets(prompt: &str) -> Result<Vec<Target>> {
         .collect();
     let selected = MultiSelect::new(prompt, labels)
         .with_default(&defaults)
-        .with_help_message(MULTI_HELP)
+        .with_help_message(
+            "the widely-supported platforms are pre-selected; \
+             space toggles · enter confirm",
+        )
         .raw_prompt()?;
     Ok(selected
         .iter()
@@ -915,9 +930,10 @@ fn configure_generic(
         &format!("  {name} — mode:"),
         vec![
             "publish (to registry)",
-            "build-only (GitHub Release artifacts)",
+            "build-only (standalone binaries on a GitHub Release)",
         ],
     )
+    .with_help_message(MODE_HELP)
     .raw_prompt()?
     .index
     {
@@ -926,20 +942,23 @@ fn configure_generic(
     };
 
     let matrix = Select::new(
-        &format!("  {name} — build across a target matrix?"),
+        &format!("  {name} — cross-compile a binary per platform?"),
         vec!["Yes", "No"],
     )
+    .with_help_message(MATRIX_HELP)
     .raw_prompt()?
     .index
         == 0;
     let targets = if matrix {
-        select_targets("  Target triples:")?
+        select_targets("  Target platforms:")?
     } else {
         Vec::new()
     };
 
+    // `otf-release build` runs `rustup target add {triple}` itself and substitutes the placeholders,
+    // so the commands here use `{triple}`/`{ext}`/`{bin}`, not GitHub `${{ matrix.* }}` expressions.
     let default_cmd = match (kind, matrix) {
-        (Some("Rust / Cargo"), true) => "rustup target add ${{ matrix.rust_target }} && cargo build --release --target ${{ matrix.rust_target }}",
+        (Some("Rust / Cargo"), true) => "cargo build --release --target {triple}",
         (Some("Rust / Cargo"), false) => "cargo build --release",
         (Some("Node / npm"), _) => "npm run build",
         (Some("Deno / JSR"), _) => "deno task build",
@@ -951,11 +970,17 @@ fn configure_generic(
     };
     let command = Text::new(&format!("  {name} — build command (optional):"))
         .with_default(default_cmd)
+        .with_help_message(if matrix {
+            COMMAND_HELP
+        } else {
+            "runs in CI before release; leave blank for none"
+        })
         .prompt()?;
 
     let bin_name = if kind == Some("Rust / Cargo") {
         let n = Text::new(&format!("  {name} — binary name:"))
             .with_default(name)
+            .with_help_message(BIN_NAME_HELP)
             .prompt()?;
         Some(n)
     } else {
@@ -963,24 +988,26 @@ fn configure_generic(
     };
 
     let default_artifacts = match (kind, matrix) {
-        (Some("Rust / Cargo"), true) => format!(
-            "target/${{{{ matrix.target }}}}/release/{}${{{{ matrix.ext }}}}",
-            bin_name.as_deref().unwrap()
-        ),
+        (Some("Rust / Cargo"), true) => "target/{triple}/release/{bin}{ext}".to_string(),
         (Some("Rust / Cargo"), false) => format!("target/release/{}", bin_name.as_deref().unwrap()),
         (Some("Node / npm"), _) => "dist/*".to_string(),
-        _ => "".to_string(),
+        _ => String::new(),
     };
     let artifacts = Text::new(&format!("  {name} — artifacts to stage (optional):"))
         .with_default(&default_artifacts)
+        .with_help_message(if matrix {
+            ARTIFACTS_HELP
+        } else {
+            "files to attach/stage on release"
+        })
         .prompt()?;
 
     let publish = if mode == Mode::Publish {
-        let cmd = Text::new(&format!(
-            "  {name} — publish command (e.g. npx jsr publish):"
-        ))
-        .with_default("")
-        .prompt()?;
+        let cmd = Text::new(&format!("  {name} — publish command:"))
+            .with_default("")
+            .with_placeholder("e.g. npx jsr publish")
+            .with_help_message("the command CI runs to push this package to its registry")
+            .prompt()?;
         (!cmd.trim().is_empty()).then_some(cmd)
     } else {
         None
@@ -1006,12 +1033,36 @@ fn configure_generic(
 pub struct StdinInitPrompt;
 
 const MULTI_HELP: &str = "↑↓ move · space toggle · enter confirm";
+const SELECT_HELP: &str = "↑↓ move · enter select";
+
+const BUILD_PKGS_HELP: &str =
+    "a build step compiles/bundles before publish (a Rust binary, a TS bundle, …). \
+     Packages you don't pick are published as-is. ↑↓ move · space toggle · enter confirm";
+const MODE_HELP: &str =
+    "publish → push to the registry  ·  build-only → standalone binaries on a GitHub Release (no registry)";
+const MATRIX_HELP: &str =
+    "Yes → cross-compile one binary per OS/arch (Rust, Go, …), staged per platform  ·  No → a single build";
+const BIN_NAME_HELP: &str =
+    "the compiled executable's base name; staged at bin/<platform>-<arch>/<name> inside the package";
+const COMMAND_HELP: &str =
+    "runs in CI for each target; {triple} {ext} {bin} are substituted per platform";
+const ARTIFACTS_HELP: &str =
+    "path to the binary the command produced; {triple} {ext} {bin} expand per target";
+const TAG_FORMAT_HELP: &str =
+    "e.g. v{version} (single package) or {name}@{version} (per-package tags in a monorepo)";
+const CHANGELOG_SCOPE_HELP: &str =
+    "Root → one shared CHANGELOG.md  ·  Per-package → each package keeps its own (best for monorepos)";
+const NOTES_HELP: &str =
+    "how the GitHub Release body is filled: auto (from PRs/commits), your CHANGELOG, or a commit list";
 
 impl InitPrompt for StdinInitPrompt {
     fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
         let labels: Vec<&str> = Ecosystem::ALL.iter().map(|e| e.label()).collect();
         let chosen = MultiSelect::new("Adapters to enable:", labels)
-            .with_help_message(MULTI_HELP)
+            .with_help_message(
+                "the ecosystems/registries this repo releases to; pick all that apply. \
+                 space toggles · enter confirm",
+            )
             .raw_prompt()?;
         Ok(chosen.iter().map(|o| Ecosystem::ALL[o.index]).collect())
     }
@@ -1022,7 +1073,7 @@ impl InitPrompt for StdinInitPrompt {
         }
         let labels: Vec<String> = publishable.iter().map(|p| p.name.clone()).collect();
         let chosen = MultiSelect::new("Which packages need a build step before publish?", labels)
-            .with_help_message(MULTI_HELP)
+            .with_help_message(BUILD_PKGS_HELP)
             .raw_prompt()?;
         Ok(chosen
             .iter()
@@ -1035,7 +1086,9 @@ impl InitPrompt for StdinInitPrompt {
             enabled[0]
         } else {
             let labels: Vec<&str> = enabled.iter().map(|e| e.label()).collect();
-            let opt = Select::new(&format!("{pkg_name} — adapter:"), labels).raw_prompt()?;
+            let opt = Select::new(&format!("{pkg_name} — adapter:"), labels)
+                .with_help_message("which registry/ecosystem this package is released through")
+                .raw_prompt()?;
             enabled[opt.index]
         };
 
@@ -1053,6 +1106,7 @@ impl InitPrompt for StdinInitPrompt {
                     "build-only (standalone binaries on a GitHub Release)",
                 ],
             )
+            .with_help_message(MODE_HELP)
             .raw_prompt()?
             .index
             {
@@ -1062,9 +1116,10 @@ impl InitPrompt for StdinInitPrompt {
         };
 
         let matrix = Select::new(
-            &format!("{pkg_name} — build across a target matrix?"),
+            &format!("{pkg_name} — cross-compile a binary per platform?"),
             vec!["Yes", "No"],
         )
+        .with_help_message(MATRIX_HELP)
         .raw_prompt()?
         .index
             == 0;
@@ -1081,6 +1136,7 @@ impl InitPrompt for StdinInitPrompt {
         let (bin_name, compress, default_cmd, default_artifacts) = if matrix {
             let bin = Text::new(&format!("{pkg_name} — binary name:"))
                 .with_default(&slug(pkg_name))
+                .with_help_message(BIN_NAME_HELP)
                 .prompt()?;
             let compress = (adapter == Ecosystem::Npm).then(|| "brotli".to_string());
             let cmd = if adapter == Ecosystem::Generic {
@@ -1104,9 +1160,19 @@ impl InitPrompt for StdinInitPrompt {
         };
         let command = Text::new(&format!("{pkg_name} — build command:"))
             .with_default(&default_cmd)
+            .with_help_message(if matrix {
+                COMMAND_HELP
+            } else {
+                "runs in CI before publish (e.g. a bundler). Leave blank if no build is needed."
+            })
             .prompt()?;
         let artifacts = Text::new(&format!("{pkg_name} — artifacts to stage:"))
             .with_default(&default_artifacts)
+            .with_help_message(if matrix {
+                ARTIFACTS_HELP
+            } else {
+                "files to include when publishing (e.g. dist/**). Optional."
+            })
             .prompt()?;
 
         Ok(PackageEntry {
@@ -1153,14 +1219,27 @@ impl InitPrompt for StdinInitPrompt {
             } else {
                 "Add another package by hand?"
             };
-            if Select::new(question, vec!["Yes", "No"]).raw_prompt()?.index == 1 {
+            if Select::new(question, vec!["Yes", "No"])
+                .with_help_message(SELECT_HELP)
+                .raw_prompt()?
+                .index
+                == 1
+            {
                 break;
             }
-            let name = Text::new("  name:").prompt()?;
-            let manifest =
-                Text::new("  manifest file holding the version (e.g. deno.json):").prompt()?;
+            let name = Text::new("  name:")
+                .with_placeholder("@scope/pkg or my-tool")
+                .with_help_message("the package name; also used in tags and the changelog")
+                .prompt()?;
+            let manifest = Text::new("  manifest file holding the version:")
+                .with_placeholder("deno.json")
+                .with_help_message("the file the version is read from and bumped in")
+                .prompt()?;
             let version_field = Text::new("  version field:")
                 .with_default(DEFAULT_VERSION_FIELD)
+                .with_help_message(
+                    "key inside the manifest; dot-paths like workspace.package.version work",
+                )
                 .prompt()?;
             out.push(configure_generic(&name, &manifest, &version_field, None)?);
         }
@@ -1172,14 +1251,18 @@ impl InitPrompt for StdinInitPrompt {
             &format!("{} already exists. Overwrite?", path.display()),
             vec!["No", "Yes"],
         )
+        .with_help_message(
+            "regenerates this file from your answers; your other files are untouched",
+        )
         .raw_prompt()?
         .index
             == 1)
     }
 
     fn tag_format(&self) -> Result<String> {
-        Ok(Text::new("Git tag format ({version}, optional {name}):")
+        Ok(Text::new("Git tag format:")
             .with_default(DEFAULT_TAG_FORMAT)
+            .with_help_message(TAG_FORMAT_HELP)
             .prompt()?)
     }
 
@@ -1195,6 +1278,7 @@ impl InitPrompt for StdinInitPrompt {
                     "Codeberg (Coming Soon)",
                 ],
             )
+            .with_help_message("only GitHub is fully supported today")
             .prompt()?;
 
             if ans == "GitHub" {
@@ -1210,6 +1294,7 @@ impl InitPrompt for StdinInitPrompt {
             "Where should release notes be maintained?",
             vec!["Root CHANGELOG.md", "Per-package CHANGELOG.md files"],
         )
+        .with_help_message(CHANGELOG_SCOPE_HELP)
         .prompt()?;
 
         if ans.starts_with("Root") {
@@ -1228,6 +1313,7 @@ impl InitPrompt for StdinInitPrompt {
                 "Semantic-style commit list since the last matching tag",
             ],
         )
+        .with_help_message(NOTES_HELP)
         .prompt()?;
 
         if ans.starts_with("Copy") {

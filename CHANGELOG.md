@@ -22,6 +22,10 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   `download-artifact` in the publish job when only matrix packages feed it.
 
 ### Changed
+- **init** — Made the setup flow self-explanatory: a short intro, an inline hint under every prompt
+  (what it means and its consequence), placeholders, and pre-filled defaults you can edit or accept
+  with Enter. Also corrected the generic Rust/matrix command/artifacts defaults to use the
+  `{triple}`/`{ext}`/`{bin}` placeholders (they still showed stale GitHub `${{ matrix.* }}` syntax).
 - **init** — An npm package is no longer offered the `build-only` mode: its prebuilt binaries ship
   inside the npm tarball, so it is always `publish`. `build-only` (standalone binaries on a GitHub
   Release) is now only prompted for cargo/generic packages, and its label clarifies that.
