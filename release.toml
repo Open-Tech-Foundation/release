@@ -12,8 +12,9 @@ name = "otf-release"
 adapter = "generic"
 mode = "build-only"
 matrix = true
-command = "rustup target add ${{ matrix.rust_target }} && cargo build --release --target ${{ matrix.rust_target }}"
-artifacts = "target/${{ matrix.rust_target }}/release/otf-release${{ matrix.ext }}"
+command = "cargo build --release --target {triple}"
+artifacts = "target/{triple}/release/{bin}{ext}"
+bin_name = "otf-release"
 manifest = "Cargo.toml"
 version_field = "version"
 

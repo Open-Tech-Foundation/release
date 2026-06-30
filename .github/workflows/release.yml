@@ -17,46 +17,59 @@ jobs:
       - uses: actions/checkout@v4
       - id: check
         run: |
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"  # edit me: where the version lives
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [ "$version" = "0.0.0" ]; then
             echo "Version is 0.0.0 (unreleased); skipping build."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          tag="v$version"
+          if git ls-remote --tags origin "refs/tags/$tag" | grep -q .; then
+            echo "Tag $tag already exists; nothing to release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "should_release=true" >> "$GITHUB_OUTPUT"
 
-  build-otf-release:
+  matrix-otf-release:
     needs: [check-release]
     if: needs.check-release.outputs.should_release == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - { rust_target: "x86_64-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux", arch: "x86_64" }  # edit me
-          - { rust_target: "aarch64-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux", arch: "aarch64" }  # edit me
-          - { rust_target: "x86_64-apple-darwin", os: "macos-latest", ext: "", name: "macos", arch: "x86_64" }  # edit me
-          - { rust_target: "aarch64-apple-darwin", os: "macos-latest", ext: "", name: "macos", arch: "aarch64" }  # edit me
-          - { rust_target: "x86_64-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "x86_64" }  # edit me
-          # - { rust_target: "i686-unknown-linux-gnu", os: "ubuntu-latest", ext: "", name: "linux", arch: "x86" }  # edit me
-          # - { rust_target: "aarch64-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "aarch64" }  # edit me
-          # - { rust_target: "i686-pc-windows-msvc", os: "windows-latest", ext: ".exe", name: "windows", arch: "x86" }  # edit me
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux aarch64 cross toolchain
-        if: matrix.rust_target == 'aarch64-unknown-linux-gnu'
+      - name: Install otf-release
+        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
+      - id: set
+        run: echo "matrix=$(otf-release matrix --package otf-release)" >> "$GITHUB_OUTPUT"
+
+  build-otf-release:
+    needs: [check-release, matrix-otf-release]
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix-otf-release.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross toolchain
+        if: ${{ matrix.cross }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-      - name: Configure Linux aarch64 linker
-        if: matrix.rust_target == 'aarch64-unknown-linux-gnu'
-        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          sudo apt-get install -y gcc-${{ matrix.arch }}-linux-gnu
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+      - name: Install otf-release
+        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
       - name: Build otf-release
-        run: rustup target add ${{ matrix.rust_target }} && cargo build --release --target ${{ matrix.rust_target }}  # edit me: cross-compile with ${{ matrix.rust_target }}
+        run: otf-release build --package otf-release --target ${{ matrix.name }}/${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
           name: otf-release-${{ matrix.name }}-${{ matrix.arch }}
-          path: target/${{ matrix.rust_target }}/release/otf-release${{ matrix.ext }}
+          path: .artifacts/otf-release
 
   github-release:
     needs: [check-release, build-otf-release]
@@ -79,17 +92,31 @@ jobs:
             echo "Release $tag already exists; nothing to do."
           else
             notes_file="$(mktemp)"
-            if [ -f CHANGELOG.md ]; then
-              awk -v version="$version" '
+            changelog_names=("")
+            changelog_files=("CHANGELOG.md")
+            for i in "${!changelog_files[@]}"; do
+              changelog_file="${changelog_files[$i]}"
+              changelog_name="${changelog_names[$i]}"
+              if [ -z "$changelog_file" ] || [ ! -f "$changelog_file" ]; then
+                continue
+              fi
+              section="$(awk -v version="$version" '
                 $0 ~ "^## \\[?" version "\\]?" { in_section=1; next }
                 in_section && /^## / { exit }
                 in_section { print }
-              ' CHANGELOG.md | sed '/./,$!d' > "$notes_file"
-            fi
+              ' "$changelog_file" | sed '/./,$!d')"
+              if [ -n "$section" ]; then
+                if [ -n "$changelog_name" ]; then
+                  printf '### %s\n\n%s\n\n' "$changelog_name" "$section" >> "$notes_file"
+                else
+                  printf '%s\n' "$section" >> "$notes_file"
+                fi
+              fi
+            done
             if [ -s "$notes_file" ]; then
               notes_arg=(--notes-file "$notes_file")
             else
-              echo "No CHANGELOG.md notes found for $version; using GitHub generated notes."
+              echo "No configured changelog notes found for $version; using GitHub generated notes."
               notes_arg=(--generate-notes)
             fi
             rm -rf ".flat-artifacts-otf-release"

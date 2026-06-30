@@ -11,6 +11,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ## [0.8.0] - 2026-06-30
 
 ### Fixed
+- **workflow** — Regenerated the repository release workflow and updated its matrix package
+  config to the current `otf-release build` placeholders, so post-release pushes skip existing tags
+  and real releases stage binaries correctly.
 - **workflow** — Generated release workflows now use the npm package manifest path discovered
   during `init` to read versions directly, avoiding a large inline workspace-scanning script.
 - **init** — Reworded the package build selection prompt around built artifacts so binary-backed
