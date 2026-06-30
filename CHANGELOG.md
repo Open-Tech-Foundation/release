@@ -22,6 +22,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   `download-artifact` in the publish job when only matrix packages feed it.
 
 ### Changed
+- **init** — An npm package is no longer offered the `build-only` mode: its prebuilt binaries ship
+  inside the npm tarball, so it is always `publish`. `build-only` (standalone binaries on a GitHub
+  Release) is now only prompted for cargo/generic packages, and its label clarifies that.
 - **init** — Default-selected build targets are now the five widely-supported platforms
   (`linux-x64/arm64`, `darwin-x64/arm64`, `win32-x64`); `win32-arm64` and 32-bit targets remain in
   the registry for explicit opt-in (they are rarely in a package's resolver set and need extra

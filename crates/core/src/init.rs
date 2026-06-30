@@ -1039,18 +1039,26 @@ impl InitPrompt for StdinInitPrompt {
             enabled[opt.index]
         };
 
-        let mode = match Select::new(
-            &format!("{pkg_name} — mode:"),
-            vec![
-                "publish (to registry)",
-                "build-only (GitHub Release artifacts)",
-            ],
-        )
-        .raw_prompt()?
-        .index
-        {
-            1 => Mode::BuildOnly,
-            _ => Mode::Publish,
+        // An npm package is always published to the registry — its prebuilt binaries ship *inside*
+        // the tarball, so "build-only" (= GitHub Release assets, no registry push) never applies.
+        // Only cargo/generic packages, which can be distributed as standalone binaries, get the
+        // choice.
+        let mode = if adapter == Ecosystem::Npm {
+            Mode::Publish
+        } else {
+            match Select::new(
+                &format!("{pkg_name} — mode:"),
+                vec![
+                    "publish (to registry)",
+                    "build-only (standalone binaries on a GitHub Release)",
+                ],
+            )
+            .raw_prompt()?
+            .index
+            {
+                1 => Mode::BuildOnly,
+                _ => Mode::Publish,
+            }
         };
 
         let matrix = Select::new(
