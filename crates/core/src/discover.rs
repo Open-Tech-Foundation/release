@@ -153,17 +153,34 @@ fn field_value<'a>(text: &'a str, field: &str) -> Option<&'a str> {
         let before_ok =
             at == 0 || matches!(text.as_bytes()[at - 1], b'"' | b'\'' | b' ' | b'\n' | b'\t');
         let after = at + field.len();
-        let after_ok = text.as_bytes().get(after).map_or(true, |b| {
-            matches!(b, b'"' | b'\'' | b' ' | b'\t' | b':' | b'=')
-        });
+        let after_ok = text
+            .as_bytes()
+            .get(after)
+            .is_none_or(|b| matches!(b, b'"' | b'\'' | b' ' | b'\t' | b':' | b'='));
         if before_ok && after_ok {
-            if let Some(sep) = text[after..].find([':', '=']) {
-                let val_search = after + sep + 1;
-                if let Some(q) = text[val_search..].find(['"', '\'']) {
-                    let open = val_search + q;
-                    let quote = text.as_bytes()[open] as char;
-                    if let Some(close) = text[open + 1..].find(quote) {
-                        return Some(&text[open + 1..open + 1 + close]);
+            // The separator must follow the key directly (only an optional closing quote and inline
+            // whitespace between), matching the generic adapter's `version_value_span` so discovery
+            // and the adapter agree on what counts as a real field.
+            let bytes = text.as_bytes();
+            let mut p = after;
+            if matches!(bytes.get(p), Some(b'"' | b'\'')) {
+                p += 1;
+            }
+            while matches!(bytes.get(p), Some(b' ' | b'\t')) {
+                p += 1;
+            }
+            if matches!(bytes.get(p), Some(b':' | b'=')) {
+                let mut v = p + 1;
+                while matches!(bytes.get(v), Some(b' ' | b'\t')) {
+                    v += 1;
+                }
+                if let Some(&quote) = bytes.get(v) {
+                    if quote == b'"' || quote == b'\'' {
+                        let open = v;
+                        let quote = quote as char;
+                        if let Some(close) = text[open + 1..].find(quote) {
+                            return Some(&text[open + 1..open + 1 + close]);
+                        }
                     }
                 }
             }

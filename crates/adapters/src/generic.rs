@@ -100,20 +100,36 @@ fn version_value_span(text: &str, field: &str) -> Option<std::ops::Range<usize>>
                 b'"' | b'\'' | b' ' | b'\n' | b'\t'
             );
         let after = key_at + field.len();
-        let after_ok = text.as_bytes().get(after).map_or(true, |b| {
-            matches!(b, b'"' | b'\'' | b' ' | b'\t' | b':' | b'=')
-        });
+        let after_ok = text
+            .as_bytes()
+            .get(after)
+            .is_none_or(|b| matches!(b, b'"' | b'\'' | b' ' | b'\t' | b':' | b'='));
         if before_ok && after_ok {
-            // Find the separator, then the opening quote of the value.
-            if let Some(sep_rel) = text[after..].find([':', '=']) {
-                let val_search = after + sep_rel + 1;
-                if let Some(q_rel) = text[val_search..].find(['"', '\'']) {
-                    let open = val_search + q_rel;
-                    let quote = text.as_bytes()[open];
-                    if let Some(close_rel) = text[open + 1..].find(quote as char) {
-                        let start = open + 1;
-                        let end = start + close_rel;
-                        return Some(start..end);
+            // The separator must follow the key directly — only an optional closing quote (for a
+            // quoted key) and inline whitespace may sit between. This stops a stray `version`
+            // word in prose from binding to some unrelated `:`/`=` and quote further down the file.
+            let bytes = text.as_bytes();
+            let mut p = after;
+            if matches!(bytes.get(p), Some(b'"' | b'\'')) {
+                p += 1; // closing quote of a quoted key
+            }
+            while matches!(bytes.get(p), Some(b' ' | b'\t')) {
+                p += 1;
+            }
+            if matches!(bytes.get(p), Some(b':' | b'=')) {
+                // After the separator, skip inline whitespace, then require an opening quote.
+                let mut v = p + 1;
+                while matches!(bytes.get(v), Some(b' ' | b'\t')) {
+                    v += 1;
+                }
+                if let Some(&quote) = bytes.get(v) {
+                    if quote == b'"' || quote == b'\'' {
+                        let open = v;
+                        if let Some(close_rel) = text[open + 1..].find(quote as char) {
+                            let start = open + 1;
+                            let end = start + close_rel;
+                            return Some(start..end);
+                        }
                     }
                 }
             }
@@ -648,6 +664,26 @@ mod tests {
         a.write_version(&p, "0.3.0").unwrap();
         let after = std::fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap();
         assert!(after.contains("version = \"0.3.0\""), "got: {after}");
+    }
+
+    #[test]
+    fn text_matcher_ignores_prose_version_and_binds_to_the_real_field() {
+        // A `.cfg` (neither JSON nor TOML) goes through the text fallback. A stray "version" word
+        // in a comment must not capture the unrelated quoted string two lines down; the matcher
+        // must bind to the real `version = "..."` field.
+        // The comment's own `version notes: "draft"` has a separator and a quoted string that the
+        // old forward-search matcher would have grabbed; the tightened matcher skips it.
+        let tmp = tempfile::tempdir().unwrap();
+        let original = "# version notes: \"draft\"\nversion = \"1.2.3\"\n";
+        std::fs::write(tmp.path().join("app.cfg"), original).unwrap();
+        let a = GenericAdapter::new(tmp.path(), vec![pkg("x", "app.cfg", None)]);
+
+        let p = a.discover_packages().unwrap().pop().unwrap();
+        assert_eq!(p.version, "1.2.3");
+
+        a.write_version(&p, "1.3.0").unwrap();
+        let after = std::fs::read_to_string(tmp.path().join("app.cfg")).unwrap();
+        assert_eq!(after, "# version notes: \"draft\"\nversion = \"1.3.0\"\n");
     }
 
     #[test]
