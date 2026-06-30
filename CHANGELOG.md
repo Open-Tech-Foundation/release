@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-30
+
 ### Fixed
 - **workflow** — An npm matrix package set to `mode = "build-only"` no longer publishes a
   binary-less package: `build-only` is meaningless for npm (its per-platform binaries ship inside
