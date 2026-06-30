@@ -80,6 +80,9 @@ From the config, `init` emits jobs:
   GitHub Release tagged from `tag_format`, idempotently. The default `GITHUB_TOKEN` +
   `contents: write`. Its release body follows the global `github_release_notes` setting.
 
+For npm repos, generated jobs detect the package manager from the root lockfile: `bun.lockb` /
+`bun.lock` use Bun, `pnpm-lock.yaml` uses pnpm, `yarn.lock` uses Yarn, and otherwise npm is used.
+
 ## Explicit caveats (surfaced to the user)
 
 - **Matrix triples can't be fully inferred.** `init` writes a sensible default plus a

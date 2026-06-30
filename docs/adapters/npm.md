@@ -67,9 +67,10 @@ an unresolvable `workspace:*` range.
 
 ## Lockfile (`update_lockfile`)
 
-After version writes, refresh `package-lock.json` so a CI `npm ci` does not drift from the
-manifests. This runs in the **same commit** as the version changes (see
-[version step 9](../commands/version.md)).
+After version writes, refresh the npm lockfile so CI installs do not drift from the manifests.
+This runs in the **same commit** as the version changes (see
+[version step 9](../commands/version.md)). Generated release workflows use the repo's root
+lockfile to choose the install command: Bun, pnpm, Yarn, or npm.
 
 ## Range syntax (`format_range`)
 

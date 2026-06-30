@@ -27,6 +27,68 @@ use crate::discover::{scan_generic_candidates, GenericCandidate};
 const INSTALL_OTF_RELEASE: &str =
     "        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash\n";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NpmTool {
+    Npm,
+    Bun,
+    Pnpm,
+    Yarn,
+}
+
+impl NpmTool {
+    fn detect(root: &Path) -> Self {
+        if root.join("bun.lockb").exists() || root.join("bun.lock").exists() {
+            Self::Bun
+        } else if root.join("pnpm-lock.yaml").exists() {
+            Self::Pnpm
+        } else if root.join("yarn.lock").exists() {
+            Self::Yarn
+        } else {
+            Self::Npm
+        }
+    }
+
+    fn setup_node(self, s: &mut String, registry: bool) {
+        match self {
+            Self::Bun => {
+                s.push_str("      - uses: oven-sh/setup-bun@v2\n");
+            }
+            Self::Pnpm => {
+                s.push_str("      - uses: pnpm/action-setup@v4\n");
+                s.push_str("        with:\n          version: latest\n");
+                s.push_str("      - uses: actions/setup-node@v4\n");
+                s.push_str("        with:\n          node-version: 24\n");
+                if registry {
+                    s.push_str("          registry-url: https://registry.npmjs.org\n");
+                }
+            }
+            Self::Yarn => {
+                s.push_str("      - uses: actions/setup-node@v4\n");
+                s.push_str("        with:\n          node-version: 24\n");
+                if registry {
+                    s.push_str("          registry-url: https://registry.npmjs.org\n");
+                }
+            }
+            Self::Npm => {
+                s.push_str("      - uses: actions/setup-node@v4\n");
+                s.push_str("        with:\n          node-version: 24\n");
+                if registry {
+                    s.push_str("          registry-url: https://registry.npmjs.org\n");
+                }
+            }
+        }
+    }
+
+    fn install_command(self) -> &'static str {
+        match self {
+            Self::Npm => "npm ci",
+            Self::Bun => "bun install --frozen-lockfile",
+            Self::Pnpm => "pnpm install --frozen-lockfile",
+            Self::Yarn => "yarn install --immutable",
+        }
+    }
+}
+
 /// Options for an `init` run.
 #[derive(Debug, Clone, Default)]
 pub struct InitOptions {
@@ -150,7 +212,7 @@ pub fn orchestrate(
     }
 
     // 2. Generate the workflow from it.
-    let yaml = render_workflow(&config);
+    let yaml = render_workflow_for_root(&config, root);
     let yml_path = root.join(".github/workflows/release.yml");
     if write_allowed(&yml_path, opts.force, prompt)? {
         fs::create_dir_all(yml_path.parent().unwrap())
@@ -265,6 +327,10 @@ fn render_check_release_job(s: &mut String, version_cmd: &str, needs_edit: bool,
 ///   GitHub Releases tagged from `tag_format`, idempotently. **No registry push for
 ///   build-only packages.**
 pub fn render_snapshot_workflow(config: &ReleaseConfig) -> String {
+    render_snapshot_workflow_with_npm_tool(config, NpmTool::Npm)
+}
+
+fn render_snapshot_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> String {
     let mut s = String::new();
     s.push_str("name: Snapshot Release\n\n");
     s.push_str("on:\n");
@@ -286,11 +352,7 @@ pub fn render_snapshot_workflow(config: &ReleaseConfig) -> String {
         s.push_str("        run: rustup update stable\n");
     }
     if config.adapters.contains(&Ecosystem::Npm) {
-        s.push_str("      - name: Install Node\n");
-        s.push_str("        uses: actions/setup-node@v4\n");
-        s.push_str("        with:\n");
-        s.push_str("          node-version: 'lts/*'\n");
-        s.push_str("          registry-url: 'https://registry.npmjs.org'\n");
+        npm_tool.setup_node(&mut s, true);
     }
 
     s.push_str("      - name: Install otf-release\n");
@@ -308,6 +370,14 @@ pub fn render_snapshot_workflow(config: &ReleaseConfig) -> String {
 }
 
 pub fn render_workflow(config: &ReleaseConfig) -> String {
+    render_workflow_with_npm_tool(config, NpmTool::Npm)
+}
+
+fn render_workflow_for_root(config: &ReleaseConfig, root: &Path) -> String {
+    render_workflow_with_npm_tool(config, NpmTool::detect(root))
+}
+
+fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> String {
     let any_build_only = config.packages.iter().any(|p| p.is_build_only());
     let npm_enabled = config.adapters.contains(&Ecosystem::Npm);
     let cargo_publishes = config
@@ -335,7 +405,7 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
     // Build jobs only for packages that actually declare a build command.
     let has_build = |p: &&PackageEntry| !p.command.trim().is_empty();
     for entry in config.packages.iter().filter(|p| has_build(p)) {
-        render_build_job(&mut s, entry);
+        render_build_job(&mut s, entry, npm_tool);
     }
 
     if needs_publish {
@@ -355,6 +425,7 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
             &needs,
             &matrix_pubs,
             npm_enabled,
+            npm_tool,
             cargo_publishes,
             generic_publishes,
         );
@@ -440,11 +511,11 @@ fn npm_version_read_cmd(name: &str) -> String {
 }
 
 /// One build job: matrix or single runner, runs the package's command, uploads its artifacts.
-fn render_build_job(s: &mut String, entry: &PackageEntry) {
+fn render_build_job(s: &mut String, entry: &PackageEntry, npm_tool: NpmTool) {
     if entry.matrix {
-        render_matrix_build_jobs(s, entry);
+        render_matrix_build_jobs(s, entry, npm_tool);
     } else {
-        render_single_build_job(s, entry);
+        render_single_build_job(s, entry, npm_tool);
     }
 }
 
@@ -463,7 +534,7 @@ fn build_toolchains(entry: &PackageEntry) -> (bool, bool) {
 /// job that fans out over `fromJSON(...)` and calls `otf-release build` per target. The tool — not
 /// hand-written YAML — owns the triple/runner/cross/stage_as reconciliation, so there are no
 /// `# edit me` markers.
-fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry) {
+fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmTool) {
     let name = &entry.name;
     let art_slug = slug(name);
     let matrix_job = format!("matrix-{art_slug}");
@@ -507,9 +578,8 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry) {
         s.push_str("        with:\n          targets: ${{ matrix.triple }}\n");
     }
     if node {
-        s.push_str("      - uses: actions/setup-node@v4\n");
-        s.push_str("        with:\n          node-version: 20\n");
-        s.push_str("      - run: npm ci\n");
+        npm_tool.setup_node(s, false);
+        s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
     }
     s.push_str("      - name: Install otf-release\n");
     s.push_str(INSTALL_OTF_RELEASE);
@@ -527,7 +597,7 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry) {
 }
 
 /// A non-matrix package builds on one runner with its plain command.
-fn render_single_build_job(s: &mut String, entry: &PackageEntry) {
+fn render_single_build_job(s: &mut String, entry: &PackageEntry, npm_tool: NpmTool) {
     let job = build_job(&entry.name);
     let art_slug = slug(&entry.name);
     s.push_str(&format!("  {job}:\n"));
@@ -541,9 +611,8 @@ fn render_single_build_job(s: &mut String, entry: &PackageEntry) {
             s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
         }
         Ecosystem::Npm => {
-            s.push_str("      - uses: actions/setup-node@v4\n");
-            s.push_str("        with:\n          node-version: 20\n");
-            s.push_str("      - run: npm ci\n");
+            npm_tool.setup_node(s, false);
+            s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
         }
         // Generic is language-agnostic: no toolchain is assumed — the command sets up its own.
         Ecosystem::Generic => {}
@@ -583,6 +652,7 @@ fn render_publish_job(
     needs: &[String],
     matrix_pubs: &[&PackageEntry],
     npm: bool,
+    npm_tool: NpmTool,
     cargo: bool,
     generic: bool,
 ) {
@@ -595,9 +665,7 @@ fn render_publish_job(
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
     if npm {
-        s.push_str("      - uses: actions/setup-node@v4\n");
-        s.push_str("        with:\n          node-version: 20\n");
-        s.push_str("          registry-url: https://registry.npmjs.org\n");
+        npm_tool.setup_node(s, true);
     }
     if cargo {
         s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
@@ -626,7 +694,7 @@ fn render_publish_job(
         s.push_str("          merge-multiple: true\n");
     }
     if npm {
-        s.push_str("      - run: npm ci\n");
+        s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
     }
     s.push_str("      - name: Install otf-release\n");
     s.push_str(INSTALL_OTF_RELEASE);
@@ -1515,6 +1583,7 @@ mod tests {
         let out = render_workflow(&config);
         assert!(out.contains("  publish:\n"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
+        assert!(out.contains("          node-version: 24\n"));
         assert!(
             out.contains("          version=\"$(node -p \"require('./package.json').version\")\"")
         );
@@ -1524,6 +1593,68 @@ mod tests {
         // No build steps, so no needs and no artifact download.
         assert!(out.contains("needs: [check-release]"));
         assert!(!out.contains("github-release"));
+    }
+
+    #[test]
+    fn npm_workflow_uses_detected_bun_lockfile() {
+        let config = ReleaseConfig {
+            snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
+            provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
+            hooks: crate::config::Hooks::default(),
+            adapters: vec![Ecosystem::Npm],
+            packages: vec![npm_publish("docs-site")],
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("bun.lock"), "").unwrap();
+
+        let out = render_workflow_for_root(&config, tmp.path());
+
+        assert!(out.contains("      - uses: oven-sh/setup-bun@v2\n"));
+        assert!(out.contains("      - run: bun install --frozen-lockfile\n"));
+        assert!(!out.contains("      - run: npm ci\n"));
+    }
+
+    #[test]
+    fn npm_tool_detection_prefers_bun_then_other_lockfiles() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(NpmTool::detect(tmp.path()), NpmTool::Npm);
+
+        std::fs::write(tmp.path().join("yarn.lock"), "").unwrap();
+        assert_eq!(NpmTool::detect(tmp.path()), NpmTool::Yarn);
+
+        std::fs::write(tmp.path().join("pnpm-lock.yaml"), "").unwrap();
+        assert_eq!(NpmTool::detect(tmp.path()), NpmTool::Pnpm);
+
+        std::fs::write(tmp.path().join("bun.lockb"), "").unwrap();
+        assert_eq!(NpmTool::detect(tmp.path()), NpmTool::Bun);
+    }
+
+    #[test]
+    fn pnpm_and_yarn_workflows_do_not_use_corepack() {
+        let config = ReleaseConfig {
+            snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
+            provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
+            hooks: crate::config::Hooks::default(),
+            adapters: vec![Ecosystem::Npm],
+            packages: vec![npm_publish("docs-site")],
+        };
+
+        let pnpm = render_workflow_with_npm_tool(&config, NpmTool::Pnpm);
+        assert!(pnpm.contains("      - uses: pnpm/action-setup@v4\n"));
+        assert!(pnpm.contains("      - run: pnpm install --frozen-lockfile\n"));
+        assert!(!pnpm.contains("corepack"));
+
+        let yarn = render_workflow_with_npm_tool(&config, NpmTool::Yarn);
+        assert!(yarn.contains("      - run: yarn install --immutable\n"));
+        assert!(!yarn.contains("corepack"));
     }
 
     #[test]
