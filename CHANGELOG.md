@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-30
+
 ### Fixed
 - **workflow** — Generated release workflows now use the npm package manifest path discovered
   during `init` to read versions directly, avoiding a large inline workspace-scanning script.
