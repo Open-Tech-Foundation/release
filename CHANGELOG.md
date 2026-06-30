@@ -8,12 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-06-30
-
 ### Fixed
 - **workflow** — Generated npm release workflows now detect Bun, pnpm, and Yarn lockfiles, use
   Node 24 for Node-based package managers, and use the matching setup/install command instead of
   always running `npm ci`.
+
+## [0.6.0] - 2026-06-30
+
+### Fixed
 - **workflow** — An npm matrix package set to `mode = "build-only"` no longer publishes a
   binary-less package: `build-only` is meaningless for npm (its per-platform binaries ship inside
   the tarball, not as GitHub Release assets), so an npm + matrix package is now always routed
