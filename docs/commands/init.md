@@ -39,9 +39,12 @@ otf-release init [--force]
    re-running warns before overwrite (`--force` to replace).
 6. **Choose a global git tag format**. The default is `v{version}`; use `{name}@{version}` if the
    repo needs package-scoped tags.
-7. **Choose what GitHub Release descriptions contain** for `build-only` packages:
-   auto-generated GitHub notes, the curated root `CHANGELOG.md` release section, or a
-   semantic-style commit list since the previous matching configured tag.
+7. **Choose where release notes are maintained**: one root `CHANGELOG.md`, or per-package
+   `CHANGELOG.md` files.
+8. **Choose what GitHub Release descriptions contain** for `build-only` packages:
+   auto-generated GitHub notes, curated changelog notes, or a semantic-style commit list since the
+   previous matching configured tag. In package-level changelog scope, curated GitHub Release
+   notes combine the released sections from all configured packages.
 
 ## `release.toml`
 
@@ -50,6 +53,7 @@ taking an `--adapter` flag. See [configuration.md](../configuration.md) for the 
 
 ```toml
 adapters = ["crates.io"]
+changelog_scope = "root"
 
 [[package]]
 name      = "opentf-release"

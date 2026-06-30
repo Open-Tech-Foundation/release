@@ -187,6 +187,9 @@ pub struct ReleaseConfig {
     /// How the changelog is managed.
     #[serde(default)]
     pub changelog_strategy: ChangelogStrategy,
+    /// Where curated changelog notes are maintained.
+    #[serde(default)]
+    pub changelog_scope: ChangelogScope,
     /// How GitHub Release bodies are generated in CI.
     #[serde(default)]
     pub github_release_notes: GithubReleaseNotes,
@@ -201,6 +204,17 @@ pub enum ChangelogStrategy {
     Curated,
     /// Automatically generate from Git commits since the last tag.
     Generated,
+}
+
+/// Where release notes live in a repository.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChangelogScope {
+    /// A single root CHANGELOG.md is shared by every package.
+    Root,
+    /// Each package uses the changelog path discovered by its adapter.
+    #[default]
+    Package,
 }
 
 fn default_provider() -> String {
@@ -221,6 +235,7 @@ impl Default for ReleaseConfig {
             tag_format: default_tag_format(),
             provider: default_provider(),
             changelog_strategy: ChangelogStrategy::default(),
+            changelog_scope: ChangelogScope::default(),
             github_release_notes: GithubReleaseNotes::default(),
         }
     }
@@ -287,6 +302,7 @@ mod tests {
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             hooks: Hooks::default(),
@@ -332,6 +348,7 @@ mod tests {
         let back: ReleaseConfig = toml::from_str(&text).unwrap();
         assert_eq!(back.adapters, cfg.adapters);
         assert_eq!(back.github_release_notes, GithubReleaseNotes::AutoGenerate);
+        assert_eq!(back.changelog_scope, ChangelogScope::Package);
         assert_eq!(back.packages.len(), 2);
         assert_eq!(back.build_only_names(), vec!["web-compiler".to_string()]);
     }
@@ -344,6 +361,7 @@ mod tests {
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             adapters: vec![Ecosystem::Cargo],
             hooks: Hooks::default(),

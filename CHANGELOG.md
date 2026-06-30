@@ -11,6 +11,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ### Changed
 - **init** — Removed snapshot tag prompting and `snapshot.yml` generation from the setup flow;
   snapshot releases remain available through the dedicated `snapshot` command.
+- **changelog config** — Added `changelog_scope` with strict root-level or per-package changelog
+  modes, updated `init` to ask only where release notes are maintained, and made package-scope
+  GitHub Release bodies combine notes from all configured package changelogs.
 
 ### Fixed
 - **publish** — Made tag creation and GitHub Release creation idempotent so interrupted publish

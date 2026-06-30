@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::adapter::Adapter;
+use crate::adapter::{apply_changelog_scope, Adapter};
 use crate::changelog;
-use crate::config::{format_tag, DEFAULT_TAG_FORMAT};
+use crate::config::{format_tag, ChangelogScope, DEFAULT_TAG_FORMAT};
 use crate::forge::{Forge, GhForge};
 use crate::git::{GitOps, GitRepo};
 use crate::graph::Graph;
@@ -28,6 +28,8 @@ pub struct PublishOptions {
     /// GitHub Release the workflow creates, never through a registry, so `publish` leaves them
     /// alone even though their manifests look publishable.
     pub skip: Vec<String>,
+    /// Configured changelog layout.
+    pub changelog_scope: ChangelogScope,
 }
 
 /// Wire up the real git/forge and run the flow.
@@ -47,6 +49,7 @@ impl Default for PublishOptions {
             dry_run: false,
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
             skip: Vec::new(),
+            changelog_scope: ChangelogScope::Package,
         }
     }
 }
@@ -108,7 +111,8 @@ pub fn orchestrate_many(
     let mut plans = Vec::with_capacity(adapters.len());
 
     for adapter in adapters {
-        let packages = adapter.discover_packages()?;
+        let mut packages = adapter.discover_packages()?;
+        apply_changelog_scope(root, &opts.changelog_scope, &mut packages);
         let graph = Graph::build(&packages)?;
 
         // Dependencies before dependents; keep publishable packages that still need any work.

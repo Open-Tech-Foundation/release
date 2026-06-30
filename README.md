@@ -37,7 +37,7 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 | `otf-release version` | ✅ Supported | Interactive local release flow. Use `--dry-run` to preview the plan without writing files, and `--first-release` when a package has no prior matching tag. |
 | `otf-release publish` | ✅ Supported | CI-oriented publish flow. Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. |
 | `otf-release snapshot` | 🧪 Experimental | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |
-| `otf-release config` | ✅ Supported | Interactive editor for hooks, ecosystems, package build fields, generic package fields, provider, snapshot tag, changelog strategy, and GitHub Release notes. |
+| `otf-release config` | ✅ Supported | Interactive editor for hooks, ecosystems, package build fields, generic package fields, provider, snapshot tag, changelog scope/strategy, and GitHub Release notes. |
 | `otf-release upgrade` | ◐ Partial | Regenerates `release.yml` from the current `release.toml`. |
 | `otf-release self-update` | ✅ Supported | Checks GitHub Releases and reruns the install script when a newer CLI version exists. |
 
@@ -56,7 +56,8 @@ Allow the first release of a publishable package that has no previous tag matchi
 otf-release version --first-release
 ```
 
-Curated changelog mode still requires non-empty `[Unreleased]` notes for packages being released.
+Curated changelog mode requires non-empty `[Unreleased]` notes in the configured changelog scope:
+root `CHANGELOG.md` for root mode, or each package's `CHANGELOG.md` for package-level mode.
 
 ## 🧩 Supported Adapters
 
@@ -74,12 +75,12 @@ Curated changelog mode still requires non-empty `[Unreleased]` notes for package
 | Polyglot publishing | ✅ | `publish` loops enabled adapters and publishes each ecosystem in dependency order. |
 | Dependency cascades | ✅ | Adapter-owned rules. npm peer dependencies mirror the dependency bump; normal deps patch dependents. Cargo/generic dependents patch. |
 | Private packages/apps | ✅ | Never versioned or published; internal ranges are still updated so apps remain buildable. |
-| Curated changelog mode | ✅ | Uses each package's `[Unreleased]` section as the release-note source. |
-| Generated changelog mode | ✅ | Builds notes from git commit messages since the last package tag and prepends generated notes to `CHANGELOG.md`. |
+| Curated changelog mode | ✅ | Uses either root `CHANGELOG.md` or package-level changelogs, selected during `init`. |
+| Generated changelog mode | ✅ | Builds notes from git commit messages since the last package tag and prepends generated notes to the configured changelog. |
 | Prereleases | ✅ | Supports stable bumps, channel entry (`alpha`, `beta`, `rc`), channel iteration, channel switching, and graduation to stable. |
 | Build-only packages | ✅ | CI can build artifacts and attach them to a GitHub Release instead of publishing to a registry. |
 | Lifecycle hooks | ✅ | `pre_version`, `post_version`, `pre_publish`, and `post_publish` run from `release.toml`. |
-| GitHub workflow generation | ✅ | Generates release and snapshot workflows from `release.toml`; intended as editable scaffolds. |
+| GitHub workflow generation | ✅ | Generates release workflows from `release.toml`; intended as editable scaffolds. |
 | Git providers | GitHub only | Config has a `provider` field, but only GitHub PR/release behavior is implemented. |
 
 ## ⚠️ Known Gaps

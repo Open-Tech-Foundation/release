@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use crate::config::ChangelogScope;
+
 /// A semantic-version bump level.
 ///
 /// Variants are ordered `Patch < Minor < Major` so that `max(...)` over a set of bumps
@@ -68,6 +70,16 @@ pub struct Pkg {
     /// but whose internal ranges are still kept up to date so it stays buildable.
     pub publishable: bool,
     pub internal_deps: Vec<InternalDep>,
+}
+
+/// Apply the configured changelog layout after adapter discovery.
+pub fn apply_changelog_scope(root: &Path, scope: &ChangelogScope, packages: &mut [Pkg]) {
+    if *scope == ChangelogScope::Root {
+        let root_changelog = root.join("CHANGELOG.md");
+        for pkg in packages {
+            pkg.changelog_path = root_changelog.clone();
+        }
+    }
 }
 
 /// The seam between core orchestration and a specific registry/ecosystem.

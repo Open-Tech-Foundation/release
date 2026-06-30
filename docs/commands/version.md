@@ -18,7 +18,8 @@ Implemented in `crates/core/src/version.rs`.
 1. **Discover** packages via the adapter; build the internal dependency graph.
 2. **Strict preflight** ([preflight.md](../preflight.md)) — abort the entire run on *any*
    violation, **before mutating anything**. All violations are printed at once.
-3. **Parse `[Unreleased]`** for each package; flag those with content as *pending*.
+3. **Parse `[Unreleased]`** from the configured changelog scope; flag packages with content as
+   *pending*.
 4. **Prompt** — multi-select the packages to release, then pick a bump
    (major / minor / patch) per selected package.
 5. **Cascade** — for each bumped package, walk its dependents. Each dependent's bump is

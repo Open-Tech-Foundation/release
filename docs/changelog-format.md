@@ -25,8 +25,11 @@ All notable changes to this package are documented here.
 - Initial public API.
 ```
 
-Each publishable package has its own `CHANGELOG.md` next to its manifest
-(`Pkg.changelog_path`).
+`release.toml` chooses the changelog scope:
+
+- `changelog_scope = "root"` uses the root `CHANGELOG.md` for every package.
+- `changelog_scope = "package"` uses each package's adapter-discovered `CHANGELOG.md`
+  (`Pkg.changelog_path`).
 
 ## How `version` rewrites it
 
@@ -50,8 +53,8 @@ Release body.
 
 The [strict gate](./preflight.md) treats `[Unreleased]` as a compliance signal:
 
-- **Empty/missing** `[Unreleased]` but there are **commits since the last tag** (scoped to the
-  package directory) → **abort**.
+- **Empty/missing** `[Unreleased]` in the configured changelog but there are **commits since the
+  last tag** (scoped to the package directory) → **abort**.
 - Selected for a bump but `[Unreleased]` is empty → **abort**.
 
 "Empty" means no meaningful content (whitespace/comments only) — see
@@ -59,7 +62,8 @@ The [strict gate](./preflight.md) treats `[Unreleased]` as a compliance signal:
 
 ## Rules of thumb
 
-- One `[Unreleased]` per publishable package; write notes as you land changes.
+- Use root scope for lockstep/product releases; use package scope for independently released
+  monorepo packages.
 - Private apps are **not** required to keep a changelog (preflight allows their commits).
 - Don't hand-edit dated sections that `version` already wrote — they are the published record.
 

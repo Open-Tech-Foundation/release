@@ -31,8 +31,8 @@ don't falsely mark a package as changed.
 
 | Condition | Result |
 | --- | --- |
-| Commits since last tag (scoped to pkg path) **but** `[Unreleased]` empty/missing | ✗ **ABORT** |
-| Selected for a bump **but** `[Unreleased]` empty | ✗ **ABORT** |
+| Commits since last tag (scoped to pkg path) **but** configured `[Unreleased]` empty/missing | ✗ **ABORT** |
+| Selected for a bump **but** configured `[Unreleased]` empty | ✗ **ABORT** |
 | No last tag **and** publishable (first release) without `--first-release` | ✗ **ABORT** |
 | No last tag **and** publishable with `--first-release` | Require release notes in curated mode |
 | `[Unreleased]` present **with** commits | ✓ OK |

@@ -18,8 +18,8 @@ use inquire::{MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{
-    ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode, PackageEntry, ReleaseConfig, Target,
-    DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD,
+    ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode, PackageEntry,
+    ReleaseConfig, Target, DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD,
 };
 use crate::discover::{scan_generic_candidates, GenericCandidate};
 
@@ -139,8 +139,8 @@ pub trait InitPrompt {
     fn tag_format(&self) -> Result<String>;
     /// Ask for the git hosting provider.
     fn prompt_provider(&self) -> Result<String>;
-    /// Ask for the changelog management strategy.
-    fn prompt_changelog_strategy(&self) -> Result<ChangelogStrategy>;
+    /// Ask where release notes should be maintained.
+    fn prompt_changelog_scope(&self) -> Result<ChangelogScope>;
     /// Ask how GitHub Release bodies should be generated.
     fn prompt_github_release_notes(&self) -> Result<GithubReleaseNotes>;
 }
@@ -201,7 +201,8 @@ pub fn orchestrate(
         snapshot_tag: None,
         tag_format,
         provider: prompt.prompt_provider()?,
-        changelog_strategy: prompt.prompt_changelog_strategy()?,
+        changelog_strategy: ChangelogStrategy::Curated,
+        changelog_scope: prompt.prompt_changelog_scope()?,
         github_release_notes: prompt.prompt_github_release_notes()?,
     };
 
@@ -385,8 +386,10 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
         render_github_release(
             &mut s,
             &needs,
+            &config.packages,
             &build_only,
             &config.tag_format,
+            &config.changelog_scope,
             &config.github_release_notes,
         );
     }
@@ -612,8 +615,10 @@ fn render_publish_job(s: &mut String, needs: &[String], npm: bool, cargo: bool, 
 fn render_github_release(
     s: &mut String,
     needs: &[String],
+    packages: &[PackageEntry],
     build_only: &[&PackageEntry],
     tag_format: &str,
+    changelog_scope: &ChangelogScope,
     github_release_notes: &GithubReleaseNotes,
 ) {
     s.push_str("  github-release:\n");
@@ -639,7 +644,13 @@ fn render_github_release(
         s.push_str("          if gh release view \"$tag\" >/dev/null 2>&1; then\n");
         s.push_str("            echo \"Release $tag already exists; nothing to do.\"\n");
         s.push_str("          else\n");
-        render_github_release_notes(s, github_release_notes, &tag_regex);
+        render_github_release_notes(
+            s,
+            github_release_notes,
+            changelog_scope,
+            packages,
+            &tag_regex,
+        );
         if staged {
             s.push_str(&format!(
                 "            rm -rf \".flat-artifacts-{art_slug}\"\n"
@@ -681,6 +692,8 @@ fn render_github_release(
 fn render_github_release_notes(
     s: &mut String,
     github_release_notes: &GithubReleaseNotes,
+    changelog_scope: &ChangelogScope,
+    packages: &[PackageEntry],
     tag_regex: &str,
 ) {
     match github_release_notes {
@@ -689,19 +702,32 @@ fn render_github_release_notes(
         }
         GithubReleaseNotes::CuratedChangelog => {
             s.push_str("            notes_file=\"$(mktemp)\"\n");
-            s.push_str("            if [ -f CHANGELOG.md ]; then\n");
-            s.push_str("              awk -v version=\"$version\" '\n");
+            render_changelog_file_collection(s, changelog_scope, packages);
+            s.push_str("            for i in \"${!changelog_files[@]}\"; do\n");
+            s.push_str("              changelog_file=\"${changelog_files[$i]}\"\n");
+            s.push_str("              changelog_name=\"${changelog_names[$i]}\"\n");
+            s.push_str("              if [ -z \"$changelog_file\" ] || [ ! -f \"$changelog_file\" ]; then\n");
+            s.push_str("                continue\n");
+            s.push_str("              fi\n");
+            s.push_str("              section=\"$(awk -v version=\"$version\" '\n");
             s.push_str(
                 "                $0 ~ \"^## \\\\[?\" version \"\\\\]?\" { in_section=1; next }\n",
             );
             s.push_str("                in_section && /^## / { exit }\n");
             s.push_str("                in_section { print }\n");
-            s.push_str("              ' CHANGELOG.md | sed '/./,$!d' > \"$notes_file\"\n");
-            s.push_str("            fi\n");
+            s.push_str("              ' \"$changelog_file\" | sed '/./,$!d')\"\n");
+            s.push_str("              if [ -n \"$section\" ]; then\n");
+            s.push_str("                if [ -n \"$changelog_name\" ]; then\n");
+            s.push_str("                  printf '### %s\\n\\n%s\\n\\n' \"$changelog_name\" \"$section\" >> \"$notes_file\"\n");
+            s.push_str("                else\n");
+            s.push_str("                  printf '%s\\n' \"$section\" >> \"$notes_file\"\n");
+            s.push_str("                fi\n");
+            s.push_str("              fi\n");
+            s.push_str("            done\n");
             s.push_str("            if [ -s \"$notes_file\" ]; then\n");
             s.push_str("              notes_arg=(--notes-file \"$notes_file\")\n");
             s.push_str("            else\n");
-            s.push_str("              echo \"No CHANGELOG.md notes found for $version; using GitHub generated notes.\"\n");
+            s.push_str("              echo \"No configured changelog notes found for $version; using GitHub generated notes.\"\n");
             s.push_str("              notes_arg=(--generate-notes)\n");
             s.push_str("            fi\n");
         }
@@ -724,6 +750,87 @@ fn render_github_release_notes(
             s.push_str("            fi\n");
         }
     }
+}
+
+fn render_changelog_file_collection(
+    s: &mut String,
+    changelog_scope: &ChangelogScope,
+    packages: &[PackageEntry],
+) {
+    match changelog_scope {
+        ChangelogScope::Root => {
+            s.push_str("            changelog_names=(\"\")\n");
+            s.push_str("            changelog_files=(\"CHANGELOG.md\")\n");
+        }
+        ChangelogScope::Package => {
+            s.push_str("            changelog_names=()\n");
+            s.push_str("            changelog_files=()\n");
+            for entry in packages {
+                match entry.adapter {
+                    Ecosystem::Generic => {
+                        let manifest = entry.manifest.as_deref().unwrap_or("");
+                        let changelog = if manifest.is_empty() {
+                            ""
+                        } else if let Some((dir, _)) = manifest.rsplit_once('/') {
+                            dir
+                        } else {
+                            "."
+                        };
+                        if changelog.is_empty() {
+                            continue;
+                        }
+                        let file = if changelog == "." {
+                            "CHANGELOG.md".to_string()
+                        } else {
+                            format!("{changelog}/CHANGELOG.md")
+                        };
+                        s.push_str(&format!(
+                            "            changelog_names+=(\"{}\")\n",
+                            shell_double_quote(&entry.name)
+                        ));
+                        s.push_str(&format!(
+                            "            changelog_files+=(\"{}\")\n",
+                            shell_double_quote(&file)
+                        ));
+                    }
+                    Ecosystem::Npm => {
+                        s.push_str(&format!(
+                            "            changelog_file=\"$(node - <<'NODE'\nconst fs = require(\"fs\");\nconst path = require(\"path\");\nconst want = \"{}\";\nconst skip = new Set(['.git','node_modules','target','dist','build']);\nfunction walk(dir) {{\n  for (const ent of fs.readdirSync(dir, {{ withFileTypes: true }})) {{\n    if (ent.isDirectory()) {{\n      if (!skip.has(ent.name)) walk(path.join(dir, ent.name));\n    }} else if (ent.name === 'package.json') {{\n      const file = path.join(dir, ent.name);\n      try {{\n        if (JSON.parse(fs.readFileSync(file, 'utf8')).name === want) {{\n          console.log(path.join(dir, 'CHANGELOG.md'));\n          process.exit(0);\n        }}\n      }} catch {{}}\n    }}\n  }}\n}}\nwalk('.');\nNODE\n            )\"\n",
+                            js_double_quote(&entry.name)
+                        ));
+                        s.push_str("            if [ -n \"$changelog_file\" ]; then\n");
+                        s.push_str(&format!(
+                            "              changelog_names+=(\"{}\")\n",
+                            shell_double_quote(&entry.name)
+                        ));
+                        s.push_str("              changelog_files+=(\"$changelog_file\")\n");
+                        s.push_str("            fi\n");
+                    }
+                    Ecosystem::Cargo => {
+                        s.push_str(&format!(
+                            "            changelog_file=\"$(cargo metadata --no-deps --format-version 1 | node -e '\nconst fs = require(\"fs\");\nconst path = require(\"path\");\nconst want = \"{}\";\nconst meta = JSON.parse(fs.readFileSync(0, \"utf8\"));\nconst pkg = meta.packages.find((p) => p.name === want);\nif (pkg) console.log(path.join(path.dirname(pkg.manifest_path), \"CHANGELOG.md\"));\n')\"\n",
+                            js_double_quote(&entry.name)
+                        ));
+                        s.push_str("            if [ -n \"$changelog_file\" ]; then\n");
+                        s.push_str(&format!(
+                            "              changelog_names+=(\"{}\")\n",
+                            shell_double_quote(&entry.name)
+                        ));
+                        s.push_str("              changelog_files+=(\"$changelog_file\")\n");
+                        s.push_str("            fi\n");
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn shell_double_quote(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn js_double_quote(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn workflow_tag_expr(tag_format: &str, name: &str) -> String {
@@ -1069,20 +1176,17 @@ impl InitPrompt for StdinInitPrompt {
         }
     }
 
-    fn prompt_changelog_strategy(&self) -> Result<ChangelogStrategy> {
+    fn prompt_changelog_scope(&self) -> Result<ChangelogScope> {
         let ans = Select::new(
-            "How would you like to manage your changelogs?",
-            vec![
-                "Curated (Write them by hand in [Unreleased] sections of CHANGELOG.md)",
-                "Generated (Automatically parse Git commits since the last tag)",
-            ],
+            "Where should release notes be maintained?",
+            vec!["Root CHANGELOG.md", "Per-package CHANGELOG.md files"],
         )
         .prompt()?;
 
-        if ans.starts_with("Curated") {
-            Ok(ChangelogStrategy::Curated)
+        if ans.starts_with("Root") {
+            Ok(ChangelogScope::Root)
         } else {
-            Ok(ChangelogStrategy::Generated)
+            Ok(ChangelogScope::Package)
         }
     }
 
@@ -1091,7 +1195,7 @@ impl InitPrompt for StdinInitPrompt {
             "What should GitHub Release descriptions contain?",
             vec![
                 "Auto-generate with GitHub release notes",
-                "Copy the curated CHANGELOG.md section",
+                "Copy from the configured changelog",
                 "Semantic-style commit list since the last matching tag",
             ],
         )
@@ -1196,8 +1300,8 @@ mod tests {
         fn prompt_provider(&self) -> Result<String> {
             Ok("github".to_string())
         }
-        fn prompt_changelog_strategy(&self) -> Result<ChangelogStrategy> {
-            Ok(ChangelogStrategy::Curated)
+        fn prompt_changelog_scope(&self) -> Result<ChangelogScope> {
+            Ok(ChangelogScope::Package)
         }
         fn prompt_github_release_notes(&self) -> Result<GithubReleaseNotes> {
             Ok(GithubReleaseNotes::AutoGenerate)
@@ -1287,6 +1391,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
@@ -1313,6 +1418,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
@@ -1332,6 +1438,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
@@ -1365,6 +1472,7 @@ mod tests {
             tag_format: "v{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Root,
             github_release_notes: GithubReleaseNotes::CuratedChangelog,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
@@ -1373,12 +1481,63 @@ mod tests {
         let out = render_workflow(&config);
 
         assert!(out.contains("awk -v version=\"$version\""));
-        assert!(out.contains("' CHANGELOG.md | sed '/./,$!d' > \"$notes_file\""));
+        assert!(out.contains("changelog_names=(\"\")"));
+        assert!(out.contains("changelog_files=(\"CHANGELOG.md\")"));
+        assert!(out.contains("' \"$changelog_file\" | sed '/./,$!d')"));
         assert!(out.contains("notes_arg=(--notes-file \"$notes_file\")"));
         assert!(out.contains("notes_arg=(--generate-notes)"));
         assert!(out.contains(
             "gh release create \"$tag\" --target main --title \"$tag\" \"${notes_arg[@]}\""
         ));
+    }
+
+    #[test]
+    fn github_release_can_copy_configured_package_changelog_notes() {
+        let config = ReleaseConfig {
+            snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
+            provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
+            github_release_notes: GithubReleaseNotes::CuratedChangelog,
+            hooks: crate::config::Hooks::default(),
+            adapters: vec![Ecosystem::Generic],
+            packages: vec![
+                PackageEntry {
+                    name: "pkg".to_string(),
+                    adapter: Ecosystem::Generic,
+                    mode: Mode::BuildOnly,
+                    matrix: false,
+                    targets: vec![],
+                    command: "build".to_string(),
+                    artifacts: "dist/*".to_string(),
+                    manifest: Some("packages/pkg/deno.json".to_string()),
+                    version_field: Some("version".to_string()),
+                    publish: None,
+                },
+                PackageEntry {
+                    name: "utils".to_string(),
+                    adapter: Ecosystem::Generic,
+                    mode: Mode::Publish,
+                    matrix: false,
+                    targets: vec![],
+                    command: String::new(),
+                    artifacts: String::new(),
+                    manifest: Some("packages/utils/deno.json".to_string()),
+                    version_field: Some("version".to_string()),
+                    publish: Some("deno publish".to_string()),
+                },
+            ],
+        };
+        let out = render_workflow(&config);
+
+        assert!(out.contains("changelog_names+=(\"pkg\")"));
+        assert!(out.contains("changelog_files+=(\"packages/pkg/CHANGELOG.md\")"));
+        assert!(out.contains("changelog_names+=(\"utils\")"));
+        assert!(out.contains("changelog_files+=(\"packages/utils/CHANGELOG.md\")"));
+        assert!(out.contains("printf '### %s\\n\\n%s\\n\\n'"));
+        assert!(out.contains("section=\"$(awk -v version=\"$version\""));
+        assert!(out.contains(">> \"$notes_file\""));
     }
 
     #[test]
@@ -1388,6 +1547,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::SemanticCommits,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
@@ -1411,6 +1571,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
@@ -1436,6 +1597,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
@@ -1458,6 +1620,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
@@ -1482,6 +1645,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],

@@ -4,8 +4,8 @@ use anyhow::Result;
 use inquire::{MultiSelect, Select, Text};
 
 use crate::config::{
-    format_tag, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode, PackageEntry,
-    ReleaseConfig, Target, DEFAULT_VERSION_FIELD,
+    format_tag, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode,
+    PackageEntry, ReleaseConfig, Target, DEFAULT_VERSION_FIELD,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +43,7 @@ pub enum GlobalField {
     Provider,
     SnapshotTag,
     TagFormat,
+    ChangelogScope,
     ChangelogStrategy,
     GithubReleaseNotes,
     Back,
@@ -56,6 +57,7 @@ pub trait ConfigPrompt {
     fn package_field(&self, package: &PackageEntry) -> Result<PackageField>;
     fn mode(&self, current: Mode) -> Result<Mode>;
     fn global_field(&self) -> Result<GlobalField>;
+    fn changelog_scope(&self, current: &ChangelogScope) -> Result<ChangelogScope>;
     fn changelog_strategy(&self, current: &ChangelogStrategy) -> Result<ChangelogStrategy>;
     fn github_release_notes(&self, current: &GithubReleaseNotes) -> Result<GithubReleaseNotes>;
     fn text(&self, prompt: &str, current: &str) -> Result<String>;
@@ -183,6 +185,7 @@ impl ConfigPrompt for StdinConfigPrompt {
             "Provider",
             "Snapshot tag",
             "Tag format",
+            "Changelog scope",
             "Changelog strategy",
             "GitHub Release notes",
             "Back",
@@ -192,9 +195,27 @@ impl ConfigPrompt for StdinConfigPrompt {
                 "Provider" => GlobalField::Provider,
                 "Snapshot tag" => GlobalField::SnapshotTag,
                 "Tag format" => GlobalField::TagFormat,
+                "Changelog scope" => GlobalField::ChangelogScope,
                 "Changelog strategy" => GlobalField::ChangelogStrategy,
                 "GitHub Release notes" => GlobalField::GithubReleaseNotes,
                 _ => GlobalField::Back,
+            },
+        )
+    }
+
+    fn changelog_scope(&self, current: &ChangelogScope) -> Result<ChangelogScope> {
+        let choices = vec!["root", "package"];
+        let default = match current {
+            ChangelogScope::Root => 0,
+            ChangelogScope::Package => 1,
+        };
+        Ok(
+            match Select::new("Changelog scope:", choices)
+                .with_starting_cursor(default)
+                .prompt()?
+            {
+                "root" => ChangelogScope::Root,
+                _ => ChangelogScope::Package,
             },
         )
     }
@@ -360,6 +381,10 @@ fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfi
             config.tag_format = tag_format;
             save(root, config)
         }
+        GlobalField::ChangelogScope => {
+            config.changelog_scope = prompt.changelog_scope(&config.changelog_scope)?;
+            save(root, config)
+        }
         GlobalField::ChangelogStrategy => {
             config.changelog_strategy = prompt.changelog_strategy(&config.changelog_strategy)?;
             save(root, config)
@@ -436,6 +461,7 @@ mod tests {
         package_field: RefCell<PackageField>,
         mode: RefCell<Mode>,
         global_field: RefCell<GlobalField>,
+        scope: RefCell<ChangelogScope>,
         strategy: RefCell<ChangelogStrategy>,
         github_release_notes: RefCell<GithubReleaseNotes>,
         text: RefCell<Vec<String>>,
@@ -449,6 +475,7 @@ mod tests {
                 package_field: RefCell::new(PackageField::Back),
                 mode: RefCell::new(Mode::BuildOnly),
                 global_field: RefCell::new(GlobalField::Back),
+                scope: RefCell::new(ChangelogScope::Package),
                 strategy: RefCell::new(ChangelogStrategy::Curated),
                 github_release_notes: RefCell::new(GithubReleaseNotes::AutoGenerate),
                 text: RefCell::new(Vec::new()),
@@ -489,6 +516,10 @@ mod tests {
 
         fn global_field(&self) -> Result<GlobalField> {
             Ok(*self.global_field.borrow())
+        }
+
+        fn changelog_scope(&self, _current: &ChangelogScope) -> Result<ChangelogScope> {
+            Ok(self.scope.borrow().clone())
         }
 
         fn changelog_strategy(&self, _current: &ChangelogStrategy) -> Result<ChangelogStrategy> {
@@ -543,6 +574,7 @@ mod tests {
         FakePrompt {
             actions: RefCell::new(vec![ConfigAction::GlobalSettings, ConfigAction::Exit]),
             global_field: RefCell::new(field),
+            scope: RefCell::new(ChangelogScope::Root),
             strategy: RefCell::new(ChangelogStrategy::Generated),
             github_release_notes: RefCell::new(GithubReleaseNotes::CuratedChangelog),
             text: RefCell::new(text.into_iter().map(str::to_string).collect()),
@@ -645,6 +677,14 @@ mod tests {
         .unwrap();
         cfg = ReleaseConfig::load(tmp.path()).unwrap();
         assert_eq!(cfg.tag_format, "{name}@{version}");
+
+        orchestrate_with_prompt(
+            tmp.path(),
+            &global_prompt(GlobalField::ChangelogScope, vec![]),
+        )
+        .unwrap();
+        cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(cfg.changelog_scope, ChangelogScope::Root);
 
         orchestrate_with_prompt(
             tmp.path(),

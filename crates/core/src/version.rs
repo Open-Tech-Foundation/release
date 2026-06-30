@@ -15,7 +15,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Padding, Paragraph, Widget};
 
-use crate::adapter::{Adapter, Bump, DepKind, Pkg};
+use crate::adapter::{apply_changelog_scope, Adapter, Bump, DepKind, Pkg};
 use crate::changelog;
 use crate::date;
 use crate::forge::{Forge, GhForge};
@@ -151,7 +151,8 @@ pub fn orchestrate_many(
     let mut adapter_packages = Vec::with_capacity(adapters.len());
     let mut seen = HashSet::new();
     for adapter in adapters {
-        let packages = adapter.discover_packages()?;
+        let mut packages = adapter.discover_packages()?;
+        apply_changelog_scope(root, &config.changelog_scope, &mut packages);
         for pkg in &packages {
             if !seen.insert(pkg.name.clone()) {
                 bail!(

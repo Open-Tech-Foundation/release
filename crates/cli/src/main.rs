@@ -247,6 +247,7 @@ fn run() -> Result<()> {
                     dry_run,
                     tag_format: config.tag_format.clone(),
                     skip,
+                    changelog_scope: config.changelog_scope.clone(),
                 },
                 &config.hooks,
             )?;

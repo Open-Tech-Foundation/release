@@ -2,6 +2,7 @@ adapters = ["generic"]
 tag_format = "v{version}"
 provider = "github"
 changelog_strategy = "curated"
+changelog_scope = "root"
 github_release_notes = "curated-changelog"
 
 [hooks]

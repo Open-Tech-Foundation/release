@@ -70,6 +70,7 @@ pub fn run(adapter: &dyn Adapter, root: &Path, config: &ReleaseConfig) -> Result
             dry_run: false,
             tag_format: config.tag_format.clone(),
             skip,
+            changelog_scope: config.changelog_scope.clone(),
         },
         &config.hooks,
     )?;

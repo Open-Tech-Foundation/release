@@ -49,7 +49,8 @@ artifacts = "dist/**"
 | --- | --- |
 | `adapters` | Enabled ecosystems: `"npm"`, `"crates.io"`, `"generic"`. Drives which publish/release jobs `init` generates. |
 | `tag_format` | Global git tag format used by `version`, preflight, `publish`, and generated GitHub Release jobs. Must include `{version}`; may include `{name}` for package-scoped tags, e.g. `{name}@{version}`. |
-| `github_release_notes` | GitHub Release body source for `build-only` packages: `"auto-generate"` lets GitHub generate notes, `"curated-changelog"` copies the released section from root `CHANGELOG.md`, and `"semantic-commits"` writes a commit list since the previous matching `tag_format` tag. `init` asks for this and `config` can edit it later. |
+| `changelog_scope` | Where curated release notes live: `"root"` uses the root `CHANGELOG.md` for every package; `"package"` uses each package's adapter-discovered `CHANGELOG.md`. |
+| `github_release_notes` | GitHub Release body source for `build-only` packages: `"auto-generate"` lets GitHub generate notes, `"curated-changelog"` copies root notes in root scope or combines released sections from all configured package changelogs in package scope, and `"semantic-commits"` writes a commit list since the previous matching `tag_format` tag. `init` asks for this and `config` can edit it later. |
 | `[[package]]` | A package with an explicit build step. |
 | `name` | The package name as discovered by its adapter. |
 | `adapter` | The owning ecosystem (`"npm"` / `"crates.io"` / `"generic"`). |

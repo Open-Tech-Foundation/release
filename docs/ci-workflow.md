@@ -27,9 +27,9 @@ check-release
   registry-publish packages (`build-only` ones are skipped).
 - **`github-release`** — present when any package is `build-only`. Downloads the staged artifacts
   and attaches each package's artifacts to a GitHub Release tagged from `release.toml`'s
-  `tag_format`. The release body follows `github_release_notes`: GitHub-generated notes,
-  curated root `CHANGELOG.md` notes for the released version, or a semantic-style commit list
-  since the previous matching configured tag.
+  `tag_format`. The release body follows `github_release_notes`: GitHub-generated notes, curated
+  notes from root `CHANGELOG.md` in root scope, combined notes from configured package changelogs
+  in package scope, or a semantic-style commit list since the previous matching configured tag.
   **No registry push.**
 
 Trigger: a merge to `main` (i.e. merging a release PR produced by

@@ -21,8 +21,8 @@ to regenerate `.github/workflows/release.yml`.
 - enabled ecosystems;
 - configured package build fields;
 - generic package fields;
-- global settings: provider, snapshot tag, tag format, changelog strategy, and GitHub Release
-  notes.
+- global settings: provider, snapshot tag, tag format, changelog scope/strategy, and GitHub
+  Release notes.
 
 `github_release_notes` controls the body of GitHub Releases created for `build-only` packages:
 `auto-generate`, `curated-changelog`, or `semantic-commits`.
