@@ -8,13 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-06-30
-
 ### Fixed
 - **workflow** — Generated release workflows now use the npm package manifest path discovered
   during `init` to read versions directly, avoiding a large inline workspace-scanning script.
 - **init** — Reworded the package build selection prompt around built artifacts so binary-backed
   packages are clearer without implying every package needs a generic build step.
+
+## [0.7.0] - 2026-06-30
+
+### Fixed
 - **workflow** — Generated npm release workflows now detect Bun, pnpm, and Yarn lockfiles, use
   Node 24 for Node-based package managers, and use the matching setup/install command instead of
   always running `npm ci`.
