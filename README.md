@@ -33,7 +33,7 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 
 | Command | Status | What it does |
 | --- | --- | --- |
-| `otf-release init` | ✅ Supported | Interactive setup. Writes `release.toml`, `.github/workflows/release.yml`, and `.github/workflows/snapshot.yml`. |
+| `otf-release init` | ✅ Supported | Interactive setup. Writes `release.toml` and `.github/workflows/release.yml`. |
 | `otf-release version` | ✅ Supported | Interactive local release flow. Use `--dry-run` to preview the plan without writing files, and `--first-release` when a package has no prior matching tag. |
 | `otf-release publish` | ✅ Supported | CI-oriented publish flow. Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. |
 | `otf-release snapshot` | 🧪 Experimental | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |

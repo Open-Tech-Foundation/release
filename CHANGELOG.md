@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Changed
+- **init** — Removed snapshot tag prompting and `snapshot.yml` generation from the setup flow;
+  snapshot releases remain available through the dedicated `snapshot` command.
+
 ### Fixed
 - **publish** — Made tag creation and GitHub Release creation idempotent so interrupted publish
   runs can be resumed without failing on already-created remote state.

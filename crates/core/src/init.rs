@@ -135,8 +135,6 @@ pub trait InitPrompt {
     fn generic_packages(&self, found: &[GenericCandidate]) -> Result<Vec<PackageEntry>>;
     /// Confirm overwriting an existing file (only asked when not `--force`).
     fn confirm_overwrite(&self, path: &Path) -> Result<bool>;
-    /// Ask for the tag to use for automated snapshot releases.
-    fn snapshot_tag(&self) -> Result<String>;
     /// Ask for the git tag format used by version/preflight/publish.
     fn tag_format(&self) -> Result<String>;
     /// Ask for the git hosting provider.
@@ -200,7 +198,7 @@ pub fn orchestrate(
         hooks: crate::config::Hooks::default(),
         adapters: enabled,
         packages,
-        snapshot_tag: Some(prompt.snapshot_tag()?),
+        snapshot_tag: None,
         tag_format,
         provider: prompt.prompt_provider()?,
         changelog_strategy: prompt.prompt_changelog_strategy()?,
@@ -224,17 +222,6 @@ pub fn orchestrate(
         println!("Wrote {}", yml_path.display());
     }
 
-    // 3. Generate snapshot workflow.
-    let snapshot_yaml = render_snapshot_workflow(&config);
-    let snapshot_yml_path = root.join(".github/workflows/snapshot.yml");
-    if write_allowed(&snapshot_yml_path, opts.force, prompt)? {
-        fs::create_dir_all(snapshot_yml_path.parent().unwrap()).with_context(|| {
-            format!("creating {}", snapshot_yml_path.parent().unwrap().display())
-        })?;
-        fs::write(&snapshot_yml_path, snapshot_yaml)
-            .with_context(|| format!("writing {}", snapshot_yml_path.display()))?;
-        println!("Wrote {}", snapshot_yml_path.display());
-    }
     Ok(())
 }
 
@@ -1054,20 +1041,6 @@ impl InitPrompt for StdinInitPrompt {
             == 1)
     }
 
-    fn snapshot_tag(&self) -> Result<String> {
-        let tag = Select::new(
-            "What tag should be used for ephemeral CI releases?",
-            vec!["snapshot", "dev", "canary", "custom (type your own)"],
-        )
-        .prompt()?;
-
-        if tag.starts_with("custom") {
-            Ok(inquire::Text::new("Enter custom tag (e.g. edge):").prompt()?)
-        } else {
-            Ok(tag.to_string())
-        }
-    }
-
     fn tag_format(&self) -> Result<String> {
         Ok(Text::new("Git tag format ({version}, optional {name}):")
             .with_default(DEFAULT_TAG_FORMAT)
@@ -1216,9 +1189,6 @@ mod tests {
         }
         fn confirm_overwrite(&self, _: &Path) -> Result<bool> {
             Ok(self.overwrite)
-        }
-        fn snapshot_tag(&self) -> Result<String> {
-            Ok("snapshot".to_string())
         }
         fn tag_format(&self) -> Result<String> {
             Ok(DEFAULT_TAG_FORMAT.to_string())
@@ -1551,10 +1521,12 @@ mod tests {
         assert_eq!(cfg.packages.len(), 1);
         assert_eq!(cfg.build_only_names(), vec!["opentf-release".to_string()]);
         assert_eq!(cfg.tag_format, DEFAULT_TAG_FORMAT);
+        assert_eq!(cfg.snapshot_tag, None);
 
         // workflow generated from it.
         let yml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
         assert!(yml.contains("  github-release:\n"));
+        assert!(!tmp.path().join(".github/workflows/snapshot.yml").exists());
     }
 
     #[test]
