@@ -248,16 +248,28 @@ impl Adapter for NpmAdapter {
                 .with_context(|| format!("staging assets for {}", pkg.name))?;
         }
 
-        let out = self.runner.run(
-            "npm",
-            &["publish", "--access", "public", "--no-workspaces"],
-            pkg_dir,
-        )?;
+        // A prerelease version (e.g. a `1.2.3-dev.<hash>` snapshot) must publish under its own
+        // dist-tag, never `latest`, so an automated snapshot never becomes the default install.
+        let mut args = vec!["publish", "--access", "public", "--no-workspaces"];
+        let tag = dist_tag(&pkg.version);
+        if let Some(tag) = &tag {
+            args.push("--tag");
+            args.push(tag);
+        }
+        let out = self.runner.run("npm", &args, pkg_dir)?;
         if !out.success {
             bail!("`npm publish` for {} failed:\n{}", pkg.name, out.stderr);
         }
         Ok(())
     }
+}
+
+/// The npm dist-tag for a version: a prerelease's leading identifier (`1.2.3-dev.abc` → `dev`,
+/// `2.0.0-beta.1` → `beta`), or `None` for a normal release (which publishes under `latest`).
+fn dist_tag(version: &str) -> Option<String> {
+    let pre = version.split_once('-')?.1;
+    let id = pre.split('.').next().unwrap_or(pre);
+    (!id.is_empty()).then(|| id.to_string())
 }
 
 fn skip_reason(manifest: &Manifest) -> Result<Option<String>> {
@@ -596,6 +608,36 @@ mod tests {
             ["publish", "--access", "public", "--no-workspaces"]
         );
         assert_eq!(calls[0].2, PathBuf::from("/repo/packages/a"));
+    }
+
+    #[test]
+    fn prerelease_publishes_under_its_dist_tag() {
+        let fake = FakeRunner::new(true, "", "");
+        let adapter = NpmAdapter::with_runner("/repo", Box::new(fake.clone()));
+        let mut pkg = dummy_pkg("@x/a", "/repo/packages/a/package.json");
+        pkg.version = "1.2.3-dev.abc1234".to_string();
+
+        adapter.publish(&pkg, None).unwrap();
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(
+            calls[0].1,
+            [
+                "publish",
+                "--access",
+                "public",
+                "--no-workspaces",
+                "--tag",
+                "dev"
+            ]
+        );
+    }
+
+    #[test]
+    fn dist_tag_only_for_prereleases() {
+        assert_eq!(dist_tag("1.2.3"), None);
+        assert_eq!(dist_tag("1.2.3-dev.abc"), Some("dev".to_string()));
+        assert_eq!(dist_tag("2.0.0-beta.1"), Some("beta".to_string()));
+        assert_eq!(dist_tag("2.0.0-rc"), Some("rc".to_string()));
     }
 
     #[test]

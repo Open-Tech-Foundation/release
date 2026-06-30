@@ -19,89 +19,13 @@ use inquire::{MultiSelect, Select, Text};
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{
     ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode, PackageEntry,
-    ReleaseConfig, Target, DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD,
+    ReleaseConfig, Target, DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
 };
 use crate::discover::{scan_generic_candidates, GenericCandidate};
 
-/// A static definition for a default target to offer in the CLI prompt.
-pub struct TargetDef {
-    pub label: &'static str,
-    pub name: &'static str,
-    pub arch: &'static str,
-    pub rust_triple: &'static str,
-}
-
-impl TargetDef {
-    pub fn to_target(&self) -> Target {
-        Target {
-            name: self.name.to_string(),
-            arch: self.arch.to_string(),
-        }
-    }
-}
-
-/// A sensible default cross-compile target set (each emitted with an `# edit me` marker).
-pub const DEFAULT_TARGETS: &[TargetDef] = &[
-    TargetDef {
-        label: "Linux x64",
-        name: "linux",
-        arch: "x86_64",
-        rust_triple: "x86_64-unknown-linux-gnu",
-    },
-    TargetDef {
-        label: "Linux ARM64",
-        name: "linux",
-        arch: "aarch64",
-        rust_triple: "aarch64-unknown-linux-gnu",
-    },
-    TargetDef {
-        label: "Linux x86 (32-bit)",
-        name: "linux",
-        arch: "x86",
-        rust_triple: "i686-unknown-linux-gnu",
-    },
-    TargetDef {
-        label: "macOS ARM64",
-        name: "macos",
-        arch: "aarch64",
-        rust_triple: "aarch64-apple-darwin",
-    },
-    TargetDef {
-        label: "macOS x64",
-        name: "macos",
-        arch: "x86_64",
-        rust_triple: "x86_64-apple-darwin",
-    },
-    TargetDef {
-        label: "Windows x64",
-        name: "windows",
-        arch: "x86_64",
-        rust_triple: "x86_64-pc-windows-msvc",
-    },
-    TargetDef {
-        label: "Windows ARM64",
-        name: "windows",
-        arch: "aarch64",
-        rust_triple: "aarch64-pc-windows-msvc",
-    },
-    TargetDef {
-        label: "Windows x86 (32-bit)",
-        name: "windows",
-        arch: "x86",
-        rust_triple: "i686-pc-windows-msvc",
-    },
-];
-
-/// Map a target triple to a sensible default GitHub-hosted runner.
-fn runner_os(target: &str) -> &'static str {
-    if target.contains("windows") {
-        "windows-latest"
-    } else if target.contains("apple") || target.contains("darwin") {
-        "macos-latest"
-    } else {
-        "ubuntu-latest"
-    }
-}
+/// The curl-pipe step that installs the `otf-release` CLI on a CI runner.
+const INSTALL_OTF_RELEASE: &str =
+    "        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash\n";
 
 /// Options for an `init` run.
 #[derive(Debug, Clone, Default)]
@@ -253,6 +177,32 @@ fn slug(name: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
+/// Multi-select build targets from the built-in registry, returning fully-resolved [`Target`]s
+/// (triple/runner/stage_as/ext/cross all filled). 32-bit targets are offered but off by default.
+fn select_targets(prompt: &str) -> Result<Vec<Target>> {
+    let defaults: Vec<usize> = TARGET_REGISTRY
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.label.contains("32-bit"))
+        .map(|(i, _)| i)
+        .collect();
+    let labels: Vec<String> = TARGET_REGISTRY
+        .iter()
+        .map(|t| format!("{} - {}-{}", t.label, t.name, t.arch))
+        .collect();
+    let selected = MultiSelect::new(prompt, labels)
+        .with_default(&defaults)
+        .with_help_message(MULTI_HELP)
+        .raw_prompt()?;
+    Ok(selected
+        .iter()
+        .map(|s| {
+            let info = &TARGET_REGISTRY[s.index];
+            Target::resolved(info.name, info.arch)
+        })
+        .collect())
+}
+
 /// The preliminary job that checks if a release is needed, guarding the expensive build steps.
 fn render_check_release_job(s: &mut String, version_cmd: &str) {
     s.push_str("  check-release:\n");
@@ -363,9 +313,15 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
             .filter(|p| p.mode == Mode::Publish && has_build(p))
             .map(|p| build_job(&p.name))
             .collect();
+        let matrix_pubs: Vec<&PackageEntry> = config
+            .packages
+            .iter()
+            .filter(|p| p.mode == Mode::Publish && p.matrix)
+            .collect();
         render_publish_job(
             &mut s,
             &needs,
+            &matrix_pubs,
             npm_enabled,
             cargo_publishes,
             generic_publishes,
@@ -443,75 +399,104 @@ fn npm_version_read_cmd(name: &str) -> String {
 
 /// One build job: matrix or single runner, runs the package's command, uploads its artifacts.
 fn render_build_job(s: &mut String, entry: &PackageEntry) {
+    if entry.matrix {
+        render_matrix_build_jobs(s, entry);
+    } else {
+        render_single_build_job(s, entry);
+    }
+}
+
+/// Whether the build leg needs a Rust toolchain / a Node setup, inferred from the command and
+/// adapter. A matrix npm package (a Rust binary shipped in an npm wrapper) needs both.
+fn build_toolchains(entry: &PackageEntry) -> (bool, bool) {
+    let rust = entry.command.contains("cargo");
+    let node = entry.adapter == Ecosystem::Npm
+        || entry.command.contains("npm")
+        || entry.command.contains("node");
+    (rust, node)
+}
+
+/// A matrix package builds as two jobs: a tiny `matrix-<slug>` job that emits the target matrix
+/// from `release.toml` via `otf-release matrix` (so the list never drifts), and a `build-<slug>`
+/// job that fans out over `fromJSON(...)` and calls `otf-release build` per target. The tool — not
+/// hand-written YAML — owns the triple/runner/cross/stage_as reconciliation, so there are no
+/// `# edit me` markers.
+fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry) {
+    let name = &entry.name;
+    let art_slug = slug(name);
+    let matrix_job = format!("matrix-{art_slug}");
+    let build = build_job(name);
+
+    // 1. Emit the matrix from release.toml.
+    s.push_str(&format!("  {matrix_job}:\n"));
+    s.push_str("    needs: [check-release]\n");
+    s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
+    s.push_str("    runs-on: ubuntu-latest\n");
+    s.push_str("    outputs:\n      matrix: ${{ steps.set.outputs.matrix }}\n");
+    s.push_str("    steps:\n");
+    s.push_str("      - uses: actions/checkout@v4\n");
+    s.push_str("      - name: Install otf-release\n");
+    s.push_str(INSTALL_OTF_RELEASE);
+    s.push_str("      - id: set\n");
+    s.push_str(&format!(
+        "        run: echo \"matrix=$(otf-release matrix --package {name})\" >> \"$GITHUB_OUTPUT\"\n\n"
+    ));
+
+    // 2. Fan out over the matrix and build + stage each target.
+    s.push_str(&format!("  {build}:\n"));
+    s.push_str(&format!("    needs: [check-release, {matrix_job}]\n"));
+    s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
+    s.push_str("    runs-on: ${{ matrix.runner }}\n");
+    s.push_str("    strategy:\n      fail-fast: false\n");
+    s.push_str(&format!(
+        "      matrix: ${{{{ fromJSON(needs.{matrix_job}.outputs.matrix) }}}}\n"
+    ));
+    s.push_str("    steps:\n");
+    s.push_str("      - uses: actions/checkout@v4\n");
+    // Cross prep is driven by the matrix's own `cross` flag — no per-triple `if:` guesswork.
+    s.push_str("      - name: Install cross toolchain\n");
+    s.push_str("        if: ${{ matrix.cross }}\n");
+    s.push_str("        run: |\n");
+    s.push_str("          sudo apt-get update\n");
+    s.push_str("          sudo apt-get install -y gcc-${{ matrix.arch }}-linux-gnu\n");
+    let (rust, node) = build_toolchains(entry);
+    if rust {
+        s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
+        s.push_str("        with:\n          targets: ${{ matrix.triple }}\n");
+    }
+    if node {
+        s.push_str("      - uses: actions/setup-node@v4\n");
+        s.push_str("        with:\n          node-version: 20\n");
+        s.push_str("      - run: npm ci\n");
+    }
+    s.push_str("      - name: Install otf-release\n");
+    s.push_str(INSTALL_OTF_RELEASE);
+    s.push_str(&format!("      - name: Build {name}\n"));
+    s.push_str(&format!(
+        "        run: otf-release build --package {name} --target ${{{{ matrix.name }}}}/${{{{ matrix.arch }}}}\n"
+    ));
+    s.push_str("      - uses: actions/upload-artifact@v4\n");
+    s.push_str("        with:\n");
+    s.push_str(&format!(
+        "          name: {art_slug}-${{{{ matrix.name }}}}-${{{{ matrix.arch }}}}\n"
+    ));
+    s.push_str(&format!("          path: .artifacts/{name}\n"));
+    s.push('\n');
+}
+
+/// A non-matrix package builds on one runner with its plain command.
+fn render_single_build_job(s: &mut String, entry: &PackageEntry) {
     let job = build_job(&entry.name);
     let art_slug = slug(&entry.name);
     s.push_str(&format!("  {job}:\n"));
     s.push_str("    needs: [check-release]\n");
     s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
-
-    if entry.matrix {
-        s.push_str("    runs-on: ${{ matrix.os }}\n");
-        s.push_str("    strategy:\n      matrix:\n        include:\n");
-
-        // Print all selected targets
-        for target in &entry.targets {
-            let rust_triple = DEFAULT_TARGETS
-                .iter()
-                .find(|d| d.name == target.name && d.arch == target.arch)
-                .map(|d| d.rust_triple)
-                .unwrap_or("x86_64-unknown-linux-gnu");
-            let os = runner_os(rust_triple);
-            let ext = if os == "windows-latest" { ".exe" } else { "" };
-            s.push_str(&format!(
-                "          - {{ rust_target: \"{}\", os: \"{}\", ext: \"{}\", name: \"{}\", arch: \"{}\" }}  # edit me\n",
-                rust_triple, os, ext, target.name, target.arch
-            ));
-        }
-
-        // Print all unselected defaults as commented-out lines
-        for def in DEFAULT_TARGETS {
-            let is_selected = entry
-                .targets
-                .iter()
-                .any(|t| t.name == def.name && t.arch == def.arch);
-            if !is_selected {
-                let os = runner_os(def.rust_triple);
-                let ext = if os == "windows-latest" { ".exe" } else { "" };
-                s.push_str(&format!(
-                    "          # - {{ rust_target: \"{}\", os: \"{}\", ext: \"{}\", name: \"{}\", arch: \"{}\" }}  # edit me\n",
-                    def.rust_triple, os, ext, def.name, def.arch
-                ));
-            }
-        }
-    } else {
-        s.push_str("    runs-on: ubuntu-latest  # edit me: choose a runner\n");
-    }
-
+    s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n");
-    if entry.matrix
-        && entry
-            .targets
-            .iter()
-            .any(|target| target.name == "linux" && target.arch == "aarch64")
-    {
-        s.push_str("      - name: Install Linux aarch64 cross toolchain\n");
-        s.push_str("        if: matrix.rust_target == 'aarch64-unknown-linux-gnu'\n");
-        s.push_str("        run: |\n");
-        s.push_str("          sudo apt-get update\n");
-        s.push_str("          sudo apt-get install -y gcc-aarch64-linux-gnu\n");
-        s.push_str("      - name: Configure Linux aarch64 linker\n");
-        s.push_str("        if: matrix.rust_target == 'aarch64-unknown-linux-gnu'\n");
-        s.push_str(
-            "        run: echo \"CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc\" >> \"$GITHUB_ENV\"\n",
-        );
-    }
     match entry.adapter {
         Ecosystem::Cargo => {
             s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
-            if entry.matrix {
-                s.push_str("        with:\n          targets: ${{ matrix.rust_target }}\n");
-            }
         }
         Ecosystem::Npm => {
             s.push_str("      - uses: actions/setup-node@v4\n");
@@ -522,23 +507,10 @@ fn render_build_job(s: &mut String, entry: &PackageEntry) {
         Ecosystem::Generic => {}
     }
     s.push_str(&format!("      - name: Build {}\n", entry.name));
-    if entry.matrix {
-        s.push_str(&format!(
-            "        run: {}  # edit me: cross-compile with ${{{{ matrix.rust_target }}}}\n",
-            entry.command
-        ));
-    } else {
-        s.push_str(&format!("        run: {}\n", entry.command));
-    }
+    s.push_str(&format!("        run: {}\n", entry.command));
     s.push_str("      - uses: actions/upload-artifact@v4\n");
     s.push_str("        with:\n");
-    if entry.matrix {
-        s.push_str(&format!(
-            "          name: {art_slug}-${{{{ matrix.name }}}}-${{{{ matrix.arch }}}}\n"
-        ));
-    } else {
-        s.push_str(&format!("          name: {art_slug}\n"));
-    }
+    s.push_str(&format!("          name: {art_slug}\n"));
     s.push_str(&format!("          path: {}\n", entry.artifacts));
     s.push('\n');
 }
@@ -564,7 +536,14 @@ fn download_artifacts(s: &mut String, needs: &[String]) -> bool {
 /// enabled adapter internally, so this one job covers npm + crates.io + generic. It sets up only
 /// the toolchains the active registries need; generic publish steps carry `# edit me` markers
 /// since the tool can't know your registry's toolchain or secret.
-fn render_publish_job(s: &mut String, needs: &[String], npm: bool, cargo: bool, generic: bool) {
+fn render_publish_job(
+    s: &mut String,
+    needs: &[String],
+    matrix_pubs: &[&PackageEntry],
+    npm: bool,
+    cargo: bool,
+    generic: bool,
+) {
     s.push_str("  publish:\n");
     let mut actual_needs = vec!["check-release".to_string()];
     actual_needs.extend_from_slice(needs);
@@ -585,20 +564,32 @@ fn render_publish_job(s: &mut String, needs: &[String], npm: bool, cargo: bool, 
         s.push_str("      # edit me: set up the toolchain your generic publish command needs\n");
     }
     let staged = download_artifacts(s, needs);
+    // A matrix package's per-target binaries upload as separate artifacts; merge each package's
+    // back into `.artifacts/<package>/bin/<stage_as>/…` — the exact tree `publish` copies into the
+    // package before packing, so the install-time resolver finds every platform's binary.
+    for pkg in matrix_pubs {
+        let art_slug = slug(&pkg.name);
+        s.push_str("      - uses: actions/download-artifact@v4\n");
+        s.push_str("        with:\n");
+        s.push_str(&format!("          pattern: {art_slug}-*\n"));
+        s.push_str(&format!("          path: .artifacts/{}\n", pkg.name));
+        s.push_str("          merge-multiple: true\n");
+    }
     if npm {
         s.push_str("      - run: npm ci\n");
     }
     s.push_str("      - name: Install otf-release\n");
-    s.push_str("        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash\n");
+    s.push_str(INSTALL_OTF_RELEASE);
     s.push_str("      - name: Publish\n");
-    if staged {
+    let any_staged = staged || !matrix_pubs.is_empty();
+    if any_staged {
         s.push_str("        run: otf-release publish --artifacts-dir .artifacts\n");
     } else {
         s.push_str("        run: otf-release publish\n");
     }
     s.push_str("        env:\n");
     if npm {
-        s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}\n");
+        s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n");
     }
     if cargo {
         s.push_str("          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n");
@@ -907,24 +898,7 @@ fn configure_generic(
     .index
         == 0;
     let targets = if matrix {
-        let defaults: Vec<usize> = DEFAULT_TARGETS
-            .iter()
-            .enumerate()
-            .filter(|(_, def)| !def.label.contains("32-bit"))
-            .map(|(i, _)| i)
-            .collect();
-        let labels: Vec<String> = DEFAULT_TARGETS
-            .iter()
-            .map(|def| format!("{} - {}-{}", def.label, def.name, def.arch))
-            .collect();
-        let selected = MultiSelect::new("  Target triples:", labels)
-            .with_default(&defaults)
-            .with_help_message(MULTI_HELP)
-            .raw_prompt()?;
-        selected
-            .iter()
-            .map(|s| DEFAULT_TARGETS[s.index].to_target())
-            .collect()
+        select_targets("  Target triples:")?
     } else {
         Vec::new()
     };
@@ -985,6 +959,8 @@ fn configure_generic(
         targets,
         command,
         artifacts,
+        bin_name,
+        compress: None,
         manifest: Some(manifest.to_string()),
         version_field: Some(version_field.to_string()),
         publish,
@@ -1050,37 +1026,45 @@ impl InitPrompt for StdinInitPrompt {
         .index
             == 0;
         let targets = if matrix {
-            let defaults: Vec<usize> = DEFAULT_TARGETS
-                .iter()
-                .enumerate()
-                .filter(|(_, def)| !def.label.contains("32-bit"))
-                .map(|(i, _)| i)
-                .collect();
-            let labels: Vec<String> = DEFAULT_TARGETS
-                .iter()
-                .map(|def| format!("{} - {}-{}", def.label, def.name, def.arch))
-                .collect();
-            let selected = MultiSelect::new("Target triples:", labels)
-                .with_default(&defaults)
-                .with_help_message(MULTI_HELP)
-                .raw_prompt()?;
-            selected
-                .iter()
-                .map(|s| DEFAULT_TARGETS[s.index].to_target())
-                .collect()
+            select_targets("Target triples:")?
         } else {
             Vec::new()
         };
 
-        let default_cmd = match adapter {
-            Ecosystem::Cargo => "cargo build --release",
-            Ecosystem::Npm => "npm run build",
-            Ecosystem::Generic => "",
+        // A matrix package compiles one binary per target; ask its name and template the build so
+        // `otf-release build` can fill `{triple}`/`{ext}`/`{bin}` per target. An npm matrix package
+        // decompresses its staged binary at install time, so default to brotli; Release assets
+        // (build-only) ship raw.
+        let (bin_name, compress, default_cmd, default_artifacts) = if matrix {
+            let bin = Text::new(&format!("{pkg_name} — binary name:"))
+                .with_default(&slug(pkg_name))
+                .prompt()?;
+            let compress = (adapter == Ecosystem::Npm).then(|| "brotli".to_string());
+            let cmd = if adapter == Ecosystem::Generic {
+                ""
+            } else {
+                "cargo build --release --target {triple}"
+            };
+            (
+                Some(bin),
+                compress,
+                cmd.to_string(),
+                "target/{triple}/release/{bin}{ext}".to_string(),
+            )
+        } else {
+            let cmd = match adapter {
+                Ecosystem::Cargo => "cargo build --release",
+                Ecosystem::Npm => "npm run build",
+                Ecosystem::Generic => "",
+            };
+            (None, None, cmd.to_string(), String::new())
         };
         let command = Text::new(&format!("{pkg_name} — build command:"))
-            .with_default(default_cmd)
+            .with_default(&default_cmd)
             .prompt()?;
-        let artifacts = Text::new(&format!("{pkg_name} — artifacts to stage:")).prompt()?;
+        let artifacts = Text::new(&format!("{pkg_name} — artifacts to stage:"))
+            .with_default(&default_artifacts)
+            .prompt()?;
 
         Ok(PackageEntry {
             name: pkg_name.to_string(),
@@ -1090,6 +1074,8 @@ impl InitPrompt for StdinInitPrompt {
             targets,
             command,
             artifacts,
+            bin_name,
+            compress,
             manifest: None,
             version_field: None,
             publish: None,
@@ -1326,17 +1312,13 @@ mod tests {
             mode: Mode::BuildOnly,
             matrix: true,
             targets: vec![
-                crate::config::Target {
-                    name: "linux".into(),
-                    arch: "x86_64".into(),
-                },
-                crate::config::Target {
-                    name: "windows".into(),
-                    arch: "x86_64".into(),
-                },
+                crate::config::Target::resolved("linux", "x86_64"),
+                crate::config::Target::resolved("windows", "x86_64"),
             ],
-            command: "cargo build --release -p otf-release".into(),
-            artifacts: "target/${{ matrix.rust_target }}/release/otf-release*".into(),
+            command: "cargo build --release -p otf-release --target {triple}".into(),
+            artifacts: "target/{triple}/release/otf-release{ext}".into(),
+            bin_name: Some("otf-release".into()),
+            compress: None,
             manifest: None,
             version_field: None,
             publish: None,
@@ -1352,6 +1334,8 @@ mod tests {
             targets: vec![],
             command: "npm run build".into(),
             artifacts: "dist/**".into(),
+            bin_name: None,
+            compress: None,
             manifest: None,
             version_field: None,
             publish: None,
@@ -1371,6 +1355,8 @@ mod tests {
             targets: vec![],
             command: "deno task build".into(),
             artifacts: "dist/*".into(),
+            bin_name: None,
+            compress: None,
             manifest: Some("deno.json".into()),
             version_field: Some("version".into()),
             publish: publish.map(|s| s.into()),
@@ -1445,11 +1431,21 @@ mod tests {
             packages: vec![cargo_build_only("opentf-release")],
         };
         let out = render_workflow(&config);
-        // Build matrix with per-target runners.
+        // A dynamic matrix emitted from release.toml (no hand-maintained, `# edit me` target list).
+        assert!(out.contains("  matrix-opentf-release:\n"));
+        assert!(out.contains("        run: echo \"matrix=$(otf-release matrix --package opentf-release)\" >> \"$GITHUB_OUTPUT\"\n"));
         assert!(out.contains("  build-opentf-release:\n"));
-        assert!(out.contains("    runs-on: ${{ matrix.os }}\n"));
-        assert!(out.contains("name: \"windows\", arch: \"x86_64\""));
-        assert!(out.contains("        run: cargo build --release -p otf-release"));
+        assert!(out.contains("    needs: [check-release, matrix-opentf-release]\n"));
+        assert!(out.contains("    runs-on: ${{ matrix.runner }}\n"));
+        assert!(out.contains(
+            "      matrix: ${{ fromJSON(needs.matrix-opentf-release.outputs.matrix) }}\n"
+        ));
+        // The tool drives the build + staging per target; no `# edit me`, no inline triple list.
+        assert!(out.contains("        run: otf-release build --package opentf-release --target ${{ matrix.name }}/${{ matrix.arch }}\n"));
+        assert!(out.contains("        if: ${{ matrix.cross }}\n"));
+        assert!(!out.contains("# edit me: cross-compile"));
+        assert!(!out.contains("# edit me: choose a runner"));
+        assert!(!out.contains("rust_target"));
         // Ships via a GitHub Release, idempotently — no registry, no cargo publish.
         assert!(out.contains("permissions:\n  contents: write"));
         assert!(out.contains("  github-release:\n"));
@@ -1463,6 +1459,61 @@ mod tests {
         assert!(!out.contains("crates.io"));
         // build-only cargo: no publish job at all.
         assert!(!out.contains("  publish:\n"));
+    }
+
+    #[test]
+    fn npm_matrix_publish_stages_binaries_under_node_platform_dirs() {
+        let config = ReleaseConfig {
+            snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
+            provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
+            hooks: crate::config::Hooks::default(),
+            adapters: vec![Ecosystem::Npm],
+            packages: vec![PackageEntry {
+                name: "@opentf/web-compiler".into(),
+                adapter: Ecosystem::Npm,
+                mode: Mode::Publish,
+                matrix: true,
+                targets: vec![
+                    Target::resolved("linux", "aarch64"),
+                    Target::resolved("windows", "x86_64"),
+                ],
+                command: "cargo build --release --target {triple}".into(),
+                artifacts: "target/{triple}/release/otfwc{ext}".into(),
+                bin_name: Some("otfwc".into()),
+                compress: Some("brotli".into()),
+                manifest: None,
+                version_field: None,
+                publish: None,
+            }],
+        };
+        let out = render_workflow(&config);
+
+        // A matrix npm package builds a Rust binary, so both toolchains are set up in the fan-out.
+        assert!(out.contains("  matrix-opentf-web-compiler:\n"));
+        assert!(out.contains("  build-opentf-web-compiler:\n"));
+        assert!(out.contains("      - uses: dtolnay/rust-toolchain@stable\n"));
+        assert!(out.contains("          targets: ${{ matrix.triple }}\n"));
+        assert!(out.contains("      - uses: actions/setup-node@v4\n"));
+        assert!(out
+            .contains("        run: otf-release build --package @opentf/web-compiler --target ${{ matrix.name }}/${{ matrix.arch }}\n"));
+
+        // The publish job merges each target's artifact back into `.artifacts/<package>` so the
+        // staged `bin/<stage_as>/…` tree is whole before packing — the load-bearing fix.
+        assert!(out.contains("  publish:\n"));
+        assert!(out.contains("          pattern: opentf-web-compiler-*\n"));
+        assert!(out.contains("          path: .artifacts/@opentf/web-compiler\n"));
+        assert!(out.contains("          merge-multiple: true\n"));
+        assert!(out.contains("        run: otf-release publish --artifacts-dir .artifacts\n"));
+        // Hygiene: the npm auth secret is NPM_TOKEN, matching the snapshot workflow.
+        assert!(out.contains("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n"));
+        assert!(!out.contains("secrets.NODE_AUTH_TOKEN"));
+        // A matrix publish package is never built or published binary-less / inline.
+        assert!(!out.contains("rust_target"));
+        assert!(!out.contains("# edit me: cross-compile"));
     }
 
     #[test]
@@ -1511,6 +1562,8 @@ mod tests {
                     targets: vec![],
                     command: "build".to_string(),
                     artifacts: "dist/*".to_string(),
+                    bin_name: None,
+                    compress: None,
                     manifest: Some("packages/pkg/deno.json".to_string()),
                     version_field: Some("version".to_string()),
                     publish: None,
@@ -1523,6 +1576,8 @@ mod tests {
                     targets: vec![],
                     command: String::new(),
                     artifacts: String::new(),
+                    bin_name: None,
+                    compress: None,
                     manifest: Some("packages/utils/deno.json".to_string()),
                     version_field: Some("version".to_string()),
                     publish: Some("deno publish".to_string()),

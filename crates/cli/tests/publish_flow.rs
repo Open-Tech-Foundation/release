@@ -452,3 +452,51 @@ fn multi_adapter_publish_runs_hooks_once_for_the_whole_command() {
     assert_eq!(a.published.borrow().as_slice(), ["a@1.0.0".to_string()]);
     assert_eq!(b.published.borrow().as_slice(), ["b@1.0.0".to_string()]);
 }
+
+/// A matrix publish-mode package must never reach the registry without its per-platform binaries.
+/// With the package named in `require_staged` and no staged tree under `--artifacts-dir`, publish
+/// must hard-fail instead of shipping a binary-less, broken package.
+#[test]
+fn matrix_package_without_staged_binaries_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root.join("package.json"),
+        r#"{ "name": "root", "private": true, "workspaces": ["packages/*"] }"#,
+    );
+    write(
+        root.join("packages/wc/package.json"),
+        "{\n  \"name\": \"@x/wc\",\n  \"version\": \"1.0.0\"\n}\n",
+    );
+    write(
+        root.join("packages/wc/CHANGELOG.md"),
+        "# Changelog\n\n## [1.0.0] - 2024-01-01\n- notes\n",
+    );
+
+    let runner = PubRunner::new(&[]);
+    let adapter = NpmAdapter::with_runner(root, Box::new(runner.clone()));
+    let git = FakeGit::default();
+    let forge = FakeForge::default();
+    let hooks = otf_release_core::config::Hooks::default();
+    let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
+
+    // An artifacts dir that exists but holds nothing for @x/wc.
+    let artifacts = root.join(".artifacts");
+    fs::create_dir_all(&artifacts).unwrap();
+
+    let opts = PublishOptions {
+        tag_format: "{name}@{version}".to_string(),
+        artifacts_dir: Some(artifacts),
+        require_staged: vec!["@x/wc".to_string()],
+        ..PublishOptions::default()
+    };
+
+    let err = orchestrate(&adapter, &git, &forge, root, &opts, &hooks, &hook_runner).unwrap_err();
+    assert!(
+        err.to_string().contains("binary-less"),
+        "expected a binary-less refusal, got: {err}"
+    );
+    // Nothing was published, tagged, or released.
+    assert!(runner.publish_log.lock().unwrap().is_empty());
+    assert!(git.tags.borrow().is_empty());
+}

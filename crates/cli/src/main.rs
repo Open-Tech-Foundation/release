@@ -128,6 +128,21 @@ enum Command {
     },
     /// Edit release.toml interactively.
     Config,
+    /// CI: print the GitHub Actions build matrix (JSON) for a matrix package from release.toml.
+    Matrix {
+        /// Which matrix package to emit for (required when more than one exists).
+        #[arg(long)]
+        package: Option<String>,
+    },
+    /// CI: build one matrix target and stage its binary under `.artifacts/`.
+    Build {
+        /// The matrix package to build.
+        #[arg(long)]
+        package: String,
+        /// The target as `name/arch` (e.g. linux/aarch64).
+        #[arg(long)]
+        target: String,
+    },
     /// Non-interactive, CI: automated ephemeral release via short git hashes.
     Snapshot,
     /// Update otf-release to the latest version.
@@ -175,6 +190,19 @@ fn run() -> Result<()> {
         }
         Command::Config => {
             otf_release_core::config_cmd::orchestrate(&root)?;
+            Ok(())
+        }
+        Command::Matrix { package } => {
+            let config = ReleaseConfig::load(&root)?;
+            println!(
+                "{}",
+                otf_release_core::matrix::matrix_json(&config, package.as_deref())?
+            );
+            Ok(())
+        }
+        Command::Build { package, target } => {
+            let config = ReleaseConfig::load(&root)?;
+            otf_release_core::build::run(&config, &root, &package, &target)?;
             Ok(())
         }
         Command::Snapshot => {
@@ -232,6 +260,8 @@ fn run() -> Result<()> {
             // build-only packages ship via the GitHub Release the workflow creates, never a
             // registry — so `publish` skips them.
             let skip = config.build_only_names();
+            // matrix packages must have their per-platform binaries staged before they publish.
+            let require_staged = config.matrix_publish_names();
             let adapters: Vec<Box<dyn Adapter>> = config
                 .adapters
                 .iter()
@@ -247,6 +277,7 @@ fn run() -> Result<()> {
                     dry_run,
                     tag_format: config.tag_format.clone(),
                     skip,
+                    require_staged,
                     changelog_scope: config.changelog_scope.clone(),
                 },
                 &config.hooks,

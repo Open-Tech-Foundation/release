@@ -27,13 +27,29 @@ post_publish = ["curl -X POST ..."]
 # Zero or more packages that need a build step before publish/release.
 # A publishable package with no entry here is published as-is by its adapter (no build).
 [[package]]
-name      = "web-compiler"        # the name the adapter discovers
-adapter   = "crates.io"           # which enabled ecosystem it belongs to
-mode      = "build-only"          # "publish" | "build-only"
-matrix    = true                  # build across a target matrix?
-targets   = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]  # only when matrix = true
-command   = "cargo build --release -p otfw_cli"
-artifacts = "target/*/release/otfwc*"
+name      = "@opentf/web-compiler"  # the name the adapter discovers
+adapter   = "npm"                   # which enabled ecosystem it belongs to
+mode      = "publish"               # "publish" | "build-only"
+matrix    = true                    # build across a target matrix?
+command   = "cargo build --release --target {triple}"   # {triple}/{ext}/{bin} expand per target
+artifacts = "target/{triple}/release/otfwc{ext}"        # the binary this target produced
+bin_name  = "otfwc"                 # staged as bin/<stage_as>/otfwc<ext>[.br]  (matrix only)
+compress  = "brotli"                # decompressed at install time            (matrix only)
+
+# One [[package.targets]] table per platform. init fills every field from the built-in
+# registry; a hand-written file may list just name/arch and the rest is looked up.
+[[package.targets]]
+name = "linux"
+arch = "aarch64"
+triple   = "aarch64-unknown-linux-gnu"
+runner   = "ubuntu-latest"
+stage_as = "linux-arm64"            # MUST equal Node's process.platform-process.arch
+ext      = ""
+cross    = true                     # installs the gcc cross linker on the runner
+
+[[package.targets]]
+name = "windows"
+arch = "x86_64"
 
 [[package]]
 name      = "docs-site"
@@ -55,10 +71,31 @@ artifacts = "dist/**"
 | `name` | The package name as discovered by its adapter. |
 | `adapter` | The owning ecosystem (`"npm"` / `"crates.io"` / `"generic"`). |
 | `mode` | `"publish"` → build then push to the registry. `"build-only"` → build, then attach artifacts to a GitHub Release; **never** pushed to a registry. Generic packages can use either mode when a `publish` command is configured. |
-| `matrix` | `true` builds across `targets` (multiple platforms); `false` is a single runner. |
-| `targets` | Cross-compile triples (only when `matrix = true`). |
-| `command` | The build command CI runs. |
-| `artifacts` | A glob of artifacts to stage for publish / attach to the release. |
+| `matrix` | `true` builds across `[[package.targets]]` (multiple platforms); `false` is a single runner. |
+| `command` | The build command CI runs. For matrix packages it is templated per target with `{triple}`, `{ext}`, `{bin}`, `{stage_as}`, `{arch}`, `{name}`. |
+| `artifacts` | The built binary to stage (matrix: templated like `command`) / a glob to attach to the release. |
+| `bin_name` | _(matrix only)_ the compiled binary's base name; staged as `bin/<stage_as>/<bin_name><ext>`. |
+| `compress` | _(matrix only)_ `"brotli"` compresses each staged binary to `…<ext>.br` (decompressed at install time); omit to stage raw. |
+
+### Build targets (`[[package.targets]]`)
+
+Each target reconciles the **three** naming systems that describe one physical binary — the Rust
+**triple** (cargo), the CI **runner** (GitHub Actions), and the **`stage_as`** directory the Node
+`extract.js` resolver reads (`process.platform`-`process.arch`, e.g. `linux-arm64`, `darwin-x64`,
+`win32-x64`). Getting `stage_as` wrong is the one mistake that publishes a working-looking package
+no install can use, so the tool owns this mapping.
+
+| Key | Meaning |
+| --- | --- |
+| `name` / `arch` | Generic OS / architecture, e.g. `linux` / `aarch64`. The registry key. |
+| `triple` | Rust target triple. Looked up from `name`/`arch` if omitted. |
+| `runner` | GitHub-hosted runner OS. Looked up if omitted. |
+| `stage_as` | Node `process.platform-process.arch` stage dir. Looked up if omitted. **Must** match what the package resolves at install time. |
+| `ext` | Executable extension (`""` or `.exe`). Looked up if omitted. |
+| `cross` | Whether the runner needs cross-compile prep (a non-host linker). Looked up if omitted. |
+
+`init` writes every field; a hand-edited file may give just `name`/`arch` and let the built-in
+registry (`crates/core/src/config.rs`) fill the rest.
 
 ## The `generic` adapter
 

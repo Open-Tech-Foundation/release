@@ -8,7 +8,21 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Added
+- **matrix/build commands** — Added `otf-release matrix` (emits the GitHub Actions build matrix
+  from `release.toml`) and `otf-release build --package --target` (cross-compiles one target and
+  stages its binary). The generated matrix workflow now drives both, so cross-compiled binary
+  packages build and publish with no hand-edited YAML.
+- **target registry** — `[[package.targets]]` now reconciles the Rust triple, the CI runner, and
+  the Node `process.platform-process.arch` stage directory (`stage_as`), plus `ext`/`cross`. A
+  hand-written file may list just `name`/`arch`; the built-in registry fills the rest. Added
+  per-package `bin_name` and `compress` (brotli) fields.
+
 ### Changed
+- **init** — The matrix workflow is regenerated as a dynamic `matrix-<pkg>` → `build-<pkg>` →
+  `publish` DAG that calls `otf-release matrix`/`build`, removing the `# edit me` target list and
+  the untemplated build command. Staged binaries land at `bin/<platform>-<arch>/<bin>[.br]`, the
+  exact path an npm package's install-time resolver reads.
 - **init** — Removed snapshot tag prompting and `snapshot.yml` generation from the setup flow;
   snapshot releases remain available through the dedicated `snapshot` command.
 - **changelog config** — Added `changelog_scope` with strict root-level or per-package changelog
@@ -16,6 +30,12 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   GitHub Release bodies combine notes from all configured package changelogs.
 
 ### Fixed
+- **publish** — A `matrix` publish-mode package is now refused if its per-platform binaries were
+  not staged under `--artifacts-dir`, replacing the removed `private:true` guard so a binary-less
+  package can never reach the registry.
+- **npm adapter** — A prerelease version publishes under its own dist-tag (`1.2.3-dev.<hash>` →
+  `--tag dev`) instead of `latest`.
+- **init** — Unified the npm auth secret to `NPM_TOKEN` across the release and snapshot workflows.
 - **publish** — Made tag creation and GitHub Release creation idempotent so interrupted publish
   runs can be resumed without failing on already-created remote state.
 - **cargo adapter** — Treated missing `cargo info` package results as unpublished and aligned the

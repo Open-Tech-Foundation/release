@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use crate::adapter::{apply_changelog_scope, Adapter};
 use crate::changelog;
@@ -28,6 +28,11 @@ pub struct PublishOptions {
     /// GitHub Release the workflow creates, never through a registry, so `publish` leaves them
     /// alone even though their manifests look publishable.
     pub skip: Vec<String>,
+    /// Matrix (`matrix = true`) publish-mode package names. Each ships per-platform binaries staged
+    /// under `--artifacts-dir`, so publishing one without its staged tree would put a binary-less,
+    /// broken package on the registry. This is the invariant that replaced the old `private:true`
+    /// guard: such a package is published **only** when its staged binaries are present.
+    pub require_staged: Vec<String>,
     /// Configured changelog layout.
     pub changelog_scope: ChangelogScope,
 }
@@ -49,6 +54,7 @@ impl Default for PublishOptions {
             dry_run: false,
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
             skip: Vec::new(),
+            require_staged: Vec::new(),
             changelog_scope: ChangelogScope::Package,
         }
     }
@@ -185,6 +191,18 @@ pub fn orchestrate_many(
                     .as_ref()
                     .map(|dir| dir.join(&p.pkg.name))
                     .filter(|path| path.exists());
+
+                // A matrix package must never be published without its per-platform binaries —
+                // doing so ships a package whose install-time resolver finds nothing. Fail loudly
+                // instead, so a missing build artifact can't silently produce a broken release.
+                if opts.require_staged.iter().any(|n| n == &p.pkg.name) && staged.is_none() {
+                    bail!(
+                        "{}: matrix package has no staged binaries under --artifacts-dir; refusing \
+                         to publish it binary-less",
+                        p.pkg.name
+                    );
+                }
+
                 plan.adapter.publish(&p.pkg, staged.as_deref())?; // halt on failure (no rollback)
             }
 

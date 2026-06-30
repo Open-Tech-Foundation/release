@@ -19,6 +19,7 @@
 #![allow(dead_code, unused_variables)]
 
 pub mod adapter;
+pub mod build;
 pub mod changelog;
 pub mod config;
 pub mod config_cmd;
@@ -29,6 +30,7 @@ pub mod git;
 pub mod graph;
 pub mod hooks;
 pub mod init;
+pub mod matrix;
 pub mod preflight;
 pub mod prompt;
 pub mod publish;

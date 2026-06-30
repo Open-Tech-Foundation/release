@@ -35,7 +35,9 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 | --- | --- | --- |
 | `otf-release init` | ✅ Supported | Interactive setup. Writes `release.toml` and `.github/workflows/release.yml`. |
 | `otf-release version` | ✅ Supported | Interactive local release flow. Use `--dry-run` to preview the plan without writing files, and `--first-release` when a package has no prior matching tag. |
-| `otf-release publish` | ✅ Supported | CI-oriented publish flow. Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. |
+| `otf-release publish` | ✅ Supported | CI-oriented publish flow. Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. Refuses to publish a matrix package whose per-platform binaries weren't staged. |
+| `otf-release matrix` | ✅ Supported | CI helper. Prints the GitHub Actions build matrix (JSON) for a matrix package from `release.toml`, so `release.yml` never carries a hand-maintained target list. |
+| `otf-release build` | ✅ Supported | CI helper. Builds one matrix target (`--package`/`--target`), cross-compiling as needed, and stages the binary at `bin/<platform>-<arch>/<bin>[.br]` for publish. |
 | `otf-release snapshot` | 🧪 Experimental | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |
 | `otf-release config` | ✅ Supported | Interactive editor for hooks, ecosystems, package build fields, generic package fields, provider, snapshot tag, changelog scope/strategy, and GitHub Release notes. |
 | `otf-release upgrade` | ◐ Partial | Regenerates `release.yml` from the current `release.toml`. |

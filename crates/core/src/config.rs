@@ -101,13 +101,229 @@ impl Mode {
     }
 }
 
-/// A build target defining generic properties of the OS and architecture.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A build target, reconciling the three naming systems that describe one physical binary. The
+/// same artifact is known by a **Rust target triple** (to cargo), a **CI runner OS** (to GitHub
+/// Actions), and a **`process.platform-process.arch` directory** (to the Node `extract.js`
+/// resolver). The tool is the only place that sees all three, so a `Target` carries all three —
+/// keeping them in sync is what prevents a "published, but no install can find the binary" bug.
+///
+/// `name`/`arch` are always present; the rest default to empty/false and fall back to the built-in
+/// [`TARGET_REGISTRY`] via the accessor methods, so a hand-written `release.toml` can list just
+/// `name`/`arch` while `init` writes every field explicitly.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
-    /// Generic OS name (e.g. "linux", "macos", "windows")
+    /// Generic OS name (e.g. "linux", "macos", "windows").
     pub name: String,
-    /// Generic architecture (e.g. "x86_64", "aarch64", "x86")
+    /// Generic architecture (e.g. "x86_64", "aarch64", "x86").
     pub arch: String,
+    /// Rust target triple, e.g. `aarch64-unknown-linux-gnu`. Empty ⇒ look up by (name, arch).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub triple: String,
+    /// GitHub-hosted runner that builds this target, e.g. `ubuntu-latest`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub runner: String,
+    /// The staged directory inside the package. **MUST** equal Node's
+    /// `process.platform`-`process.arch` (e.g. `linux-arm64`, `darwin-x64`, `win32-x64`) so the
+    /// package's install-time resolver finds the binary.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stage_as: String,
+    /// Executable extension for this target (`""` or `.exe`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ext: String,
+    /// Whether this target needs cross-compile prep (a non-host linker) on its runner.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cross: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// A built-in fact row reconciling a `(name, arch)` pair to its triple, runner, Node stage dir,
+/// exe extension, and whether cross-compile prep is required.
+pub struct TargetInfo {
+    pub label: &'static str,
+    pub name: &'static str,
+    pub arch: &'static str,
+    pub triple: &'static str,
+    pub runner: &'static str,
+    pub stage_as: &'static str,
+    pub ext: &'static str,
+    pub cross: bool,
+}
+
+/// The single source of truth mapping `(name, arch)` to the three naming systems. `stage_as` is the
+/// Node `process.platform`-`process.arch` directory the package resolver reads — getting it wrong
+/// is the one mistake that publishes a working-looking package no install can use.
+pub const TARGET_REGISTRY: &[TargetInfo] = &[
+    TargetInfo {
+        label: "Linux x64",
+        name: "linux",
+        arch: "x86_64",
+        triple: "x86_64-unknown-linux-gnu",
+        runner: "ubuntu-latest",
+        stage_as: "linux-x64",
+        ext: "",
+        cross: false,
+    },
+    TargetInfo {
+        label: "Linux ARM64",
+        name: "linux",
+        arch: "aarch64",
+        triple: "aarch64-unknown-linux-gnu",
+        runner: "ubuntu-latest",
+        stage_as: "linux-arm64",
+        ext: "",
+        cross: true,
+    },
+    TargetInfo {
+        label: "Linux x86 (32-bit)",
+        name: "linux",
+        arch: "x86",
+        triple: "i686-unknown-linux-gnu",
+        runner: "ubuntu-latest",
+        stage_as: "linux-ia32",
+        ext: "",
+        cross: true,
+    },
+    TargetInfo {
+        label: "macOS ARM64",
+        name: "macos",
+        arch: "aarch64",
+        triple: "aarch64-apple-darwin",
+        runner: "macos-latest",
+        stage_as: "darwin-arm64",
+        ext: "",
+        cross: false,
+    },
+    TargetInfo {
+        label: "macOS x64",
+        name: "macos",
+        arch: "x86_64",
+        triple: "x86_64-apple-darwin",
+        runner: "macos-latest",
+        stage_as: "darwin-x64",
+        ext: "",
+        cross: false,
+    },
+    TargetInfo {
+        label: "Windows x64",
+        name: "windows",
+        arch: "x86_64",
+        triple: "x86_64-pc-windows-msvc",
+        runner: "windows-latest",
+        stage_as: "win32-x64",
+        ext: ".exe",
+        cross: false,
+    },
+    TargetInfo {
+        label: "Windows ARM64",
+        name: "windows",
+        arch: "aarch64",
+        triple: "aarch64-pc-windows-msvc",
+        runner: "windows-latest",
+        stage_as: "win32-arm64",
+        ext: ".exe",
+        cross: false,
+    },
+    TargetInfo {
+        label: "Windows x86 (32-bit)",
+        name: "windows",
+        arch: "x86",
+        triple: "i686-pc-windows-msvc",
+        runner: "windows-latest",
+        stage_as: "win32-ia32",
+        ext: ".exe",
+        cross: false,
+    },
+];
+
+/// Look up the built-in facts for a `(name, arch)` pair.
+pub fn lookup_target(name: &str, arch: &str) -> Option<&'static TargetInfo> {
+    TARGET_REGISTRY
+        .iter()
+        .find(|t| t.name == name && t.arch == arch)
+}
+
+impl Target {
+    fn info(&self) -> Option<&'static TargetInfo> {
+        lookup_target(&self.name, &self.arch)
+    }
+
+    /// The Rust target triple — the explicit field if set, else the registry value.
+    pub fn triple(&self) -> String {
+        non_empty(&self.triple).unwrap_or_else(|| {
+            self.info()
+                .map(|i| i.triple.to_string())
+                .unwrap_or_default()
+        })
+    }
+
+    /// The GitHub runner OS — the explicit field if set, else the registry value.
+    pub fn runner(&self) -> String {
+        non_empty(&self.runner).unwrap_or_else(|| {
+            self.info()
+                .map(|i| i.runner.to_string())
+                .unwrap_or_default()
+        })
+    }
+
+    /// The Node `process.platform-process.arch` stage dir — explicit field if set, else registry.
+    pub fn stage_as(&self) -> String {
+        non_empty(&self.stage_as).unwrap_or_else(|| {
+            self.info()
+                .map(|i| i.stage_as.to_string())
+                .unwrap_or_default()
+        })
+    }
+
+    /// The executable extension — explicit field if set, else the registry value.
+    pub fn ext(&self) -> String {
+        non_empty(&self.ext)
+            .unwrap_or_else(|| self.info().map(|i| i.ext.to_string()).unwrap_or_default())
+    }
+
+    /// Whether cross-compile prep is needed — true if explicitly set, else the registry value.
+    pub fn is_cross(&self) -> bool {
+        self.cross || self.info().map(|i| i.cross).unwrap_or(false)
+    }
+
+    /// Expand the per-target placeholders in a command/artifacts template: `{triple}`, `{ext}`,
+    /// `{stage_as}`, `{bin}`, `{arch}`, `{name}` (the OS name). `bin` is the package's binary name.
+    pub fn render(&self, template: &str, bin: &str) -> String {
+        template
+            .replace("{triple}", &self.triple())
+            .replace("{stage_as}", &self.stage_as())
+            .replace("{ext}", &self.ext())
+            .replace("{arch}", &self.arch)
+            .replace("{name}", &self.name)
+            .replace("{bin}", bin)
+    }
+
+    /// Build a fully-populated `Target` for a `(name, arch)` pair from the registry, so `init`
+    /// writes every reconciling field into `release.toml` rather than leaving them implicit.
+    pub fn resolved(name: &str, arch: &str) -> Self {
+        match lookup_target(name, arch) {
+            Some(i) => Self {
+                name: i.name.to_string(),
+                arch: i.arch.to_string(),
+                triple: i.triple.to_string(),
+                runner: i.runner.to_string(),
+                stage_as: i.stage_as.to_string(),
+                ext: i.ext.to_string(),
+                cross: i.cross,
+            },
+            None => Self {
+                name: name.to_string(),
+                arch: arch.to_string(),
+                ..Self::default()
+            },
+        }
+    }
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    (!s.is_empty()).then(|| s.to_string())
 }
 
 /// A package that needs a build step before it is published or released.
@@ -128,9 +344,18 @@ pub struct PackageEntry {
     /// The build command run in CI (may be empty for a publish-only generic package).
     #[serde(default)]
     pub command: String,
-    /// A glob of artifacts to stage for publish / attach to the release (may be empty).
+    /// A glob of artifacts to stage for publish / attach to the release (may be empty). For matrix
+    /// builds it is templated per target with `{triple}`, `{ext}`, `{stage_as}`, `{bin}`.
     #[serde(default)]
     pub artifacts: String,
+    /// The compiled binary's base name (no extension), used to template `{bin}` and to name the
+    /// staged file `bin/{stage_as}/{bin}{ext}`. Matrix builds only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bin_name: Option<String>,
+    /// Compression applied to each staged binary, e.g. `brotli` (writes `…{ext}.br`). The package's
+    /// install-time resolver decompresses it. Matrix builds only; `None` stages the raw binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compress: Option<String>,
 
     // --- generic-adapter fields (ignored by npm/cargo) ---
     /// `generic` only: the manifest file holding the version (e.g. `deno.json`). Required for a
@@ -289,6 +514,16 @@ impl ReleaseConfig {
             .map(|p| p.name.clone())
             .collect()
     }
+
+    /// Names of `matrix` publish-mode packages — those that must have their per-platform binaries
+    /// staged before `publish` is allowed to push them (see `PublishOptions::require_staged`).
+    pub fn matrix_publish_names(&self) -> Vec<String> {
+        self.packages
+            .iter()
+            .filter(|p| p.matrix && p.mode == Mode::Publish)
+            .map(|p| p.name.clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -312,12 +547,11 @@ mod tests {
                     adapter: Ecosystem::Cargo,
                     mode: Mode::BuildOnly,
                     matrix: true,
-                    targets: vec![Target {
-                        name: "linux".into(),
-                        arch: "x86_64".into(),
-                    }],
+                    targets: vec![Target::resolved("linux", "x86_64")],
                     command: "cargo build --release -p otfw_cli".into(),
                     artifacts: "target/*/release/otfwc*".into(),
+                    bin_name: Some("otfwc".into()),
+                    compress: None,
                     manifest: None,
                     version_field: None,
                     publish: None,
@@ -330,6 +564,8 @@ mod tests {
                     targets: vec![],
                     command: "npm run build".into(),
                     artifacts: "dist/**".into(),
+                    bin_name: None,
+                    compress: None,
                     manifest: None,
                     version_field: None,
                     publish: None,

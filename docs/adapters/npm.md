@@ -35,16 +35,29 @@ If the command **succeeds**, that exact version already exists → **skip** (thi
 ## Publish (`publish`)
 
 ```
-npm publish --access public --no-workspaces
+npm publish --access public --no-workspaces [--tag <pre-id>]
 ```
 
-Two flags, both load-bearing:
+Flags, all load-bearing:
 
 - **`--access public`** — required for a **scoped** package's *first* publish (`@opentf/*`
   packages default to restricted otherwise).
 - **`--no-workspaces`** — required because the **repo root is a private workspace**. Without
   this flag npm runs in workspace mode and **skips the package even when invoked from the
   package's own directory**.
+- **`--tag <pre-id>`** — added automatically for a **prerelease** version: the leading identifier
+  of the prerelease becomes the dist-tag (`1.2.3-dev.<hash>` → `--tag dev`, `2.0.0-beta.1` →
+  `--tag beta`). A normal release publishes under `latest`. This keeps an automated snapshot from
+  ever becoming the default install.
+
+### Staging matrix binaries
+
+Before `npm publish`, the contents of `.artifacts/<package>/` are copied into the package. For a
+matrix package that tree is `bin/<stage_as>/<bin><ext>[.br]`, where `<stage_as>` is the Node
+`process.platform-process.arch` directory the package's install-time resolver reads (`linux-arm64`,
+`darwin-x64`, `win32-x64`, …). `otf-release build` produces this layout per target and the workflow
+merges every target's artifact back into `.artifacts/<package>/` before this step — so the published
+tarball carries a binary for each platform under the exact path the resolver expects.
 
 ## Workspace links (`resolve_workspace_links`)
 
@@ -84,7 +97,8 @@ This is the single biggest behavioral difference from the changesets workaround.
 | Idempotent `npm view` skip | Resumable publish after partial failure. |
 | `--no-workspaces` | Private root workspace would otherwise skip the package. |
 | `--access public` | Scoped package first publish. |
-| Brotli compression via Node `zlib` | No dependency on a runner-side CLI. |
+| `--tag <pre-id>` for prereleases | A snapshot never lands on `latest`. |
+| Brotli staging done by `otf-release build` | Compresses with the Rust `brotli` crate (max quality, window 22); the package decompresses with Node `zlib` at install — no runner-side CLI either way. |
 
 | Drop | Why |
 | --- | --- |

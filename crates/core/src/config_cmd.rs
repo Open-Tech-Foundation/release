@@ -442,10 +442,7 @@ fn parse_targets(text: &str) -> Vec<Target> {
         .filter(|s| !s.is_empty())
         .filter_map(|s| {
             let (name, arch) = s.split_once('-')?;
-            Some(Target {
-                name: name.to_string(),
-                arch: arch.to_string(),
-            })
+            Some(Target::resolved(name, arch))
         })
         .collect()
 }
@@ -551,6 +548,8 @@ mod tests {
                 targets: vec![],
                 command: "old build".to_string(),
                 artifacts: "old/*".to_string(),
+                bin_name: None,
+                compress: None,
                 manifest: Some("deno.json".to_string()),
                 version_field: Some("version".to_string()),
                 publish: None,

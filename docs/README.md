@@ -3,9 +3,9 @@
 Reference documentation for `otf-release`, the manual-bump, changelog-aware release CLI for
 polyglot monorepos.
 
-> **Status:** The implemented command surface includes `init`, `version`, `publish`, `snapshot`,
-> `config`, `upgrade`, and `self-update`. The implemented adapters are **npm**, **cargo**, and
-> **generic**. GitHub is the only fully implemented forge provider.
+> **Status:** The implemented command surface includes `init`, `version`, `publish`, `matrix`,
+> `build`, `snapshot`, `config`, `upgrade`, and `self-update`. The implemented adapters are
+> **npm**, **cargo**, and **generic**. GitHub is the only fully implemented forge provider.
 
 ## Start here
 
@@ -23,6 +23,7 @@ polyglot monorepos.
 | [architecture.md](./architecture.md) | Crate layout, the core/adapter seam, data flow. |
 | [commands/version.md](./commands/version.md) | The interactive, local `version` command. |
 | [commands/publish.md](./commands/publish.md) | The non-interactive, CI `publish` command. |
+| [commands/matrix-build.md](./commands/matrix-build.md) | The `matrix` / `build` CI helpers for cross-compiled binary packages. |
 | [commands/init.md](./commands/init.md) | Interactive setup: writes `release.toml`, generates `release.yml`. |
 | [commands/config.md](./commands/config.md) | Interactive editor for `release.toml`. |
 | [configuration.md](./configuration.md) | The `release.toml` schema — the committed source of truth. |

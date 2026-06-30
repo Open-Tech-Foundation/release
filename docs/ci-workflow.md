@@ -12,16 +12,25 @@ The jobs are derived from `release.toml`:
 ```
 check-release
       │
-      ├──▶ build-<pkg>       (one per package with a build step)
-      │          │
-      │          ├──▶ publish          (otf-release publish)
-      │          └──▶ github-release   (build-only artifacts)
+      ├──▶ matrix-<pkg> ─▶ build-<pkg>   (matrix packages: emit matrix, then fan out)
+      │                         │
+      ├──▶ build-<pkg>          │         (non-matrix packages: a single runner)
+      │          │             │
+      │          ├──────────┬──┴──▶ publish          (otf-release publish)
+      │          │          └─────▶ github-release   (build-only artifacts)
       │
       └──▶ publish / github-release when no build job is needed
 ```
 
-- **`build-<pkg>`** — one per `[[package]]` entry. A target **matrix** when `matrix = true`,
-  otherwise a single runner. Runs the entry's `command` and uploads its `artifacts`.
+- **`matrix-<pkg>`** _(matrix packages only)_ — a tiny job that runs `otf-release matrix --package
+  <pkg>` and outputs the GitHub Actions matrix as JSON, straight from `release.toml`. The target
+  list is never hand-maintained in YAML, so it can't drift.
+- **`build-<pkg>`** — for a matrix package this is the fan-out leg: `runs-on: ${{ matrix.runner }}`,
+  `strategy.matrix: ${{ fromJSON(...) }}`, cross prep gated on `${{ matrix.cross }}`, then
+  `otf-release build --package <pkg> --target ${{ matrix.name }}/${{ matrix.arch }}` which compiles
+  and stages the binary under `.artifacts/<pkg>/bin/<stage_as>/`. For a non-matrix package it is a
+  single runner that runs the entry's `command` and uploads its `artifacts`. **No `# edit me`** —
+  the tool owns the triple/runner/cross/stage_as reconciliation.
 - **`publish`** — present when at least one enabled adapter has registry publishing. It runs
   `otf-release publish` once; the CLI loops enabled adapters internally. It publishes only
   registry-publish packages (`build-only` ones are skipped).
@@ -41,8 +50,8 @@ Trigger: a merge to `main` (i.e. merging a release PR produced by
 | --- | --- |
 | **All-or-nothing** | If any matrix leg fails, `publish` never runs. Intrinsic to `needs:`, not bolted on. |
 | **Correct ordering** | Registry packages are published in topological order inside `otf-release publish`. Build-only artifacts are gated by their build jobs. |
-| **No guard hack** | Asset packages are first-class publishable packages with a binary target. No `private:true`, no flip-off step. |
-| **Stateless** | `publish` reads what to attach from `.artifacts/<pkg>/` on disk — nothing persisted. |
+| **No guard hack** | Asset packages are first-class publishable packages with a binary target. No `private:true`; the matrix invariant is enforced instead — `publish` refuses to ship a matrix package whose staged binaries are absent. |
+| **Stateless** | `publish` reads what to attach from `.artifacts/<pkg>/` on disk — nothing persisted. For matrix packages each target's artifact is merged back into `.artifacts/<pkg>` (`download-artifact` with `merge-multiple: true`) before packing. |
 
 ## build-only (GitHub Release) shape
 
@@ -53,9 +62,8 @@ A `build-only` package ships a **binary** release, not a registry publish — th
 build-<pkg>  (cross-compile each target on its runner)  ──needs──▶  github-release
 ```
 
-- **`build-<pkg>`** — one matrix leg per target triple, each on a matching runner (`runner_os`
-  maps `*windows*`→`windows-latest`, `*apple*`/`*darwin*`→`macos-latest`, else `ubuntu-latest`).
-  Runs the entry's `command` and uploads its `artifacts` glob.
+- **`build-<pkg>`** — the matrix fan-out described above; each leg runs on its `matrix.runner` and
+  `otf-release build` cross-compiles + stages the target's binary.
 - **`github-release`** — `needs:` the build job(s); downloads the artifacts and runs `gh release
   create <tag>` using `tag_format` for each build-only package. The version line carries an
   `# edit me` marker when the generator cannot infer a source. The step is **idempotent**
@@ -68,20 +76,25 @@ tag rendered from `tag_format` is created by the Release step, on the merge comm
 
 ## npm specifics
 
-Secrets/auth: `NODE_AUTH_TOKEN`.
+Secrets/auth: `NODE_AUTH_TOKEN`, read from the `NPM_TOKEN` repo secret (matching the snapshot
+workflow).
 
 **Gotchas to keep** (see [adapters/npm.md](./adapters/npm.md)):
 
 - Idempotent `npm view` skip → resumable after a partial failure.
 - `--no-workspaces` → the private root workspace would otherwise skip packages.
 - `--access public` → scoped package first publish.
+- A prerelease version publishes under its own dist-tag (`1.2.3-dev.<hash>` → `--tag dev`), never
+  `latest`.
 **Gotcha to drop:** the `private:true` guard flip, entirely.
 
 ## The generated file is yours
 
-`init` emits an **editable scaffold**. Matrix triples carry a `# edit me` marker, and
-repo-specific build steps are expected to be added by hand. Re-running `init` warns before
-overwrite (`--force` to replace) and does not try to manage the file after generation.
+`init` emits a workflow that is ready to run for the common cases: the matrix path is fully driven
+by `otf-release matrix`/`otf-release build` with **no `# edit me`** markers. The remaining markers
+are narrow — the `check-release` version-read heuristic, and generic-adapter toolchain/secret
+steps the tool can't infer. Re-running `init` (or `upgrade`) warns before overwrite (`--force` to
+replace) and does not try to manage the file after generation.
 
 ## See also
 
