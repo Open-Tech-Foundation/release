@@ -179,7 +179,14 @@ pub fn orchestrate(
     let build_names = prompt.select_build_packages(&refs)?;
     let mut packages = Vec::new();
     for name in &build_names {
-        packages.push(prompt.build_entry(name, &enabled)?);
+        let mut entry = prompt.build_entry(name, &enabled)?;
+        if entry.adapter == Ecosystem::Npm && entry.manifest.is_none() {
+            entry.manifest = publishable
+                .iter()
+                .find(|pkg| pkg.name == *name)
+                .map(|pkg| rel_path(root, &pkg.manifest_path));
+        }
+        packages.push(entry);
     }
 
     // Generic packages have no native adapter discovery — scan the repo for known manifests and
@@ -491,7 +498,7 @@ fn version_read_cmd(config: &ReleaseConfig) -> (String, bool) {
                 (format!("cat {manifest}"), false)
             }
         }
-        Some(e) if e.adapter == Ecosystem::Npm => (npm_version_read_cmd(&e.name), true),
+        Some(e) if e.adapter == Ecosystem::Npm => (npm_version_read_cmd(e), true),
         Some(_) => (CARGO_VERSION_CMD.to_string(), true),
         None if config.adapters.contains(&Ecosystem::Npm) => (
             "node -p \"require('./package.json').version\"".to_string(),
@@ -504,10 +511,16 @@ fn version_read_cmd(config: &ReleaseConfig) -> (String, bool) {
     }
 }
 
-fn npm_version_read_cmd(name: &str) -> String {
-    format!(
-        "node -e \"const fs=require('fs'),path=require('path'),want='{name}'; const read=f=>JSON.parse(fs.readFileSync(f,'utf8')); const root=read('package.json'); const seen=new Set(); const check=d=>{{ const f=path.join(d,'package.json'); if(seen.has(f)||!fs.existsSync(f)) return; seen.add(f); const p=read(f); if(p.name===want) {{ console.log(p.version); process.exit(0); }} }}; check('.'); const patterns=Array.isArray(root.workspaces)?root.workspaces:(root.workspaces&&root.workspaces.packages)||[]; for (const pattern of patterns) {{ const base=pattern.replace(/\\/\\*.*$/, '')||'.'; if (pattern.includes('*')) {{ if(!fs.existsSync(base)) continue; for (const child of fs.readdirSync(base)) check(path.join(base, child)); }} else check(base); }} process.exit(1)\""
-    )
+fn rel_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn npm_version_read_cmd(entry: &PackageEntry) -> String {
+    let manifest = entry.manifest.as_deref().unwrap_or("package.json");
+    format!("jq -r '.version' {}", shell_single_quote(manifest))
 }
 
 /// One build job: matrix or single runner, runs the package's command, uploads its artifacts.
@@ -1505,6 +1518,22 @@ mod tests {
         }
     }
 
+    fn npm_pkg(name: &str, manifest_path: &str) -> Pkg {
+        Pkg {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path: PathBuf::from(manifest_path),
+            changelog_path: PathBuf::from(
+                Path::new(manifest_path)
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join("CHANGELOG.md"),
+            ),
+            publishable: true,
+            internal_deps: vec![],
+        }
+    }
+
     fn cargo_build_only(name: &str) -> PackageEntry {
         PackageEntry {
             name: name.to_string(),
@@ -1661,7 +1690,28 @@ mod tests {
     }
 
     #[test]
-    fn npm_package_entry_reads_workspace_package_version_by_name() {
+    fn npm_package_entry_reads_known_manifest_version_path() {
+        let mut package = npm_publish("docs-site");
+        package.manifest = Some("packages/docs-site/package.json".to_string());
+        let config = ReleaseConfig {
+            snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
+            provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
+            hooks: crate::config::Hooks::default(),
+            adapters: vec![Ecosystem::Npm],
+            packages: vec![package],
+        };
+        let out = render_workflow(&config);
+        assert!(out.contains("version=\"$(jq -r '.version' packages/docs-site/package.json)\""));
+        assert!(!out.contains("workspaces"));
+        assert!(!out.contains("const patterns"));
+    }
+
+    #[test]
+    fn npm_package_without_manifest_reads_root_package_version() {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
@@ -1674,10 +1724,7 @@ mod tests {
             packages: vec![npm_publish("docs-site")],
         };
         let out = render_workflow(&config);
-        assert!(out.contains("want='docs-site'"));
-        assert!(out.contains("p.name===want"));
-        assert!(out.contains("check('.')"));
-        assert!(!out.contains("require('./package.json').version"));
+        assert!(out.contains("version=\"$(jq -r '.version' package.json)\""));
     }
 
     #[test]
@@ -2072,6 +2119,34 @@ mod tests {
         assert_eq!(p.manifest.as_deref(), Some("deno.json"));
         assert_eq!(p.publish.as_deref(), Some("npx jsr publish"));
         assert_eq!(p.mode, Mode::Publish);
+    }
+
+    #[test]
+    fn orchestrate_persists_discovered_npm_manifest_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let factory = FakeFactory {
+            packages: vec![npm_pkg(
+                "@opentf/web-compiler",
+                "packages/web-compiler/package.json",
+            )],
+        };
+        let prompt = FakePrompt {
+            adapters: vec![Ecosystem::Npm],
+            build_names: vec!["@opentf/web-compiler".into()],
+            entries: vec![npm_publish("@opentf/web-compiler")],
+            ..FakePrompt::default()
+        };
+
+        orchestrate(&factory, &prompt, tmp.path(), &InitOptions { force: true }).unwrap();
+
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.packages[0].manifest.as_deref(),
+            Some("packages/web-compiler/package.json")
+        );
+        let yml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
+        assert!(yml.contains("jq -r '.version' packages/web-compiler/package.json"));
+        assert!(!yml.contains("workspaces"));
     }
 
     #[test]

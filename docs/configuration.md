@@ -107,8 +107,8 @@ build-only. `init` asks for these (or edit `release.toml` directly). The generic
 
 | Key | Meaning |
 | --- | --- |
-| `manifest` | File holding the version (e.g. `deno.json`). Required for a generic package. |
-| `version_field` | The version key inside `manifest` (default `version`). Dot paths like `workspace.package.version` are supported; for root `Cargo.toml`, `version` also maps to `[package].version` or `[workspace.package].version`. |
+| `manifest` | File holding the version (e.g. `deno.json` for generic, or a discovered `package.json` path for npm workflow version reads). Required for a generic package. |
+| `version_field` | Generic only: the version key inside `manifest` (default `version`). Dot paths like `workspace.package.version` are supported; for root `Cargo.toml`, `version` also maps to `[package].version` or `[workspace.package].version`. |
 | `publish` | Optional shell command that publishes to the registry. Omit ⇒ build-only. |
 
 See [adapters/generic.md](./adapters/generic.md).

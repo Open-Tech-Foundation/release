@@ -292,9 +292,9 @@ pub struct PackageEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compress: Option<String>,
 
-    // --- generic-adapter fields (ignored by npm/cargo) ---
-    /// `generic` only: the manifest file holding the version (e.g. `deno.json`). Required for a
-    /// generic package — it is the source of the version, and thus the git tag.
+    // --- manifest fields (generic uses these to version; npm may use `manifest` for workflow reads) ---
+    /// Manifest file holding the version. Required for a generic package; for npm packages `init`
+    /// may persist the discovered `package.json` path so generated workflows can read it directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<String>,
     /// `generic` only: the version field/key inside `manifest` (defaults to `version`).
