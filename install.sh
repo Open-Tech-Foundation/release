@@ -1,5 +1,5 @@
 #!/bin/sh
-set -e
+set -eu
 
 REPO="Open-Tech-Foundation/release"
 BIN_NAME="otf-release"
@@ -10,35 +10,79 @@ ARCH="$(uname -m)"
 case "$OS" in
     linux) OS_NAME="linux" ;;
     darwin) OS_NAME="macos" ;;
-    *) echo "Unsupported OS: $OS"; exit 1 ;;
+    *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
 esac
 
 case "$ARCH" in
     x86_64|amd64) ARCH_NAME="x86_64" ;;
     aarch64|arm64) ARCH_NAME="aarch64" ;;
-    *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+    *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 
 ASSET_NAME="${BIN_NAME}-${OS_NAME}-${ARCH_NAME}"
 
+# Download to a temp file first. Nothing touches the installed binary until the
+# download has been fetched AND verified, so a failed/bogus response can never
+# clobber a working install.
+TMP_FILE="$(mktemp "${TMPDIR:-/tmp}/${BIN_NAME}.XXXXXX")"
+cleanup() { rm -f "$TMP_FILE"; }
+trap cleanup EXIT INT TERM
+
 echo "Fetching latest version of $BIN_NAME..."
-DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep "browser_download_url.*$ASSET_NAME\"" | cut -d '"' -f 4)
+API_URL="https://api.github.com/repos/$REPO/releases/latest"
+# -f makes curl exit non-zero on HTTP errors (e.g. 403 rate limiting) instead
+# of handing us the error JSON as if it were data.
+if ! RELEASE_JSON="$(curl -fsSL "$API_URL")"; then
+    echo "Error: failed to query the GitHub API ($API_URL)." >&2
+    echo "       The API may be rate limiting you; wait a bit and retry." >&2
+    exit 1
+fi
+
+DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" | grep "browser_download_url.*$ASSET_NAME\"" | cut -d '"' -f 4)"
 
 if [ -z "$DOWNLOAD_URL" ]; then
-    echo "Error: Could not find release asset for $OS_NAME $ARCH_NAME."
+    echo "Error: Could not find release asset for $OS_NAME $ARCH_NAME." >&2
     exit 1
 fi
 
 echo "Downloading from $DOWNLOAD_URL..."
-curl -L -o "$BIN_NAME" "$DOWNLOAD_URL"
-chmod +x "$BIN_NAME"
-
-INSTALL_DIR="/usr/local/bin"
-if [ ! -w "$INSTALL_DIR" ]; then
-    echo "Requires sudo to install to $INSTALL_DIR"
-    sudo mv "$BIN_NAME" "$INSTALL_DIR/"
-else
-    mv "$BIN_NAME" "$INSTALL_DIR/"
+if ! curl -fL -o "$TMP_FILE" "$DOWNLOAD_URL"; then
+    echo "Error: download failed from $DOWNLOAD_URL" >&2
+    exit 1
 fi
 
-echo "$BIN_NAME installed successfully to $INSTALL_DIR/$BIN_NAME"
+# Verify we actually got an executable, not an HTML/JSON error page. This is the
+# guard that prevents installing garbage over a good binary.
+if [ ! -s "$TMP_FILE" ]; then
+    echo "Error: downloaded file is empty; refusing to install." >&2
+    exit 1
+fi
+
+MAGIC="$(dd if="$TMP_FILE" bs=4 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+case "$MAGIC" in
+    7f454c46*) ;;                                          # ELF (Linux)
+    feedface*|feedfacf*|cafebabe*|cffaedfe*|cefaedfe*) ;;  # Mach-O (macOS)
+    *)
+        echo "Error: downloaded file is not an executable binary." >&2
+        case "$MAGIC" in
+            7b*) echo "       Got a JSON/API response instead (likely a rate-limit or error page)." >&2 ;;
+            3c*) echo "       Got an HTML page instead." >&2 ;;
+        esac
+        echo "       Refusing to install; your existing $BIN_NAME is left untouched." >&2
+        exit 1
+        ;;
+esac
+
+chmod +x "$TMP_FILE"
+
+INSTALL_DIR="/usr/local/bin"
+DEST="$INSTALL_DIR/$BIN_NAME"
+if [ ! -w "$INSTALL_DIR" ]; then
+    echo "Requires sudo to install to $INSTALL_DIR"
+    sudo mv "$TMP_FILE" "$DEST"
+else
+    mv "$TMP_FILE" "$DEST"
+fi
+trap - EXIT INT TERM  # installed successfully; temp file has been moved
+
+echo "$BIN_NAME installed successfully to $DEST"
