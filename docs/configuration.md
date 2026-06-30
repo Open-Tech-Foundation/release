@@ -24,8 +24,8 @@ post_version = ["python3 scripts/sync-docs.py"]
 pre_publish = ["npm run test"]
 post_publish = ["curl -X POST ..."]
 
-# Zero or more packages that need a build step before publish/release.
-# A publishable package with no entry here is published as-is by its adapter (no build).
+# Zero or more packages that need built artifacts before publish/release.
+# A publishable package with no entry here is published as-is by its adapter.
 [[package]]
 name      = "@opentf/web-compiler"  # the name the adapter discovers
 adapter   = "npm"                   # which enabled ecosystem it belongs to

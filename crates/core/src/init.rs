@@ -111,7 +111,7 @@ pub trait AdapterFactory {
 pub trait InitPrompt {
     /// Which ecosystems to enable (multi-select: `npm`, `crates.io`).
     fn select_adapters(&self) -> Result<Vec<Ecosystem>>;
-    /// Which publishable packages need a build step before publish/release?
+    /// Which publishable packages need built artifacts before publish/release?
     fn select_build_packages(&self, publishable: &[&Pkg]) -> Result<Vec<String>>;
     /// The full build config for one selected package (`enabled` is the chosen adapter set).
     fn build_entry(&self, pkg_name: &str, enabled: &[Ecosystem]) -> Result<PackageEntry>;
@@ -1104,8 +1104,8 @@ const MULTI_HELP: &str = "↑↓ move · space toggle · enter confirm";
 const SELECT_HELP: &str = "↑↓ move · enter select";
 
 const BUILD_PKGS_HELP: &str =
-    "a build step compiles/bundles before publish (a Rust binary, a TS bundle, …). \
-     Packages you don't pick are published as-is. ↑↓ move · space toggle · enter confirm";
+    "select packages that must produce artifacts first — for example a prebuilt binary, generated \
+     dist files, or a bundled CLI. Packages you don't pick are published as-is. ↑↓ move · space toggle · enter confirm";
 const MODE_HELP: &str =
     "publish → push to the registry  ·  build-only → standalone binaries on a GitHub Release (no registry)";
 const MATRIX_HELP: &str =
@@ -1140,9 +1140,12 @@ impl InitPrompt for StdinInitPrompt {
             return Ok(Vec::new());
         }
         let labels: Vec<String> = publishable.iter().map(|p| p.name.clone()).collect();
-        let chosen = MultiSelect::new("Which packages need a build step before publish?", labels)
-            .with_help_message(BUILD_PKGS_HELP)
-            .raw_prompt()?;
+        let chosen = MultiSelect::new(
+            "Which packages need built artifacts before publish?",
+            labels,
+        )
+        .with_help_message(BUILD_PKGS_HELP)
+        .raw_prompt()?;
         Ok(chosen
             .iter()
             .map(|o| publishable[o.index].name.clone())

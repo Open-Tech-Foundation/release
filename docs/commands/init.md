@@ -18,7 +18,7 @@ otf-release init [--force]
 1. **Choose adapters** (spacebar multi-select): `npm`, `crates.io`, `generic`. The enabled set is
    recorded in `release.toml`; a polyglot repo can enable several.
 2. **List publishable packages** (discovered across the enabled npm/cargo adapters), then
-   **multi-select**: *"Which need a build step before publish?"*
+   **multi-select**: *"Which packages need built artifacts before publish?"*
    npm workspace manifests that are not release packages (for example fixture or benchmark
    folders without a `version`) are skipped and listed with the reason, so the scan does not abort
    on non-package workspace members.

@@ -11,6 +11,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ## [0.7.0] - 2026-06-30
 
 ### Fixed
+- **init** — Reworded the package build selection prompt around built artifacts so binary-backed
+  packages are clearer without implying every package needs a generic build step.
 - **workflow** — Generated npm release workflows now detect Bun, pnpm, and Yarn lockfiles, use
   Node 24 for Node-based package managers, and use the matching setup/install command instead of
   always running `npm ci`.
