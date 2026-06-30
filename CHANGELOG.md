@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-30
+
 ### Added
 - **matrix/build commands** — Added `otf-release matrix` (emits the GitHub Actions build matrix
   from `release.toml`) and `otf-release build --package --target` (cross-compiles one target and
