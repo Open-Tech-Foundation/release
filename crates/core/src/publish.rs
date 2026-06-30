@@ -81,7 +81,17 @@ pub fn orchestrate(
 
 struct AdapterPublish<'a> {
     adapter: &'a dyn Adapter,
-    to_publish: Vec<crate::adapter::Pkg>,
+    pending: Vec<Pending>,
+}
+
+/// One package still needing work: it is either not yet on the registry, or it published on a
+/// previous run but its tag/GitHub Release was never created (a partial-failure resume).
+struct Pending {
+    pkg: crate::adapter::Pkg,
+    tag: String,
+    /// `false` when the registry already has this version — only the tag/release are missing, so
+    /// the registry publish is skipped to avoid a "version already published" error on resume.
+    needs_publish: bool,
 }
 
 /// The testable multi-adapter publish flow. Hooks wrap the whole command once, while each adapter
@@ -101,8 +111,8 @@ pub fn orchestrate_many(
         let packages = adapter.discover_packages()?;
         let graph = Graph::build(&packages)?;
 
-        // Dependencies before dependents; keep only publishable, not-already-published packages.
-        let mut to_publish = Vec::new();
+        // Dependencies before dependents; keep publishable packages that still need any work.
+        let mut pending = Vec::new();
         for pkg in graph.topo_order()? {
             if !pkg.publishable {
                 continue; // private apps are never published
@@ -110,30 +120,47 @@ pub fn orchestrate_many(
             if opts.skip.iter().any(|n| n == &pkg.name) {
                 continue; // build-only: ships via GitHub Release, not a registry
             }
-            if adapter.is_published(pkg, &pkg.version)? {
-                continue; // already shipped → idempotent / resumable
+            let tag = format_tag(&opts.tag_format, &pkg.name, &pkg.version)?;
+            let published = adapter.is_published(pkg, &pkg.version)?;
+            let tagged = git.tag_exists(&tag)?;
+            // A package is fully shipped only when the registry has it AND its tag exists. If it
+            // published on an earlier run but the tag/release step failed, it is reprocessed so
+            // the missing tag and GitHub Release get created — without re-publishing the version.
+            if published && tagged {
+                continue;
             }
-            to_publish.push(pkg.clone());
+            pending.push(Pending {
+                pkg: pkg.clone(),
+                tag,
+                needs_publish: !published,
+            });
         }
 
         plans.push(AdapterPublish {
             adapter: *adapter,
-            to_publish,
+            pending,
         });
     }
 
-    let has_publish_work = plans.iter().any(|plan| !plan.to_publish.is_empty());
+    let has_work = plans.iter().any(|plan| !plan.pending.is_empty());
 
-    if !has_publish_work {
-        println!("Nothing to publish: every package is already at its published version.");
+    if !has_work {
+        println!("Nothing to publish: every package is already published and tagged.");
         return Ok(());
     }
 
     if opts.dry_run {
         println!("Would publish (in dependency order):");
         for plan in &plans {
-            for pkg in &plan.to_publish {
-                println!("  {}@{}", pkg.name, pkg.version);
+            for p in &plan.pending {
+                if p.needs_publish {
+                    println!("  {}@{}", p.pkg.name, p.pkg.version);
+                } else {
+                    println!(
+                        "  {}@{} (already published — tag/release only)",
+                        p.pkg.name, p.pkg.version
+                    );
+                }
             }
         }
         return Ok(());
@@ -144,27 +171,39 @@ pub fn orchestrate_many(
     }
 
     for plan in plans {
-        for pkg in plan.to_publish {
-            plan.adapter.resolve_workspace_links(&pkg)?;
+        for p in plan.pending {
+            if p.needs_publish {
+                plan.adapter.resolve_workspace_links(&p.pkg)?;
 
-            // Attach staged binaries only if their directory actually exists on disk.
-            let staged = opts
-                .artifacts_dir
-                .as_ref()
-                .map(|dir| dir.join(&pkg.name))
-                .filter(|path| path.exists());
-            plan.adapter.publish(&pkg, staged.as_deref())?; // halt on failure (no rollback)
-
-            let tag = format_tag(&opts.tag_format, &pkg.name, &pkg.version)?;
-            git.create_tag(&tag)?;
-            git.push_tag(&tag)?;
-
-            if let Some(notes) = changelog::dated_section_notes(&pkg.changelog_path, &pkg.version)?
-            {
-                forge.create_release(&tag, &tag, &notes)?;
+                // Attach staged binaries only if their directory actually exists on disk.
+                let staged = opts
+                    .artifacts_dir
+                    .as_ref()
+                    .map(|dir| dir.join(&p.pkg.name))
+                    .filter(|path| path.exists());
+                plan.adapter.publish(&p.pkg, staged.as_deref())?; // halt on failure (no rollback)
             }
 
-            println!("Published {tag}");
+            // Tag + release are idempotent so a forward-resume after a mid-package failure fills
+            // in whatever is missing instead of skipping the package and stranding the release.
+            if !git.tag_exists(&p.tag)? {
+                git.create_tag(&p.tag)?;
+            }
+            git.push_tag(&p.tag)?;
+
+            if let Some(notes) =
+                changelog::dated_section_notes(&p.pkg.changelog_path, &p.pkg.version)?
+            {
+                if !forge.release_exists(&p.tag)? {
+                    forge.create_release(&p.tag, &p.tag, &notes)?;
+                }
+            }
+
+            if p.needs_publish {
+                println!("Published {}", p.tag);
+            } else {
+                println!("Tagged {} (already published)", p.tag);
+            }
         }
     }
 

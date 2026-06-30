@@ -92,6 +92,9 @@ impl CommandRunner for PubRunner {
 #[derive(Default)]
 struct FakeGit {
     tags: RefCell<Vec<String>>,
+    /// When set, the next `create_tag` call fails (models a tagging step that died right after a
+    /// successful registry publish).
+    fail_create_tag_once: RefCell<bool>,
 }
 impl GitOps for FakeGit {
     fn is_clean(&self) -> Result<bool> {
@@ -122,11 +125,17 @@ impl GitOps for FakeGit {
         Ok(())
     }
     fn create_tag(&self, name: &str) -> Result<()> {
+        if std::mem::take(&mut *self.fail_create_tag_once.borrow_mut()) {
+            anyhow::bail!("create_tag boom");
+        }
         self.tags.borrow_mut().push(name.to_string());
         Ok(())
     }
     fn push_tag(&self, _name: &str) -> Result<()> {
         Ok(())
+    }
+    fn tag_exists(&self, name: &str) -> Result<bool> {
+        Ok(self.tags.borrow().iter().any(|t| t == name))
     }
 }
 
@@ -148,6 +157,9 @@ impl Forge for FakeForge {
     fn create_release(&self, tag: &str, _title: &str, _notes: &str) -> Result<()> {
         self.releases.borrow_mut().push(tag.to_string());
         Ok(())
+    }
+    fn release_exists(&self, tag: &str) -> Result<bool> {
+        Ok(self.releases.borrow().iter().any(|t| t == tag))
     }
 }
 
@@ -344,6 +356,67 @@ fn halts_on_failure_and_resumes_forward() {
     .unwrap();
     assert!(runner.published.lock().unwrap().contains("@x/sdk@1.0.0"));
     assert!(runner.published.lock().unwrap().contains("@x/mid@1.0.0"));
+}
+
+#[test]
+fn resume_after_failed_tag_step_tags_without_republishing() {
+    // The registry publish succeeds but the tagging step then fails. On resume the package must
+    // get its tag + GitHub Release created *without* re-publishing the already-shipped version.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_chain(root);
+
+    let runner = PubRunner::new(&[]);
+    let adapter = NpmAdapter::with_runner(root, Box::new(runner.clone()));
+    let git = FakeGit::default();
+    *git.fail_create_tag_once.borrow_mut() = true; // first tag attempt dies
+    let forge = FakeForge::default();
+    let hooks = otf_release_core::config::Hooks::default();
+    let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
+
+    // First run: core publishes, then create_tag fails → halt. core is on the registry but untagged.
+    let err = orchestrate(
+        &adapter,
+        &git,
+        &forge,
+        root,
+        &package_tag_options(),
+        &hooks,
+        &hook_runner,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("create_tag"), "got: {err}");
+    assert!(runner.published.lock().unwrap().contains("@x/core@1.0.0"));
+    assert!(git.tags.borrow().is_empty());
+    assert!(forge.releases.borrow().is_empty());
+
+    // Resume: core is already published, so it must NOT publish again, but it must now be tagged
+    // and released. sdk + mid proceed normally afterward.
+    orchestrate(
+        &adapter,
+        &git,
+        &forge,
+        root,
+        &package_tag_options(),
+        &hooks,
+        &hook_runner,
+    )
+    .unwrap();
+
+    assert_eq!(
+        runner
+            .publish_log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| *s == "@x/core@1.0.0")
+            .count(),
+        1,
+        "core must be published exactly once across both runs"
+    );
+    assert!(git.tags.borrow().iter().any(|t| t == "@x/core@1.0.0"));
+    assert!(forge.releases.borrow().iter().any(|t| t == "@x/core@1.0.0"));
+    assert!(git.tags.borrow().iter().any(|t| t == "@x/mid@1.0.0"));
 }
 
 #[test]

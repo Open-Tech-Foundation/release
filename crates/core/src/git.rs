@@ -97,6 +97,9 @@ pub trait GitOps {
     fn push_branch(&self, name: &str) -> Result<()>;
     fn create_tag(&self, name: &str) -> Result<()>;
     fn push_tag(&self, name: &str) -> Result<()>;
+    /// Whether a tag with this exact name already exists locally. Used to keep `publish`'s
+    /// tagging step idempotent so a forward-resume never tries to recreate an existing tag.
+    fn tag_exists(&self, name: &str) -> Result<bool>;
 }
 
 impl GitOps for GitRepo {
@@ -147,6 +150,12 @@ impl GitOps for GitRepo {
     fn push_tag(&self, name: &str) -> Result<()> {
         let refspec = format!("refs/tags/{name}");
         run_git(&self.root, &["push", "origin", &refspec]).map(|_| ())
+    }
+
+    fn tag_exists(&self, name: &str) -> Result<bool> {
+        Ok(!run_git(&self.root, &["tag", "--list", name])?
+            .trim()
+            .is_empty())
     }
 }
 

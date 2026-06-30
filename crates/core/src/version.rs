@@ -748,6 +748,10 @@ mod tests {
         fn push_tag(&self, _: &str) -> Result<()> {
             Ok(())
         }
+
+        fn tag_exists(&self, _: &str) -> Result<bool> {
+            Ok(false)
+        }
     }
 
     struct FakePrompt;
@@ -797,6 +801,10 @@ mod tests {
 
         fn create_release(&self, _: &str, _: &str, _: &str) -> Result<()> {
             Ok(())
+        }
+
+        fn release_exists(&self, _: &str) -> Result<bool> {
+            Ok(false)
         }
     }
 

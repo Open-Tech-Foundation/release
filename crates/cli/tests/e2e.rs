@@ -99,6 +99,9 @@ impl Forge for CapForge {
         self.releases.borrow_mut().push(tag.to_string());
         Ok(())
     }
+    fn release_exists(&self, tag: &str) -> Result<bool> {
+        Ok(self.releases.borrow().iter().any(|t| t == tag))
+    }
 }
 
 fn git(dir: &Path, args: &[&str]) {

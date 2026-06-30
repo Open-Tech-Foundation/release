@@ -61,6 +61,9 @@ impl Forge for CaptureForge {
     fn create_release(&self, _tag: &str, _title: &str, _notes: &str) -> Result<()> {
         Ok(())
     }
+    fn release_exists(&self, _tag: &str) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 fn git(dir: &Path, args: &[&str]) {

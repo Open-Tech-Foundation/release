@@ -10,6 +10,9 @@ use anyhow::{bail, Context, Result};
 pub trait Forge {
     fn open_pr(&self, branch: &str, title: &str, body: &str) -> Result<()>;
     fn create_release(&self, tag: &str, title: &str, notes: &str) -> Result<()>;
+    /// Whether a release for this tag already exists. Keeps `publish`'s release step idempotent
+    /// so a forward-resume doesn't fail trying to recreate a release that already shipped.
+    fn release_exists(&self, tag: &str) -> Result<bool>;
 }
 
 /// GitHub via the `gh` CLI.
@@ -54,5 +57,17 @@ impl Forge for GhForge {
             );
         }
         Ok(())
+    }
+
+    fn release_exists(&self, tag: &str) -> Result<bool> {
+        // `gh release view <tag>` exits 0 when the release exists, non-zero otherwise. Any
+        // failure (including auth/network) is treated as "not present"; the subsequent
+        // `create_release` call will surface a real error if one is genuinely wrong.
+        let out = Command::new("gh")
+            .args(["release", "view", tag])
+            .current_dir(&self.root)
+            .output()
+            .context("failed to run `gh release view`")?;
+        Ok(out.status.success())
     }
 }
