@@ -42,8 +42,13 @@ impl Prompt for ScriptedPrompt {
     fn choose_bump(&self, _pkg_name: &str, _current_version: &str) -> Result<Bump> {
         Ok(self.bump.clone())
     }
-    fn confirm(&self, summary: &str) -> Result<bool> {
-        self.confirmations.borrow_mut().push(summary.to_string());
+    fn confirm(
+        &self,
+        _plan: &otf_release_core::summary::Plan,
+        diff_stat: &str,
+        _skip_pr: bool,
+    ) -> Result<bool> {
+        self.confirmations.borrow_mut().push(diff_stat.to_string());
         Ok(true)
     }
 }
@@ -210,10 +215,9 @@ fn version_flow_releases_on_a_branch_and_never_touches_main() {
     let calls = forge.calls.borrow();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, "release/2026-06-24");
+    // confirm() is called once, with the real changed-file summary (the git diff stat).
     let confirmations = prompt.confirmations.borrow();
     assert_eq!(confirmations.len(), 1);
-    assert!(confirmations[0].contains("Changed Files"));
-    assert!(!confirmations[0].contains("Diff:"));
     assert!(confirmations[0].contains("packages/core/package.json"));
 
     // main is untouched: core is still 1.0.0 there.

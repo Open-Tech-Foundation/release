@@ -13,8 +13,8 @@ pub trait Prompt {
     fn select_packages(&self, pending: &[&Pkg]) -> Result<Vec<String>>;
     /// Interactive flow to determine the next version bump for a package.
     fn choose_bump(&self, pkg_name: &str, current_version: &str) -> Result<Bump>;
-    /// Show the review text and ask for final confirmation.
-    fn confirm(&self, summary: &str) -> Result<bool>;
+    /// Show the computed plan + changed-file summary and ask for final confirmation.
+    fn confirm(&self, plan: &crate::summary::Plan, diff_stat: &str, skip_pr: bool) -> Result<bool>;
 }
 
 /// The real terminal prompt (arrow keys + spacebar via `inquire`).
@@ -88,15 +88,7 @@ impl Prompt for StdinPrompt {
         }
     }
 
-    fn confirm(&self, summary: &str) -> Result<bool> {
-        print!("{summary}");
-        println!();
-        Ok(Select::new(
-            "Commit, push, and open the release PR?",
-            vec!["No, cancel and clean up", "Yes, create release PR"],
-        )
-        .raw_prompt()?
-        .index
-            == 1)
+    fn confirm(&self, plan: &crate::summary::Plan, diff_stat: &str, skip_pr: bool) -> Result<bool> {
+        crate::review::run(plan, diff_stat, skip_pr)
     }
 }

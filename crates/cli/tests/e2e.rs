@@ -82,7 +82,12 @@ impl Prompt for ScriptedPrompt {
     fn choose_bump(&self, _pkg_name: &str, _current_version: &str) -> Result<Bump> {
         Ok(Bump::Major)
     }
-    fn confirm(&self, _summary: &str) -> Result<bool> {
+    fn confirm(
+        &self,
+        _plan: &otf_release_core::summary::Plan,
+        _diff_stat: &str,
+        _skip_pr: bool,
+    ) -> Result<bool> {
         Ok(true)
     }
 }

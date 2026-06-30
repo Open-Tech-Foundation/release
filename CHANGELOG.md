@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Changed
+- **version** — The final release review is now an interactive full-screen TUI (raw mode +
+  scrollable, color-coded plan: green = publishing, yellow = cascade, dim = range-only/private)
+  with `y`/`n` keys, replacing the static boxed text + line prompt.
+- **ui** — Applied a consistent accent theme to every `inquire` prompt across `init`, `config`, and
+  `version` (prompt markers, selected/highlighted options, checkboxes, help text).
+
 ### Fixed
 - **installer** — `install.sh` derives the release tag and constructs the asset URL deterministically
   (robust to minified API JSON), so `self-update` no longer downloads the release API object and

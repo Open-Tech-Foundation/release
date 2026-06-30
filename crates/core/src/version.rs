@@ -11,9 +11,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Result};
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::widgets::{Block, Padding, Paragraph, Widget};
 
 use crate::adapter::{apply_changelog_scope, Adapter, Bump, DepKind, Pkg};
 use crate::changelog;
@@ -388,8 +385,7 @@ pub fn orchestrate_many(
 
     // 9. Final review: show the actual files and diff produced by the release edits. On cancel,
     // discard only the generated release-branch changes and return to the original branch.
-    let review_text = render_final_review(&summary_text, &git.diff_stat()?, opts);
-    if !prompt.confirm(&review_text)? {
+    if !prompt.confirm(&plan, &git.diff_stat()?, opts.skip_pr)? {
         git.reset_hard()?;
         git.checkout_branch(&branch)?;
         println!("Cancelled. Generated release changes were discarded.");
@@ -415,60 +411,6 @@ pub fn orchestrate_many(
     }
 
     Ok(())
-}
-
-fn render_final_review(summary_text: &str, diff_stat: &str, opts: &VersionOptions) -> String {
-    let mut out = String::new();
-    out.push('\n');
-    out.push_str(&render_panel(
-        "Release Review",
-        "Review the computed plan and changed-file summary below.",
-    ));
-    out.push_str(summary_text.trim_end());
-    out.push('\n');
-    if opts.skip_pr {
-        out.push_str(
-            "\n⚠️  GitHub CLI (`gh`) is unavailable; PR creation will be skipped after push.\n",
-        );
-    }
-    out.push('\n');
-    if diff_stat.trim().is_empty() {
-        out.push_str(&render_panel("Changed Files", "No file changes."));
-    } else {
-        out.push_str(&render_panel("Changed Files", diff_stat.trim_end()));
-    }
-    out.push('\n');
-    out
-}
-
-fn render_panel(title: &str, body: &str) -> String {
-    let body_width = body.lines().map(str::len).max().unwrap_or(0);
-    let width = (body_width.max(title.len()) + 8) as u16;
-    let height = (body.lines().count() + 4) as u16;
-    let area = Rect::new(0, 0, width, height);
-    let mut buffer = Buffer::empty(area);
-    Paragraph::new(body)
-        .block(
-            Block::bordered()
-                .title(title)
-                .padding(Padding::new(2, 2, 1, 1)),
-        )
-        .render(area, &mut buffer);
-    buffer_to_string(&buffer)
-}
-
-fn buffer_to_string(buffer: &Buffer) -> String {
-    let area = *buffer.area();
-    let mut out = String::new();
-    for y in area.top()..area.bottom() {
-        let mut line = String::new();
-        for x in area.left()..area.right() {
-            line.push_str(buffer[(x, y)].symbol());
-        }
-        out.push_str(line.trim_end());
-        out.push('\n');
-    }
-    out
 }
 
 /// Raise every bumped member of each lockstep group to the strongest (max) bump in its group, so
@@ -766,7 +708,7 @@ mod tests {
             Ok(Bump::Patch)
         }
 
-        fn confirm(&self, _: &str) -> Result<bool> {
+        fn confirm(&self, _: &crate::summary::Plan, _: &str, _: bool) -> Result<bool> {
             Ok(true)
         }
     }
@@ -785,7 +727,7 @@ mod tests {
             Ok(self.bumps[name].clone())
         }
 
-        fn confirm(&self, _: &str) -> Result<bool> {
+        fn confirm(&self, _: &crate::summary::Plan, _: &str, _: bool) -> Result<bool> {
             Ok(true)
         }
     }
@@ -908,7 +850,7 @@ mod tests {
                 panic!("prompt should not be reached when the working tree is dirty");
             }
 
-            fn confirm(&self, _: &str) -> Result<bool> {
+            fn confirm(&self, _: &crate::summary::Plan, _: &str, _: bool) -> Result<bool> {
                 panic!("prompt should not be reached when the working tree is dirty");
             }
         }

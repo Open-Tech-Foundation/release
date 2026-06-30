@@ -169,6 +169,7 @@ fn print_error(err: &anyhow::Error) {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let root = cli.root.unwrap_or_else(|| PathBuf::from("."));
+    otf_release_core::ui::install_render_config();
 
     match cli.command {
         // `init` is the one command that doesn't read the config — it writes it. The generic
@@ -181,11 +182,7 @@ fn run() -> Result<()> {
             init::run(&factory, &root, &init::InitOptions { force })
         }
         Command::Upgrade { force } => {
-            upgrade::orchestrate(
-                &root,
-                &upgrade::UpgradeOptions { force },
-                &otf_release_core::prompt::StdinPrompt,
-            )?;
+            upgrade::orchestrate(&root, &upgrade::UpgradeOptions { force })?;
             Ok(())
         }
         Command::Config => {
