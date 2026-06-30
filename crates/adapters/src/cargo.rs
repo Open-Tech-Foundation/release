@@ -390,6 +390,15 @@ impl Adapter for CargoAdapter {
             return Ok(true);
         }
         let stderr = out.stderr.to_lowercase();
+        // `cargo info` was only stabilized in cargo 1.82. On older toolchains it is an unknown
+        // subcommand; surface an actionable error rather than the cryptic raw output.
+        if stderr.contains("no such subcommand") || stderr.contains("unrecognized subcommand") {
+            bail!(
+                "`cargo info` is unavailable — it requires cargo 1.82 or newer. \
+                 Upgrade your Rust toolchain to publish cargo crates.\n{}",
+                out.stderr
+            );
+        }
         if stderr.contains("could not find") || stderr.contains("not found") {
             return Ok(false);
         }
