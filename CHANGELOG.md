@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Fixed
+- **publish** — Made tag creation and GitHub Release creation idempotent so interrupted publish
+  runs can be resumed without failing on already-created remote state.
+- **cargo adapter** — Treated missing `cargo info` package results as unpublished and aligned the
+  workspace MSRV to Rust 1.82.
+- **generic adapter** — Tightened version-field matching so separators must directly follow the
+  configured version key.
+- **installers** — Prevented Unix and PowerShell install scripts from clobbering an already-running
+  `otf-release` binary before the replacement download is ready.
+
 ## [0.4.0] - 2026-06-29
 
 ### Added
