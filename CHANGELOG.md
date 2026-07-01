@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-01
+
 - **version** — Grouped bump prompts now print an explicit selected/skipped summary after each
   group, and changelog rewrite errors include the package name and changelog path.
 - **version** — The grouped bump prompt now keeps an `Other release types` path so prerelease
