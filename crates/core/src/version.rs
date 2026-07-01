@@ -408,7 +408,13 @@ pub fn orchestrate_many(
         forge.open_pr(&release_branch, &commit_title, &summary_text)?;
         println!("Opened release PR from `{release_branch}`.");
     }
-    println!("{}", post_release_next_steps(&release_branch));
+    if prompt.confirm_post_release_cleanup(&release_branch)? {
+        git.return_to_main()?;
+        git.delete_local_branch(&release_branch)?;
+        println!("Returned to `main` and deleted local branch `{release_branch}`.");
+    } else {
+        println!("{}", post_release_next_steps(&release_branch));
+    }
 
     Ok(())
 }
@@ -627,6 +633,7 @@ mod tests {
         created: RefCell<Vec<String>>,
         commits: RefCell<Vec<String>>,
         pushes: RefCell<Vec<String>>,
+        deleted: RefCell<Vec<String>>,
     }
 
     impl FakeGit {
@@ -637,6 +644,7 @@ mod tests {
                 created: RefCell::new(Vec::new()),
                 commits: RefCell::new(Vec::new()),
                 pushes: RefCell::new(Vec::new()),
+                deleted: RefCell::new(Vec::new()),
             }
         }
 
@@ -701,6 +709,16 @@ mod tests {
         fn tag_exists(&self, _: &str) -> Result<bool> {
             Ok(false)
         }
+
+        fn return_to_main(&self) -> Result<()> {
+            *self.branch.borrow_mut() = "main".to_string();
+            Ok(())
+        }
+
+        fn delete_local_branch(&self, name: &str) -> Result<()> {
+            self.deleted.borrow_mut().push(name.to_string());
+            Ok(())
+        }
     }
 
     struct FakePrompt;
@@ -715,6 +733,10 @@ mod tests {
         }
 
         fn confirm(&self, _: &crate::summary::Plan, _: &str, _: bool) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn confirm_post_release_cleanup(&self, _: &str) -> Result<bool> {
             Ok(true)
         }
     }
@@ -734,6 +756,10 @@ mod tests {
         }
 
         fn confirm(&self, _: &crate::summary::Plan, _: &str, _: bool) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn confirm_post_release_cleanup(&self, _: &str) -> Result<bool> {
             Ok(true)
         }
     }
@@ -859,6 +885,10 @@ mod tests {
             fn confirm(&self, _: &crate::summary::Plan, _: &str, _: bool) -> Result<bool> {
                 panic!("prompt should not be reached when the working tree is dirty");
             }
+
+            fn confirm_post_release_cleanup(&self, _: &str) -> Result<bool> {
+                panic!("prompt should not be reached when the working tree is dirty");
+            }
         }
 
         let tmp = tempfile::tempdir().unwrap();
@@ -918,6 +948,8 @@ mod tests {
 
         assert_eq!(git.created.borrow().as_slice(), ["release/2026-06-28"]);
         assert_eq!(git.commits.borrow().len(), 1);
+        assert_eq!(git.current_branch().unwrap(), "main");
+        assert_eq!(git.deleted.borrow().as_slice(), ["release/2026-06-28"]);
         assert_eq!(git.pushes.borrow().as_slice(), ["release/2026-06-28"]);
         assert_eq!(forge.prs.borrow().as_slice(), ["release/2026-06-28"]);
         assert_eq!(

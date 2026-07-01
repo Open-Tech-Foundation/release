@@ -46,8 +46,9 @@ Implemented in `crates/core/src/version.rs`.
     whether to commit, push, and open the PR. On cancel, generated release-branch changes are
     discarded and the command returns to the original branch.
 11. **Commit** (`chore(release): …`), **push**, and **open a PR** via `gh`.
-12. **Print local cleanup commands** — switch back to `main`, pull, and delete only the local
-    `release/*` branch after the pushed PR branch exists.
+12. **Offer local cleanup** — ask whether to switch back to `main`, pull, and delete only the
+    local `release/*` branch after the pushed PR branch exists. If declined, print the commands
+    to run manually.
 
 Merging that PR is what triggers CI [`publish`](./publish.md).
 

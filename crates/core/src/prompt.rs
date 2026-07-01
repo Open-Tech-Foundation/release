@@ -3,7 +3,7 @@
 //! spacebar multi-select, and confirm prompts.
 
 use anyhow::Result;
-use inquire::{MultiSelect, Select};
+use inquire::{Confirm, MultiSelect, Select};
 
 use crate::adapter::{Bump, Pkg};
 
@@ -15,6 +15,8 @@ pub trait Prompt {
     fn choose_bump(&self, pkg_name: &str, current_version: &str) -> Result<Bump>;
     /// Show the computed plan + changed-file summary and ask for final confirmation.
     fn confirm(&self, plan: &crate::summary::Plan, diff_stat: &str, skip_pr: bool) -> Result<bool>;
+    /// Ask whether to return to main and delete the local release branch after it has been pushed.
+    fn confirm_post_release_cleanup(&self, release_branch: &str) -> Result<bool>;
 }
 
 /// The real terminal prompt (arrow keys + spacebar via `inquire`).
@@ -90,5 +92,13 @@ impl Prompt for StdinPrompt {
 
     fn confirm(&self, plan: &crate::summary::Plan, diff_stat: &str, skip_pr: bool) -> Result<bool> {
         crate::review::run(plan, diff_stat, skip_pr)
+    }
+
+    fn confirm_post_release_cleanup(&self, release_branch: &str) -> Result<bool> {
+        Ok(Confirm::new(&format!(
+            "Switch to main, pull, and delete local branch `{release_branch}`?"
+        ))
+        .with_default(true)
+        .prompt()?)
     }
 }

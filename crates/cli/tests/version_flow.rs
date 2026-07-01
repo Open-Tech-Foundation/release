@@ -51,6 +51,10 @@ impl Prompt for ScriptedPrompt {
         self.confirmations.borrow_mut().push(diff_stat.to_string());
         Ok(true)
     }
+
+    fn confirm_post_release_cleanup(&self, _release_branch: &str) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 struct CaptureForge {

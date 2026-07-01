@@ -90,6 +90,10 @@ impl Prompt for ScriptedPrompt {
     ) -> Result<bool> {
         Ok(true)
     }
+
+    fn confirm_post_release_cleanup(&self, _release_branch: &str) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 #[derive(Default)]

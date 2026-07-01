@@ -137,6 +137,12 @@ impl GitOps for FakeGit {
     fn tag_exists(&self, name: &str) -> Result<bool> {
         Ok(self.tags.borrow().iter().any(|t| t == name))
     }
+    fn return_to_main(&self) -> Result<()> {
+        Ok(())
+    }
+    fn delete_local_branch(&self, _name: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Default)]

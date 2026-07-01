@@ -102,6 +102,10 @@ pub trait GitOps {
     /// Whether a tag with this exact name already exists locally. Used to keep `publish`'s
     /// tagging step idempotent so a forward-resume never tries to recreate an existing tag.
     fn tag_exists(&self, name: &str) -> Result<bool>;
+    /// Return to the default branch and update it from its upstream.
+    fn return_to_main(&self) -> Result<()>;
+    /// Delete a local release branch after it has been pushed.
+    fn delete_local_branch(&self, name: &str) -> Result<()>;
 }
 
 impl GitOps for GitRepo {
@@ -158,6 +162,16 @@ impl GitOps for GitRepo {
         Ok(!run_git(&self.root, &["tag", "--list", name])?
             .trim()
             .is_empty())
+    }
+
+    fn return_to_main(&self) -> Result<()> {
+        run_git(&self.root, &["switch", "main"])?;
+        run_git(&self.root, &["pull"])?;
+        Ok(())
+    }
+
+    fn delete_local_branch(&self, name: &str) -> Result<()> {
+        run_git(&self.root, &["branch", "-D", name]).map(|_| ())
     }
 }
 
