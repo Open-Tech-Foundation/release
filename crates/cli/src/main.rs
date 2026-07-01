@@ -161,6 +161,9 @@ fn print_error(err: &anyhow::Error) {
         .fg_color(Some(AnsiColor::BrightRed.into()))
         .effects(Effects::BOLD);
     anstream::eprintln!("{}Error:{} {err}", danger.render(), danger.render_reset());
+    for cause in err.chain().skip(1) {
+        anstream::eprintln!("  caused by: {cause}");
+    }
 }
 
 fn run() -> Result<()> {

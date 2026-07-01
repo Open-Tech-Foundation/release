@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **version** — Auto-bumped packages with a missing `[Unreleased]` section now receive the
+  `_Dependency updates._` changelog stub instead of aborting during changelog rewrite; CLI errors
+  also print their cause chain.
+
 ## [0.12.0] - 2026-07-01
 
 - **version** — After pushing the release branch, the command now asks before switching back to

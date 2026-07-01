@@ -123,8 +123,12 @@ fn rewrite_release(
     date: &str,
     stub_if_empty: bool,
 ) -> Result<String> {
-    let (body_start, body_end) =
-        find_unreleased(content).ok_or_else(|| anyhow!("no `## [Unreleased]` section found"))?;
+    let Some((body_start, body_end)) = find_unreleased(content) else {
+        if stub_if_empty {
+            return Ok(rewrite_missing_unreleased_stub(content, version, date));
+        }
+        return Err(anyhow!("no `## [Unreleased]` section found"));
+    };
     let body = &content[body_start..body_end];
 
     let body_out = if is_blank(body) {
@@ -144,6 +148,29 @@ fn rewrite_release(
     out.push_str(&body_out);
     out.push_str(&content[body_end..]);
     Ok(out)
+}
+
+fn rewrite_missing_unreleased_stub(content: &str, version: &str, date: &str) -> String {
+    let release = format!("## [{version}] - {date}\n\n_Dependency updates._\n\n");
+    let mut insert = String::from("## [Unreleased]\n\n");
+    insert.push_str(&release);
+
+    if let Some(idx) = content.find("## ") {
+        let mut out = content[..idx].to_string();
+        if !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        out.push_str(&insert);
+        out.push_str(&content[idx..]);
+        out
+    } else {
+        let mut out = content.to_string();
+        if !out.ends_with("\n\n") {
+            out.push_str("\n\n");
+        }
+        out.push_str(&insert);
+        out
+    }
 }
 
 fn section_notes(content: &str, version: &str) -> Option<String> {
@@ -277,6 +304,21 @@ mod tests {
     #[test]
     fn rewrite_stubs_empty_unreleased_when_requested() {
         let out = rewrite_release(EMPTY_UNRELEASED, "1.1.0", "2026-06-24", true).unwrap();
+        assert_eq!(
+            out,
+            "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - 2026-06-24\n\n_Dependency updates._\n\n## [1.0.0] - 2024-01-01\n\n- initial\n"
+        );
+    }
+
+    #[test]
+    fn rewrite_stubs_missing_unreleased_when_auto_bumped() {
+        let out = rewrite_release(
+            "# Changelog\n\n## [1.0.0] - 2024-01-01\n\n- initial\n",
+            "1.1.0",
+            "2026-06-24",
+            true,
+        )
+        .unwrap();
         assert_eq!(
             out,
             "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - 2026-06-24\n\n_Dependency updates._\n\n## [1.0.0] - 2024-01-01\n\n- initial\n"
