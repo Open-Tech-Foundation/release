@@ -36,6 +36,7 @@ impl Prompt for StdinPrompt {
                 break;
             }
             let chosen = choose_bump_group(label, &remaining)?;
+            println!("{}", group_summary(label, &chosen, remaining.len()));
             let chosen_set: HashSet<String> = chosen.into_iter().collect();
             for pkg in &remaining {
                 if chosen_set.contains(&pkg.name) {
@@ -47,6 +48,10 @@ impl Prompt for StdinPrompt {
 
         if !remaining.is_empty() {
             let chosen = choose_bump_group("Other release types", &remaining)?;
+            println!(
+                "{}",
+                group_summary("Other release types", &chosen, remaining.len())
+            );
             let chosen_set: HashSet<String> = chosen.into_iter().collect();
             for pkg in &remaining {
                 if chosen_set.contains(&pkg.name) {
@@ -100,6 +105,16 @@ fn choose_bump_group(label: &str, pending: &[&Pkg]) -> Result<Vec<String>> {
         .collect())
 }
 
+fn group_summary(label: &str, chosen: &[String], pending_count: usize) -> String {
+    if chosen.is_empty() {
+        return format!("Skipped {label} releases: no packages selected.");
+    }
+    if chosen.len() == pending_count {
+        return format!("Selected {label} releases: all remaining packages ({pending_count}).");
+    }
+    format!("Selected {label} releases: {}.", chosen.join(", "))
+}
+
 fn choose_detailed_bump(pkg_name: &str, current_version: &str) -> Result<Bump> {
     println!();
     let parts: Vec<&str> = current_version.split('-').collect();
@@ -148,5 +163,36 @@ fn choose_detailed_bump(pkg_name: &str, current_version: &str) -> Result<Bump> {
             ("Patch", Some(c)) => Bump::PrePatch(c.to_string()),
             _ => unreachable!(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_summary_names_skipped_groups() {
+        assert_eq!(
+            group_summary("Major", &[], 7),
+            "Skipped Major releases: no packages selected."
+        );
+    }
+
+    #[test]
+    fn group_summary_names_all_remaining_selection() {
+        let chosen = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            group_summary("Minor", &chosen, 2),
+            "Selected Minor releases: all remaining packages (2)."
+        );
+    }
+
+    #[test]
+    fn group_summary_lists_partial_selection() {
+        let chosen = vec!["@scope/a".to_string(), "@scope/b".to_string()];
+        assert_eq!(
+            group_summary("Patch", &chosen, 3),
+            "Selected Patch releases: @scope/a, @scope/b."
+        );
     }
 }

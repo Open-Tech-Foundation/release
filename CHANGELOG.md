@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **version** — Grouped bump prompts now print an explicit selected/skipped summary after each
+  group, and changelog rewrite errors include the package name and changelog path.
 - **version** — The grouped bump prompt now keeps an `Other release types` path so prerelease
   and graduate releases remain available after the changeset-style stable release selection.
 - **version** — Auto-bumped packages with a missing changelog file or missing `[Unreleased]`

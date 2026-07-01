@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::adapter::{apply_changelog_scope, Adapter, Bump, DepKind, Pkg};
 use crate::changelog;
@@ -363,7 +363,13 @@ pub fn orchestrate_many(
                 new_ver,
                 today,
                 empties[name.as_str()],
-            )?;
+            )
+            .with_context(|| {
+                format!(
+                    "releasing changelog for {name} at {}",
+                    pkg.changelog_path.display()
+                )
+            })?;
         }
     }
     for (idx, ctx) in adapter_packages.iter().enumerate() {
