@@ -41,7 +41,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install otf-release
+        if: runner.os != 'Windows'
+        shell: bash
         run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
+      - name: Install otf-release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: irm https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.ps1 | iex
       - id: set
         run: echo "matrix=$(otf-release matrix --package otf-release)" >> "$GITHUB_OUTPUT"
 
@@ -63,7 +69,13 @@ jobs:
         with:
           targets: ${{ matrix.triple }}
       - name: Install otf-release
+        if: runner.os != 'Windows'
+        shell: bash
         run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
+      - name: Install otf-release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: irm https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.ps1 | iex
       - name: Build otf-release
         run: otf-release build --package otf-release --target ${{ matrix.name }}/${{ matrix.arch }}
       - uses: actions/upload-artifact@v4

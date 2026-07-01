@@ -9,8 +9,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ## [Unreleased]
 
 ### Fixed
-- **installer** — `install.sh` now supports Git Bash/MSYS/Cygwin on Windows by downloading the
-  Windows `.exe` asset and installing it into the user's cargo bin directory.
+- **workflow** — Generated release workflows now use `install.sh` on Linux/macOS and `install.ps1`
+  on Windows, so Windows runners no longer execute the Unix installer through Git Bash.
 
 ## [0.9.0] - 2026-07-01
 

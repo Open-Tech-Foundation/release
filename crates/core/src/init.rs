@@ -25,9 +25,10 @@ use crate::config::{
 };
 use crate::discover::{scan_generic_candidates, GenericCandidate};
 
-/// The curl-pipe step that installs the `otf-release` CLI on a CI runner.
-const INSTALL_OTF_RELEASE: &str =
-    "        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash\n";
+const INSTALL_SH_URL: &str =
+    "https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh";
+const INSTALL_PS1_URL: &str =
+    "https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.ps1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NpmTool {
@@ -462,8 +463,7 @@ fn render_snapshot_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmT
         npm_tool.setup_node(&mut s, true);
     }
 
-    s.push_str("      - name: Install otf-release\n");
-    s.push_str("        run: curl -LsSf https://github.com/opentf-org/opentf-release/releases/latest/download/otf-release-installer.sh | sh\n");
+    push_install_otf_release(&mut s);
     s.push_str("      - name: Snapshot Release\n");
     s.push_str("        env:\n");
     if config.adapters.contains(&Ecosystem::Cargo) {
@@ -474,6 +474,19 @@ fn render_snapshot_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmT
     }
     s.push_str("        run: otf-release snapshot\n");
     s
+}
+
+fn push_install_otf_release(s: &mut String) {
+    s.push_str("      - name: Install otf-release\n");
+    s.push_str("        if: runner.os != 'Windows'\n");
+    s.push_str("        shell: bash\n");
+    s.push_str(&format!(
+        "        run: curl -fsSL {INSTALL_SH_URL} | bash\n"
+    ));
+    s.push_str("      - name: Install otf-release\n");
+    s.push_str("        if: runner.os == 'Windows'\n");
+    s.push_str("        shell: pwsh\n");
+    s.push_str(&format!("        run: irm {INSTALL_PS1_URL} | iex\n"));
 }
 
 pub fn render_workflow(config: &ReleaseConfig) -> String {
@@ -661,8 +674,7 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmT
     s.push_str("    outputs:\n      matrix: ${{ steps.set.outputs.matrix }}\n");
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n");
-    s.push_str("      - name: Install otf-release\n");
-    s.push_str(INSTALL_OTF_RELEASE);
+    push_install_otf_release(s);
     s.push_str("      - id: set\n");
     s.push_str(&format!(
         "        run: echo \"matrix=$(otf-release matrix --package {name})\" >> \"$GITHUB_OUTPUT\"\n\n"
@@ -696,8 +708,7 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmT
         npm_tool.setup_node(s, false);
         s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
     }
-    s.push_str("      - name: Install otf-release\n");
-    s.push_str(INSTALL_OTF_RELEASE);
+    push_install_otf_release(s);
     s.push_str(&format!("      - name: Build {name}\n"));
     s.push_str(&format!(
         "        run: otf-release build --package {name} --target ${{{{ matrix.name }}}}/${{{{ matrix.arch }}}}\n"
@@ -811,8 +822,7 @@ fn render_publish_job(
     if npm {
         s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
     }
-    s.push_str("      - name: Install otf-release\n");
-    s.push_str(INSTALL_OTF_RELEASE);
+    push_install_otf_release(s);
     s.push_str("      - name: Publish\n");
     let any_staged = has_non_matrix_feeder || !matrix_pubs.is_empty();
     if any_staged {
@@ -2050,6 +2060,10 @@ mod tests {
         assert!(out.contains("      - uses: dtolnay/rust-toolchain@stable\n"));
         assert!(out.contains("          targets: ${{ matrix.triple }}\n"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
+        assert!(out.contains("        if: runner.os != 'Windows'\n"));
+        assert!(out.contains("        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash\n"));
+        assert!(out.contains("        if: runner.os == 'Windows'\n"));
+        assert!(out.contains("        run: irm https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.ps1 | iex\n"));
         assert!(out
             .contains("        run: otf-release build --package @opentf/web-compiler --target ${{ matrix.name }}/${{ matrix.arch }}\n"));
 
