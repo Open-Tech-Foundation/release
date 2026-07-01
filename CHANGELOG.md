@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-01
+
 ### Fixed
 - **init/config** — Tag-format prompts now present common formats as selectable options with
   custom input still available; `init` also suggests a format from existing repo tags and preserves
