@@ -27,8 +27,6 @@ use crate::summary::{self, Plan, RangeUpdate, VersionChange};
 pub struct VersionOptions {
     /// Compute and print the plan, but write nothing.
     pub dry_run: bool,
-    /// Allow first-release of packages that have no prior tag.
-    pub first_release: bool,
     /// Skip opening the PR (e.g. if gh CLI is missing).
     pub skip_pr: bool,
 }
@@ -150,6 +148,7 @@ pub fn orchestrate_many(
     for adapter in adapters {
         let mut packages = adapter.discover_packages()?;
         apply_changelog_scope(root, &config.changelog_scope, &mut packages);
+        config.apply_publish_skips(&mut packages);
         for pkg in &packages {
             if !seen.insert(pkg.name.clone()) {
                 bail!(
@@ -175,7 +174,6 @@ pub fn orchestrate_many(
         &all_packages,
         &[],
         preflight::CheckOptions {
-            allow_first_release: opts.first_release,
             tag_formats: history_tag_formats.clone(),
         },
     )?;

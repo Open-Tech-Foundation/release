@@ -18,7 +18,7 @@ Implemented in `crates/core/src/publish.rs`. Triggered by a merge to `main` (see
 
 1. **Discover** packages; build the graph.
 2. **Filter** to the publishable set:
-   - `!pkg.publishable` → **skip** (private apps are always excluded).
+   - `!pkg.publishable` → **skip** (private apps and packages listed in `skip_publish` are always excluded).
    - `adapter.is_published(pkg, pkg.version)` is `true` → **skip** (already published →
      idempotent / resumable).
 3. **Topological sort** over the internal graph — dependencies before dependents. **Error on

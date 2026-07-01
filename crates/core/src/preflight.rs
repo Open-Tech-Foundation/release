@@ -23,8 +23,6 @@ pub struct Violation {
 /// Preflight behavior switches supplied by the caller.
 #[derive(Debug, Clone)]
 pub struct CheckOptions {
-    /// Permit publishable packages with no prior matching release tag.
-    pub allow_first_release: bool,
     /// Configured git tag formats used to find prior releases.
     pub tag_formats: Vec<String>,
 }
@@ -32,7 +30,6 @@ pub struct CheckOptions {
 impl Default for CheckOptions {
     fn default() -> Self {
         Self {
-            allow_first_release: false,
             tag_formats: vec![crate::config::DEFAULT_TAG_FORMAT.to_string()],
         }
     }
@@ -68,10 +65,6 @@ pub fn check_with_options(
         let pkg_dir = pkg.manifest_path.parent().unwrap_or_else(|| Path::new("."));
 
         let violation = match repo.last_tag(&pkg.name, &opts.tag_formats)? {
-            // First releases are explicit so accidentally untagged packages do not slip through.
-            None if !opts.allow_first_release => {
-                Some("first release requires --first-release".to_string())
-            }
             None if empty => Some("first release but [Unreleased] is empty".to_string()),
             None => None,
             Some(tag) => {
@@ -175,9 +168,9 @@ mod tests {
             pkg(d, "core", true, Some(EMPTY)), // tag + commits + empty -> commits violation
             pkg(d, "utils", true, Some(WITH_NOTES)), // tag + commits + notes -> ok
             pkg(d, "sdk", true, Some(EMPTY)),  // tag, no commits, empty, selected -> selected
-            pkg(d, "new", true, Some(EMPTY)),  // no tag -> explicit first-release violation
-            pkg(d, "newgood", true, Some(WITH_NOTES)), // no tag -> explicit first-release violation
-            pkg(d, "miss", true, None),        // no tag -> explicit first-release violation
+            pkg(d, "new", true, Some(EMPTY)), // no tag + empty notes -> first-release notes violation
+            pkg(d, "newgood", true, Some(WITH_NOTES)), // no tag + notes -> ok
+            pkg(d, "miss", true, None), // no tag + missing notes -> first-release notes violation
             pkg(d, "app", false, Some(EMPTY)), // private -> skipped
         ];
 
@@ -198,7 +191,7 @@ mod tests {
         let violations = check(&repo, &packages, &selected).unwrap();
         let msgs = messages(&violations);
 
-        assert_eq!(violations.len(), 5, "got: {msgs:?}");
+        assert_eq!(violations.len(), 4, "got: {msgs:?}");
         assert_eq!(
             msgs.get("core").unwrap(),
             "3 commit(s) since core@1.2.0 but [Unreleased] is empty"
@@ -209,22 +202,19 @@ mod tests {
         );
         assert_eq!(
             msgs.get("new").unwrap(),
-            "first release requires --first-release"
+            "first release but [Unreleased] is empty"
         );
-        assert_eq!(
-            msgs.get("newgood").unwrap(),
-            "first release requires --first-release"
-        );
+        assert!(!msgs.contains_key("newgood"));
         assert_eq!(
             msgs.get("miss").unwrap(),
-            "first release requires --first-release"
+            "first release but [Unreleased] is empty"
         );
         assert!(!msgs.contains_key("utils"));
         assert!(!msgs.contains_key("app"));
     }
 
     #[test]
-    fn first_release_flag_allows_untagged_packages_but_still_requires_notes() {
+    fn first_release_requires_notes_without_an_explicit_flag() {
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path();
         let packages = vec![
@@ -236,16 +226,7 @@ mod tests {
             counts: HashMap::new(),
         };
 
-        let violations = check_with_options(
-            &repo,
-            &packages,
-            &[],
-            CheckOptions {
-                allow_first_release: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let violations = check(&repo, &packages, &[]).unwrap();
         let msgs = messages(&violations);
 
         assert_eq!(violations.len(), 1, "got: {msgs:?}");

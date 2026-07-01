@@ -302,6 +302,7 @@ pub fn orchestrate(
     let config = ReleaseConfig {
         hooks: crate::config::Hooks::default(),
         adapters: enabled,
+        skip_publish: Vec::new(),
         packages,
         snapshot_tag: None,
         tag_format,
@@ -1824,6 +1825,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
+            skip_publish: Vec::new(),
             packages: vec![],
         };
         let out = render_workflow(&config);
@@ -1853,6 +1855,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
+            skip_publish: Vec::new(),
             packages: vec![npm_publish("docs-site")],
         };
         let tmp = tempfile::tempdir().unwrap();
@@ -1892,6 +1895,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
+            skip_publish: Vec::new(),
             packages: vec![npm_publish("docs-site")],
         };
 
@@ -1919,6 +1923,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
+            skip_publish: Vec::new(),
             packages: vec![package],
         };
         let out = render_workflow(&config);
@@ -1939,6 +1944,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
+            skip_publish: Vec::new(),
             packages: vec![npm_publish("docs-site")],
         };
         let out = render_workflow(&config);
@@ -1957,6 +1963,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
+            skip_publish: Vec::new(),
             packages: vec![cargo_build_only("opentf-release")],
         };
         let out = render_workflow(&config);
@@ -2009,6 +2016,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
+            skip_publish: Vec::new(),
             packages: vec![PackageEntry {
                 name: "@opentf/web-compiler".into(),
                 adapter: Ecosystem::Npm,
@@ -2051,6 +2059,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm],
+            skip_publish: Vec::new(),
             packages: vec![PackageEntry {
                 name: "@opentf/web-compiler".into(),
                 adapter: Ecosystem::Npm,
@@ -2111,6 +2120,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::CuratedChangelog,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
+            skip_publish: Vec::new(),
             packages: vec![cargo_build_only("otf-release")],
         };
         let out = render_workflow(&config);
@@ -2138,6 +2148,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::CuratedChangelog,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
+            skip_publish: Vec::new(),
             packages: vec![
                 PackageEntry {
                     name: "pkg".to_string(),
@@ -2192,6 +2203,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::SemanticCommits,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
+            skip_publish: Vec::new(),
             packages: vec![cargo_build_only("otf-release")],
         };
         let out = render_workflow(&config);
@@ -2217,6 +2229,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
+            skip_publish: Vec::new(),
             packages: vec![generic_pkg("release", None)],
         };
         let out = render_workflow(&config);
@@ -2244,6 +2257,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Cargo],
+            skip_publish: Vec::new(),
             packages: vec![cargo_build_only("cli-a"), cargo_build_only("cli-b")],
         };
         let out = render_workflow(&config);
@@ -2268,6 +2282,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Generic],
+            skip_publish: Vec::new(),
             packages: vec![generic_pkg("jsr-lib", Some("npx jsr publish"))],
         };
         let out = render_workflow(&config);
@@ -2294,6 +2309,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
+            skip_publish: Vec::new(),
             packages: vec![cargo_build_only("web-compiler"), npm_publish("docs-site")],
         };
         let out = render_workflow(&config);

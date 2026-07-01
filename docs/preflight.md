@@ -14,8 +14,8 @@ Every violation is collected and printed at once; the process exits non-zero **b
 
 ## State derivation
 
-For every **non-private** package, state comes from its last git tag matching
-`release.toml`'s global `tag_format` or any configured `legacy_tag_formats`:
+For every **non-private** package not listed in `skip_publish`, state comes from its last git tag
+matching `release.toml`'s global `tag_format` or any configured `legacy_tag_formats`:
 
 ```
 git log <tag>.. -- <pkg path>
@@ -34,10 +34,11 @@ don't falsely mark a package as changed.
 | --- | --- |
 | Commits since last tag (scoped to pkg path) **but** configured `[Unreleased]` empty/missing | ✗ **ABORT** |
 | Selected for a bump **but** configured `[Unreleased]` empty | ✗ **ABORT** |
-| No last tag **and** publishable (first release) without `--first-release` | ✗ **ABORT** |
-| No last tag **and** publishable with `--first-release` | Require release notes in curated mode |
+| No last tag **and** publishable (first release) with configured `[Unreleased]` empty/missing | ✗ **ABORT** |
+| No last tag **and** publishable (first release) with configured `[Unreleased]` notes | ✓ OK |
 | `[Unreleased]` present **with** commits | ✓ OK |
 | Commits in a **private** package | ✓ OK — no changelog demanded |
+| Commits in a package listed in `skip_publish` | ✓ OK — the tool does not version or publish it |
 
 ## Example abort output
 

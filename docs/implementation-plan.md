@@ -172,7 +172,7 @@ Tasks:
 3. Apply: `write_version` (publishable), `update_dep_range` (incl. private apps),
    `release_unreleased`, `update_lockfile`.
 4. Commit (`chore(release): …`), push, open PR via `gh`.
-5. `--dry-run` (print plan, write nothing) and `--first-release`.
+5. `--dry-run` (print plan, write nothing).
 
 **Acceptance:**
 - `--dry-run` on a fixture prints the three-block summary and leaves the tree untouched.

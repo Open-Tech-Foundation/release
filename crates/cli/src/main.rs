@@ -101,9 +101,6 @@ enum Command {
         /// Compute and print the plan, but write nothing.
         #[arg(long)]
         dry_run: bool,
-        /// Allow first-release of packages that have no prior tag.
-        #[arg(long)]
-        first_release: bool,
     },
     /// Non-interactive, CI: publish changed packages in dependency order. Idempotent.
     Publish {
@@ -220,10 +217,7 @@ fn run() -> Result<()> {
         }
 
         // Every other command reads `release.toml` and acts on each enabled ecosystem.
-        Command::Version {
-            dry_run,
-            first_release,
-        } => {
+        Command::Version { dry_run } => {
             let config = ReleaseConfig::load(&root)?;
             let factory = CliAdapterFactory {
                 root: root.clone(),
@@ -231,7 +225,6 @@ fn run() -> Result<()> {
             };
             let opts = version::VersionOptions {
                 dry_run,
-                first_release,
                 skip_pr: false,
             };
             let adapters: Vec<Box<dyn Adapter>> = config

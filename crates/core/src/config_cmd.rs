@@ -42,6 +42,7 @@ pub enum PackageField {
 pub enum GlobalField {
     Provider,
     SnapshotTag,
+    SkipPublish,
     TagFormat,
     LegacyTagFormats,
     ChangelogScope,
@@ -186,6 +187,7 @@ impl ConfigPrompt for StdinConfigPrompt {
         let choices = vec![
             "Provider",
             "Snapshot tag",
+            "Skip publish packages",
             "Tag format",
             "Legacy tag formats",
             "Changelog scope",
@@ -197,6 +199,7 @@ impl ConfigPrompt for StdinConfigPrompt {
             match Select::new("Which global setting?", choices).prompt()? {
                 "Provider" => GlobalField::Provider,
                 "Snapshot tag" => GlobalField::SnapshotTag,
+                "Skip publish packages" => GlobalField::SkipPublish,
                 "Tag format" => GlobalField::TagFormat,
                 "Legacy tag formats" => GlobalField::LegacyTagFormats,
                 "Changelog scope" => GlobalField::ChangelogScope,
@@ -409,6 +412,12 @@ fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfi
         GlobalField::SnapshotTag => {
             let current = config.snapshot_tag.as_deref().unwrap_or("");
             config.snapshot_tag = optional_text(prompt.text("Snapshot tag:", current)?);
+            save(root, config)
+        }
+        GlobalField::SkipPublish => {
+            let current = config.skip_publish.join(", ");
+            let edited = prompt.text("Skip publish packages (comma-separated):", &current)?;
+            config.skip_publish = parse_csv(&edited);
             save(root, config)
         }
         GlobalField::TagFormat => {
@@ -723,6 +732,14 @@ mod tests {
         .unwrap();
         cfg = ReleaseConfig::load(tmp.path()).unwrap();
         assert_eq!(cfg.snapshot_tag.as_deref(), Some("canary"));
+
+        orchestrate_with_prompt(
+            tmp.path(),
+            &global_prompt(GlobalField::SkipPublish, vec!["@scope/old, pkg-internal"]),
+        )
+        .unwrap();
+        cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(cfg.skip_publish, vec!["@scope/old", "pkg-internal"]);
 
         orchestrate_with_prompt(
             tmp.path(),

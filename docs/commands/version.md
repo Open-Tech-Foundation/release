@@ -3,13 +3,12 @@
 **Interactive. Run locally. Produces a release PR — never publishes, never writes to `main`.**
 
 ```
-otf-release version [--dry-run] [--first-release]
+otf-release version [--dry-run]
 ```
 
 | Flag | Effect |
 | --- | --- |
 | `--dry-run` | Compute and print the plan ([summary](#plan-and-final-review)), write nothing. |
-| `--first-release` | Permit publishable packages with no prior tag matching `tag_format`. Curated mode still requires release notes for packages you want to release. |
 
 Implemented in `crates/core/src/version.rs`.
 
@@ -79,6 +78,8 @@ and **internal range updates** (private apps flagged "range updated, NOT publish
 - No release commit is created and nothing is pushed before the final diff confirmation.
 - If the user cancels at the final confirmation, generated release changes are discarded.
 - Private apps: ranges updated, **never** bumped or published.
+- Packages listed in `skip_publish` are treated like private apps by the release tool even if their
+  manifest is publishable.
 - The working tree must be clean and on `main`; all release writes land on `release/*`.
 - Preflight runs to completion (and can abort) before the first prompt.
 

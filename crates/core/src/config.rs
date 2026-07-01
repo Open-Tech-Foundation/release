@@ -354,6 +354,9 @@ pub struct Hooks {
 pub struct ReleaseConfig {
     /// Ecosystems enabled for this repo.
     pub adapters: Vec<Ecosystem>,
+    /// Publishable packages that this tool must not version or publish.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip_publish: Vec<String>,
     /// Global lifecycle hooks.
     #[serde(default)]
     pub hooks: Hooks,
@@ -418,6 +421,7 @@ impl Default for ReleaseConfig {
     fn default() -> Self {
         Self {
             adapters: Vec::new(),
+            skip_publish: Vec::new(),
             hooks: Hooks::default(),
             packages: Vec::new(),
             snapshot_tag: None,
@@ -444,6 +448,16 @@ impl ReleaseConfig {
         std::iter::once(self.tag_format.clone())
             .chain(self.legacy_tag_formats.iter().cloned())
             .collect()
+    }
+
+    /// Mark configured packages as non-publishable so version/preflight/publish treat them like
+    /// private apps without requiring package manifests to set `private: true`.
+    pub fn apply_publish_skips(&self, packages: &mut [crate::adapter::Pkg]) {
+        for pkg in packages {
+            if self.skip_publish.iter().any(|name| name == &pkg.name) {
+                pkg.publishable = false;
+            }
+        }
     }
 
     /// The path to `release.toml` under `root`.
@@ -480,11 +494,14 @@ impl ReleaseConfig {
     /// Names of all `build-only` packages — the set `publish` must skip (they ship via the
     /// GitHub Release the workflow creates, not through a registry).
     pub fn build_only_names(&self) -> Vec<String> {
-        self.packages
+        let mut names: Vec<String> = self
+            .packages
             .iter()
             .filter(|p| p.is_build_only())
             .map(|p| p.name.clone())
-            .collect()
+            .collect();
+        names.extend(self.skip_publish.iter().cloned());
+        names
     }
 
     /// Names of `matrix` publish-mode packages — those that must have their per-platform binaries
@@ -508,6 +525,7 @@ mod tests {
             snapshot_tag: None,
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
             legacy_tag_formats: Vec::new(),
+            skip_publish: vec!["private-tool".to_string()],
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -553,13 +571,18 @@ mod tests {
         assert!(text.contains("mode = \"build-only\""));
         assert!(text.contains("mode = \"publish\""));
         assert!(text.contains("github_release_notes = \"auto-generate\""));
+        assert!(text.contains("skip_publish = [\"private-tool\"]"));
 
         let back: ReleaseConfig = toml::from_str(&text).unwrap();
         assert_eq!(back.adapters, cfg.adapters);
         assert_eq!(back.github_release_notes, GithubReleaseNotes::AutoGenerate);
+        assert_eq!(back.skip_publish, vec!["private-tool"]);
         assert_eq!(back.changelog_scope, ChangelogScope::Package);
         assert_eq!(back.packages.len(), 2);
-        assert_eq!(back.build_only_names(), vec!["web-compiler".to_string()]);
+        assert_eq!(
+            back.build_only_names(),
+            vec!["web-compiler".to_string(), "private-tool".to_string()]
+        );
     }
 
     #[test]
@@ -569,6 +592,7 @@ mod tests {
             snapshot_tag: None,
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
             legacy_tag_formats: Vec::new(),
+            skip_publish: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -581,6 +605,38 @@ mod tests {
         assert!(ReleaseConfig::exists(tmp.path()));
         let back = ReleaseConfig::load(tmp.path()).unwrap();
         assert_eq!(back.adapters, vec![Ecosystem::Cargo]);
+    }
+
+    #[test]
+    fn skip_publish_marks_packages_non_publishable_and_publish_skips_them() {
+        let cfg = ReleaseConfig {
+            skip_publish: vec!["@scope/manual".to_string()],
+            ..ReleaseConfig::default()
+        };
+        let mut packages = vec![
+            crate::adapter::Pkg {
+                name: "@scope/manual".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: "packages/manual/package.json".into(),
+                changelog_path: "packages/manual/CHANGELOG.md".into(),
+                publishable: true,
+                internal_deps: vec![],
+            },
+            crate::adapter::Pkg {
+                name: "@scope/managed".to_string(),
+                version: "1.0.0".to_string(),
+                manifest_path: "packages/managed/package.json".into(),
+                changelog_path: "packages/managed/CHANGELOG.md".into(),
+                publishable: true,
+                internal_deps: vec![],
+            },
+        ];
+
+        cfg.apply_publish_skips(&mut packages);
+
+        assert!(!packages[0].publishable);
+        assert!(packages[1].publishable);
+        assert_eq!(cfg.build_only_names(), vec!["@scope/manual"]);
     }
 
     #[test]
