@@ -18,6 +18,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   post-release cleanup commands.
 - **version** — The release review confirmation footer now shows explicit inline `Yes | No`
   choices instead of only key hints.
+- **version** — Package bump selection now follows a changeset-style flow: choose all major
+  packages, then minor, then patch, with a select-all option in each group.
 
 ## [0.10.0] - 2026-07-01
 

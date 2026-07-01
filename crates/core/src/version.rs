@@ -65,9 +65,6 @@ pub fn run_many(
         .output()
         .is_err()
     {
-        println!(
-            "⚠️  GitHub CLI (`gh`) is not installed. PR creation will be skipped; manually open the PR after push."
-        );
         opts.skip_pr = true;
     }
     let forge = GhForge::new(root);
@@ -220,9 +217,9 @@ pub fn orchestrate_many(
         Some(branch)
     };
 
-    // 3. Prompt: multi-select, then a bump per selected package.
-    let selected_names = prompt.select_packages(&pending)?;
-    if selected_names.is_empty() {
+    // 3. Prompt: group pending packages by bump type.
+    let selected = prompt.choose_bumps(&pending)?;
+    if selected.is_empty() {
         println!("Nothing selected.");
         return Ok(());
     }
@@ -230,13 +227,10 @@ pub fn orchestrate_many(
     let by_name: HashMap<&str, &Pkg> = all_packages.iter().map(|p| (p.name.as_str(), p)).collect();
     let pending_names: HashSet<&str> = pending.iter().map(|p| p.name.as_str()).collect();
 
-    let mut selected: HashMap<String, Bump> = HashMap::new();
-    for name in &selected_names {
+    for name in selected.keys() {
         if !pending_names.contains(name.as_str()) {
             bail!("selected package is not in the pending list: {name}");
         }
-        let pkg = by_name[name.as_str()];
-        selected.insert(name.clone(), prompt.choose_bump(name, &pkg.version)?);
     }
 
     // 4. Cascade through dependents within each adapter (private leaves excluded).
@@ -724,12 +718,11 @@ mod tests {
     struct FakePrompt;
 
     impl Prompt for FakePrompt {
-        fn select_packages(&self, pending: &[&Pkg]) -> Result<Vec<String>> {
-            Ok(pending.iter().map(|pkg| pkg.name.clone()).collect())
-        }
-
-        fn choose_bump(&self, _: &str, _: &str) -> Result<Bump> {
-            Ok(Bump::Patch)
+        fn choose_bumps(&self, pending: &[&Pkg]) -> Result<HashMap<String, Bump>> {
+            Ok(pending
+                .iter()
+                .map(|pkg| (pkg.name.clone(), Bump::Patch))
+                .collect())
         }
 
         fn confirm(&self, _: &crate::summary::Plan, _: &str, _: bool) -> Result<bool> {
@@ -747,12 +740,8 @@ mod tests {
     }
 
     impl Prompt for ScriptedBumpPrompt {
-        fn select_packages(&self, pending: &[&Pkg]) -> Result<Vec<String>> {
-            Ok(pending.iter().map(|pkg| pkg.name.clone()).collect())
-        }
-
-        fn choose_bump(&self, name: &str, _: &str) -> Result<Bump> {
-            Ok(self.bumps[name].clone())
+        fn choose_bumps(&self, _: &[&Pkg]) -> Result<HashMap<String, Bump>> {
+            Ok(self.bumps.clone())
         }
 
         fn confirm(&self, _: &crate::summary::Plan, _: &str, _: bool) -> Result<bool> {
@@ -874,11 +863,7 @@ mod tests {
         struct PanicPrompt;
 
         impl Prompt for PanicPrompt {
-            fn select_packages(&self, _: &[&Pkg]) -> Result<Vec<String>> {
-                panic!("prompt should not be reached when the working tree is dirty");
-            }
-
-            fn choose_bump(&self, _: &str, _: &str) -> Result<Bump> {
+            fn choose_bumps(&self, _: &[&Pkg]) -> Result<HashMap<String, Bump>> {
                 panic!("prompt should not be reached when the working tree is dirty");
             }
 

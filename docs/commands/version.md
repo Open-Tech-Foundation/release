@@ -19,8 +19,8 @@ Implemented in `crates/core/src/version.rs`.
    violation, **before mutating anything**. All violations are printed at once.
 3. **Parse `[Unreleased]`** from the configured changelog scope; flag packages with content as
    *pending*.
-4. **Prompt** — multi-select the packages to release, then pick a bump
-   (major / minor / patch) per selected package.
+4. **Prompt** — group pending packages by bump type: major, minor, then patch. Each group includes
+   a select-all option for the remaining packages.
 5. **Cascade** — for each bumped package, walk its dependents. Each dependent's bump is
    `adapter.dependent_bump(dep_bump, kind)`. This is **transitive** (every newly bumped
    dependent is re-fed into the walk) and takes the **max** bump when a package is reached by

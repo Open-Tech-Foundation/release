@@ -4,6 +4,7 @@
 //! manifests, ranges, and changelogs — and never touches `main`.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -36,11 +37,12 @@ struct ScriptedPrompt {
     confirmations: RefCell<Vec<String>>,
 }
 impl Prompt for ScriptedPrompt {
-    fn select_packages(&self, _pending: &[&Pkg]) -> Result<Vec<String>> {
-        Ok(self.selected.clone())
-    }
-    fn choose_bump(&self, _pkg_name: &str, _current_version: &str) -> Result<Bump> {
-        Ok(self.bump.clone())
+    fn choose_bumps(&self, _pending: &[&Pkg]) -> Result<HashMap<String, Bump>> {
+        Ok(self
+            .selected
+            .iter()
+            .map(|name| (name.clone(), self.bump.clone()))
+            .collect())
     }
     fn confirm(
         &self,

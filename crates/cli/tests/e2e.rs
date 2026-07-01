@@ -5,7 +5,7 @@
 //! `publish` ships, in dependency order, with private apps excluded.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -76,11 +76,8 @@ impl CommandRunner for Registry {
 
 struct ScriptedPrompt;
 impl Prompt for ScriptedPrompt {
-    fn select_packages(&self, _pending: &[&Pkg]) -> Result<Vec<String>> {
-        Ok(vec!["@x/core".to_string()])
-    }
-    fn choose_bump(&self, _pkg_name: &str, _current_version: &str) -> Result<Bump> {
-        Ok(Bump::Major)
+    fn choose_bumps(&self, _pending: &[&Pkg]) -> Result<HashMap<String, Bump>> {
+        Ok(HashMap::from([("@x/core".to_string(), Bump::Major)]))
     }
     fn confirm(
         &self,
