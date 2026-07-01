@@ -28,30 +28,7 @@ TMP_FILE="$(mktemp "${TMPDIR:-/tmp}/${BIN_NAME}.XXXXXX")"
 cleanup() { rm -f "$TMP_FILE"; }
 trap cleanup EXIT INT TERM
 
-echo "Fetching latest version of $BIN_NAME..."
-API_URL="https://api.github.com/repos/$REPO/releases/latest"
-# -f makes curl exit non-zero on HTTP errors (e.g. 403 rate limiting) instead
-# of handing us the error JSON as if it were data.
-if ! RELEASE_JSON="$(curl -fsSL "$API_URL")"; then
-    echo "Error: failed to query the GitHub API ($API_URL)." >&2
-    echo "       The API may be rate limiting you; wait a bit and retry." >&2
-    exit 1
-fi
-
-# Extract the release tag, splitting on commas first so this works whether the API returns
-# pretty-printed OR minified JSON. A single-line (minified) response broke the old line-based
-# `grep | cut -f4`: it grabbed the 4th quote-field of the whole blob — the release object's API
-# `url` — and "downloaded" that JSON instead of the binary. Constructing the asset URL from the
-# tag avoids parsing the asset array entirely.
-TAG="$(printf '%s' "$RELEASE_JSON" | tr ',' '\n' | grep '"tag_name"' | head -n1 \
-    | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
-
-if [ -z "$TAG" ]; then
-    echo "Error: could not determine the latest release tag from the GitHub API." >&2
-    exit 1
-fi
-
-DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/$ASSET_NAME"
+DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$ASSET_NAME"
 
 echo "Downloading from $DOWNLOAD_URL..."
 if ! curl -fL -o "$TMP_FILE" "$DOWNLOAD_URL"; then

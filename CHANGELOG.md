@@ -11,6 +11,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ## [0.9.0] - 2026-07-01
 
 ### Fixed
+- **installer** — `install.sh` and `install.ps1` now download deterministic release assets through
+  GitHub's `/releases/latest/download/...` redirect instead of querying the unauthenticated
+  GitHub API, avoiding CI failures from API rate limits.
 - **init/config** — Tag-format prompts now present common formats as selectable options with
   custom input still available; `init` also suggests a format from existing repo tags and preserves
   the detected pattern as `legacy_tag_formats` when the user edits it to migrate schemes.

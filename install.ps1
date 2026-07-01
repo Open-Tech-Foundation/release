@@ -15,22 +15,7 @@ if ($Arch -eq 9) {
 
 $AssetName = "${BinName}-windows-${ArchName}.exe"
 
-Write-Host "Fetching latest version of $BinName..."
-$ReleaseUrl = "https://api.github.com/repos/$Repo/releases/latest"
-try {
-    $ReleaseInfo = Invoke-RestMethod -Uri $ReleaseUrl
-} catch {
-    Write-Error "Failed to query the GitHub API ($ReleaseUrl). You may be rate limited; wait a bit and retry. $_"
-    exit 1
-}
-$Asset = $ReleaseInfo.assets | Where-Object { $_.name -eq $AssetName }
-
-if (-not $Asset) {
-    Write-Error "Could not find release asset for Windows $ArchName."
-    exit 1
-}
-
-$DownloadUrl = $Asset.browser_download_url
+$DownloadUrl = "https://github.com/$Repo/releases/latest/download/$AssetName"
 Write-Host "Downloading from $DownloadUrl..."
 
 $InstallDir = Join-Path $env:USERPROFILE ".cargo\bin"
