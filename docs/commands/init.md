@@ -37,11 +37,11 @@ otf-release init [--force]
    [adapters/generic.md](../adapters/generic.md).
 5. **Persist `release.toml`** and **generate `release.yml`** from it. Both writes are guarded:
    re-running warns before overwrite (`--force` to replace).
-6. **Choose a global git tag format**. `init` inspects existing local tags and pre-fills the
-   matching pattern when it can (`v{version}`, `{version}`, `{name}@{version}`, or
-   `{name}@v{version}`). With no tags, multi-package repos default to `{name}@{version}` to avoid
-   tag collisions. If you edit a detected pattern to migrate schemes, the detected pattern is saved
-   as `legacy_tag_formats` so release history still works.
+6. **Choose a global git tag format** from common options: `v{version}`, `{version}`,
+   `{name}@{version}`, or `{name}@v{version}` (plus custom input). `init` inspects existing local
+   tags and marks the matching pattern as suggested when it can. With no tags, multi-package repos
+   default to `{name}@{version}` to avoid tag collisions. If you edit a detected pattern to migrate
+   schemes, the detected pattern is saved as `legacy_tag_formats` so release history still works.
 7. **Choose where release notes are maintained**: one root `CHANGELOG.md`, or per-package
    `CHANGELOG.md` files.
 8. **Choose what GitHub Release descriptions contain** for `build-only` packages:

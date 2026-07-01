@@ -20,7 +20,8 @@ use inquire::{MultiSelect, Select, Text};
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{
     ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode, PackageEntry,
-    ReleaseConfig, Target, DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
+    ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD,
+    TARGET_REGISTRY,
 };
 use crate::discover::{scan_generic_candidates, GenericCandidate};
 
@@ -1451,10 +1452,36 @@ impl InitPrompt for StdinInitPrompt {
             ),
             None => TAG_FORMAT_HELP.to_string(),
         };
-        Ok(Text::new("Git tag format:")
-            .with_default(&suggestion.default_format)
+        let mut choices: Vec<String> = COMMON_TAG_FORMATS
+            .iter()
+            .map(|format| {
+                if *format == suggestion.default_format {
+                    format!("{format} (suggested)")
+                } else {
+                    (*format).to_string()
+                }
+            })
+            .collect();
+        choices.push("Custom".to_string());
+        let default = COMMON_TAG_FORMATS
+            .iter()
+            .position(|format| *format == suggestion.default_format)
+            .unwrap_or(0);
+        let selected = Select::new("Git tag format:", choices)
+            .with_starting_cursor(default)
             .with_help_message(&help)
-            .prompt()?)
+            .prompt()?;
+        if selected == "Custom" {
+            Ok(Text::new("Custom git tag format:")
+                .with_default(&suggestion.default_format)
+                .with_help_message(TAG_FORMAT_HELP)
+                .prompt()?)
+        } else {
+            Ok(selected
+                .strip_suffix(" (suggested)")
+                .unwrap_or(&selected)
+                .to_string())
+        }
     }
 
     fn prompt_provider(&self) -> Result<String> {

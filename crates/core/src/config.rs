@@ -68,6 +68,14 @@ pub const DEFAULT_VERSION_FIELD: &str = "version";
 /// The default git tag format for releases.
 pub const DEFAULT_TAG_FORMAT: &str = "v{version}";
 
+/// Common git tag formats shown by interactive prompts before falling back to custom input.
+pub const COMMON_TAG_FORMATS: &[&str] = &[
+    "v{version}",
+    "{version}",
+    "{name}@{version}",
+    "{name}@v{version}",
+];
+
 /// How generated GitHub Releases should get their body text.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

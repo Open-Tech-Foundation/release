@@ -5,7 +5,7 @@ use inquire::{MultiSelect, Select, Text};
 
 use crate::config::{
     format_tag, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode,
-    PackageEntry, ReleaseConfig, Target, DEFAULT_VERSION_FIELD,
+    PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_VERSION_FIELD,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +61,7 @@ pub trait ConfigPrompt {
     fn changelog_scope(&self, current: &ChangelogScope) -> Result<ChangelogScope>;
     fn changelog_strategy(&self, current: &ChangelogStrategy) -> Result<ChangelogStrategy>;
     fn github_release_notes(&self, current: &GithubReleaseNotes) -> Result<GithubReleaseNotes>;
+    fn tag_format(&self, current: &str) -> Result<String>;
     fn text(&self, prompt: &str, current: &str) -> Result<String>;
 }
 
@@ -259,6 +260,38 @@ impl ConfigPrompt for StdinConfigPrompt {
         )
     }
 
+    fn tag_format(&self, current: &str) -> Result<String> {
+        let mut choices: Vec<String> = COMMON_TAG_FORMATS
+            .iter()
+            .map(|format| {
+                if *format == current {
+                    format!("{format} (current)")
+                } else {
+                    (*format).to_string()
+                }
+            })
+            .collect();
+        choices.push("Custom".to_string());
+        let default = COMMON_TAG_FORMATS
+            .iter()
+            .position(|format| *format == current)
+            .unwrap_or(0);
+        let selected = Select::new("Tag format:", choices)
+            .with_starting_cursor(default)
+            .prompt()?;
+        if selected == "Custom" {
+            Text::new("Custom tag format:")
+                .with_default(current)
+                .prompt()
+                .map_err(Into::into)
+        } else {
+            Ok(selected
+                .strip_suffix(" (current)")
+                .unwrap_or(&selected)
+                .to_string())
+        }
+    }
+
     fn text(&self, prompt: &str, current: &str) -> Result<String> {
         Ok(Text::new(prompt).with_initial_value(current).prompt()?)
     }
@@ -379,7 +412,7 @@ fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfi
             save(root, config)
         }
         GlobalField::TagFormat => {
-            let tag_format = prompt.text("Tag format:", &config.tag_format)?;
+            let tag_format = prompt.tag_format(&config.tag_format)?;
             format_tag(&tag_format, "package", "1.2.3")?;
             config.tag_format = tag_format;
             save(root, config)
@@ -546,6 +579,10 @@ mod tests {
             _current: &GithubReleaseNotes,
         ) -> Result<GithubReleaseNotes> {
             Ok(self.github_release_notes.borrow().clone())
+        }
+
+        fn tag_format(&self, _current: &str) -> Result<String> {
+            Ok(self.text.borrow_mut().remove(0))
         }
 
         fn text(&self, _prompt: &str, _current: &str) -> Result<String> {

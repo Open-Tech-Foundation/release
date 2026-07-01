@@ -24,5 +24,8 @@ to regenerate `.github/workflows/release.yml`.
 - global settings: provider, snapshot tag, tag format, changelog scope/strategy, and GitHub
   Release notes.
 
+Tag format editing offers the common patterns `v{version}`, `{version}`, `{name}@{version}`, and
+`{name}@v{version}`, plus custom input.
+
 `github_release_notes` controls the body of GitHub Releases created for `build-only` packages:
 `auto-generate`, `curated-changelog`, or `semantic-commits`.
