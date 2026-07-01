@@ -9,7 +9,7 @@ ARCH="$(uname -m)"
 
 case "$OS" in
     linux) PLATFORM_NAME="linux" ;;
-    darwin) PLATFORM_NAME="darwin" ;;
+    darwin) PLATFORM_NAME="macos" ;;
     *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
 esac
 

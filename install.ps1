@@ -13,7 +13,7 @@ if ($Arch -eq 9) {
     exit 1
 }
 
-$AssetName = "win32-${ArchName}.exe"
+$AssetName = "windows-${ArchName}.exe"
 
 $DownloadUrl = "https://github.com/$Repo/releases/latest/download/$AssetName"
 Write-Host "Downloading from $DownloadUrl..."
