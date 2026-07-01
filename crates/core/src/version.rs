@@ -401,12 +401,14 @@ pub fn orchestrate_many(
     git.add_all()?;
     git.commit(&commit_title)?;
     git.push_branch(&release_branch)?;
+    println!("{}", release_branch_ready(&commit_title, &release_branch));
 
     if opts.skip_pr {
-        println!("Skipped PR creation. Please manually open a PR for branch `{release_branch}` on GitHub.");
+        println!("PR: skipped because GitHub CLI is unavailable.");
+        println!("    Manually open a PR for `{release_branch}` on GitHub.");
     } else {
         forge.open_pr(&release_branch, &commit_title, &summary_text)?;
-        println!("Opened release PR from `{release_branch}`.");
+        println!("PR: opened from `{release_branch}`.");
     }
     if prompt.confirm_post_release_cleanup(&release_branch)? {
         git.return_to_main()?;
@@ -417,6 +419,12 @@ pub fn orchestrate_many(
     }
 
     Ok(())
+}
+
+fn release_branch_ready(commit_title: &str, release_branch: &str) -> String {
+    format!(
+        "\nRelease branch ready:\n  Commit created: {commit_title}\n  Branch pushed: origin/{release_branch}"
+    )
 }
 
 fn post_release_next_steps(release_branch: &str) -> String {
@@ -962,6 +970,14 @@ mod tests {
         assert!(out.contains("git pull --tags"));
         assert!(out.contains("git branch -D release/2026-06-28"));
         assert!(out.contains("local release branch"));
+    }
+
+    #[test]
+    fn release_branch_ready_summarizes_completed_git_steps() {
+        let out = release_branch_ready("chore(release): pkg@1.2.3", "release/2026-06-28");
+        assert!(out.contains("Release branch ready"));
+        assert!(out.contains("Commit created: chore(release): pkg@1.2.3"));
+        assert!(out.contains("Branch pushed: origin/release/2026-06-28"));
     }
 
     #[test]

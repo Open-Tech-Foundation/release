@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **version** — After creating and pushing the release branch, the command now prints a completion
+  summary before PR and cleanup prompts so the next prompt has clear context.
+
 ## [0.13.0] - 2026-07-01
 
 - **version** — Grouped bump prompts now print an explicit selected/skipped summary after each
