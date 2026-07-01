@@ -9,6 +9,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ## [Unreleased]
 
 ### Fixed
+- **init** — The tag-format prompt now suggests a format from existing repo tags and preserves the
+  detected pattern as `legacy_tag_formats` when the user edits it to migrate schemes.
 - **version** — Added `legacy_tag_formats` so repos can migrate tag schemes without rewriting old
   tags; preflight and generated changelog notes read both current and legacy formats while new
   release tags still use `tag_format`.

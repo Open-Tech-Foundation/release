@@ -12,6 +12,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use inquire::{MultiSelect, Select, Text};
@@ -122,7 +123,7 @@ pub trait InitPrompt {
     /// Confirm overwriting an existing file (only asked when not `--force`).
     fn confirm_overwrite(&self, path: &Path) -> Result<bool>;
     /// Ask for the git tag format used by version/preflight/publish.
-    fn tag_format(&self) -> Result<String>;
+    fn tag_format(&self, suggestion: &TagFormatSuggestion) -> Result<String>;
     /// Ask for the git hosting provider.
     fn prompt_provider(&self) -> Result<String>;
     /// Ask where release notes should be maintained.
@@ -137,6 +138,22 @@ pub fn run(factory: &dyn AdapterFactory, root: &Path, opts: &InitOptions) -> Res
     orchestrate(factory, &StdinInitPrompt, root, opts)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagFormatSuggestion {
+    pub default_format: String,
+    pub detected_format: Option<String>,
+}
+
+impl TagFormatSuggestion {
+    fn legacy_formats_for(&self, selected_format: &str) -> Vec<String> {
+        self.detected_format
+            .iter()
+            .filter(|detected| detected.as_str() != selected_format)
+            .cloned()
+            .collect()
+    }
+}
+
 /// A short, friendly preamble so a first-time dev knows what `init` will ask and that nothing is
 /// locked in — every answer has a default and is editable afterward.
 fn print_intro() {
@@ -146,6 +163,85 @@ fn print_intro() {
     );
     println!("  • Press Enter to accept the default shown in (parentheses); a hint sits under each prompt.");
     println!("  • Nothing is permanent — re-run init, edit release.toml by hand, or use `otf-release config`.\n");
+}
+
+fn suggest_tag_format(root: &Path, publishable_count: usize) -> TagFormatSuggestion {
+    let detected_format = existing_tags(root).and_then(|tags| infer_tag_format(&tags));
+    TagFormatSuggestion {
+        default_format: detected_format.clone().unwrap_or_else(|| {
+            if publishable_count > 1 {
+                "{name}@{version}".to_string()
+            } else {
+                DEFAULT_TAG_FORMAT.to_string()
+            }
+        }),
+        detected_format,
+    }
+}
+
+fn existing_tags(root: &Path) -> Option<Vec<String>> {
+    let out = Command::new("git")
+        .args(["tag", "--list"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+fn infer_tag_format(tags: &[String]) -> Option<String> {
+    let mut counts = std::collections::HashMap::<&'static str, usize>::new();
+    for tag in tags {
+        if is_package_version_tag(tag, true) {
+            *counts.entry("{name}@v{version}").or_default() += 1;
+        } else if is_package_version_tag(tag, false) {
+            *counts.entry("{name}@{version}").or_default() += 1;
+        } else if parse_tag_version(tag.strip_prefix('v').unwrap_or_default()).is_some() {
+            *counts.entry("v{version}").or_default() += 1;
+        } else if parse_tag_version(tag).is_some() {
+            *counts.entry("{version}").or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(format, _)| format.to_string())
+}
+
+fn is_package_version_tag(tag: &str, version_has_v: bool) -> bool {
+    let Some((name, version)) = tag.rsplit_once('@') else {
+        return false;
+    };
+    if name.is_empty() {
+        return false;
+    }
+    let version = if version_has_v {
+        version.strip_prefix('v').unwrap_or_default()
+    } else {
+        if version.starts_with('v') {
+            return false;
+        }
+        version
+    };
+    parse_tag_version(version).is_some()
+}
+
+fn parse_tag_version(version: &str) -> Option<()> {
+    let core = version.split('-').next().unwrap_or(version);
+    let mut parts = core.split('.');
+    parts.next()?.parse::<u64>().ok()?;
+    parts.next()?.parse::<u64>().ok()?;
+    parts.next()?.parse::<u64>().ok()?;
+    Some(())
 }
 
 /// The testable core of `init`.
@@ -196,8 +292,10 @@ pub fn orchestrate(
         packages.extend(prompt.generic_packages(&found)?);
     }
 
-    let tag_format = prompt.tag_format()?;
+    let tag_suggestion = suggest_tag_format(root, publishable.len());
+    let tag_format = prompt.tag_format(&tag_suggestion)?;
     crate::config::format_tag(&tag_format, "package", "1.2.3")?;
+    let legacy_tag_formats = tag_suggestion.legacy_formats_for(&tag_format);
 
     let config = ReleaseConfig {
         hooks: crate::config::Hooks::default(),
@@ -205,7 +303,7 @@ pub fn orchestrate(
         packages,
         snapshot_tag: None,
         tag_format,
-        legacy_tag_formats: Vec::new(),
+        legacy_tag_formats,
         provider: prompt.prompt_provider()?,
         changelog_strategy: ChangelogStrategy::Curated,
         changelog_scope: prompt.prompt_changelog_scope()?,
@@ -1346,10 +1444,16 @@ impl InitPrompt for StdinInitPrompt {
             == 1)
     }
 
-    fn tag_format(&self) -> Result<String> {
+    fn tag_format(&self, suggestion: &TagFormatSuggestion) -> Result<String> {
+        let help = match &suggestion.detected_format {
+            Some(format) => format!(
+                "detected existing tags like {format}; edit to migrate, old format will be kept as legacy history"
+            ),
+            None => TAG_FORMAT_HELP.to_string(),
+        };
         Ok(Text::new("Git tag format:")
-            .with_default(DEFAULT_TAG_FORMAT)
-            .with_help_message(TAG_FORMAT_HELP)
+            .with_default(&suggestion.default_format)
+            .with_help_message(&help)
             .prompt()?)
     }
 
@@ -1417,6 +1521,7 @@ impl InitPrompt for StdinInitPrompt {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::process::Command;
 
     struct FakeAdapter {
         packages: Vec<Pkg>,
@@ -1474,6 +1579,7 @@ mod tests {
         entries: Vec<PackageEntry>,
         generic: Vec<PackageEntry>,
         overwrite: bool,
+        tag_format: Option<String>,
     }
     impl InitPrompt for FakePrompt {
         fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
@@ -1496,8 +1602,11 @@ mod tests {
         fn confirm_overwrite(&self, _: &Path) -> Result<bool> {
             Ok(self.overwrite)
         }
-        fn tag_format(&self) -> Result<String> {
-            Ok(DEFAULT_TAG_FORMAT.to_string())
+        fn tag_format(&self, suggestion: &TagFormatSuggestion) -> Result<String> {
+            Ok(self
+                .tag_format
+                .clone()
+                .unwrap_or_else(|| suggestion.default_format.clone()))
         }
         fn prompt_provider(&self) -> Result<String> {
             Ok("github".to_string())
@@ -1533,6 +1642,59 @@ mod tests {
             publishable: true,
             internal_deps: vec![],
         }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn infers_tag_format_from_existing_tag_shapes() {
+        let package_tags = vec![
+            "@opentf/create-web@0.5.0".to_string(),
+            "@opentf/web@0.5.0".to_string(),
+            "@opentf/web@0.6.0-alpha.1".to_string(),
+        ];
+        assert_eq!(
+            infer_tag_format(&package_tags).as_deref(),
+            Some("{name}@{version}")
+        );
+
+        let package_v_tags = vec!["@opentf/web@v0.5.0".to_string()];
+        assert_eq!(
+            infer_tag_format(&package_v_tags).as_deref(),
+            Some("{name}@v{version}")
+        );
+
+        let single_v_tags = vec!["v1.2.3".to_string(), "v1.3.0".to_string()];
+        assert_eq!(
+            infer_tag_format(&single_v_tags).as_deref(),
+            Some("v{version}")
+        );
+
+        let single_plain_tags = vec!["1.2.3".to_string()];
+        assert_eq!(
+            infer_tag_format(&single_plain_tags).as_deref(),
+            Some("{version}")
+        );
+    }
+
+    #[test]
+    fn suggests_package_scoped_tags_for_new_multi_package_repos() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            suggest_tag_format(tmp.path(), 2).default_format,
+            "{name}@{version}"
+        );
+        assert_eq!(
+            suggest_tag_format(tmp.path(), 1).default_format,
+            DEFAULT_TAG_FORMAT
+        );
     }
 
     fn cargo_build_only(name: &str) -> PackageEntry {
@@ -2116,6 +2278,44 @@ mod tests {
         let yml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
         assert!(yml.contains("  github-release:\n"));
         assert!(!tmp.path().join(".github/workflows/snapshot.yml").exists());
+    }
+
+    #[test]
+    fn orchestrate_suggests_existing_tag_format_and_preserves_legacy_when_changed() {
+        let tmp = tempfile::tempdir().unwrap();
+        git(tmp.path(), &["init", "-q"]);
+        fs::write(tmp.path().join("README.md"), "test\n").unwrap();
+        git(tmp.path(), &["add", "-A"]);
+        git(
+            tmp.path(),
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=Test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "init",
+            ],
+        );
+        git(tmp.path(), &["tag", "@opentf/web@0.5.0"]);
+
+        let factory = FakeFactory {
+            packages: vec![pkg("@opentf/web", true)],
+        };
+        let prompt = FakePrompt {
+            adapters: vec![Ecosystem::Npm],
+            tag_format: Some("{name}@v{version}".to_string()),
+            ..FakePrompt::default()
+        };
+        orchestrate(&factory, &prompt, tmp.path(), &InitOptions { force: true }).unwrap();
+
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(cfg.tag_format, "{name}@v{version}");
+        assert_eq!(cfg.legacy_tag_formats, vec!["{name}@{version}"]);
     }
 
     #[test]
