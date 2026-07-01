@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-01
+
 - **version** — First releases no longer require a global `--first-release` override; publishable
   packages without prior tags are allowed when they have release notes, and `skip_publish` can
   exclude packages that should not be managed by the tool.
