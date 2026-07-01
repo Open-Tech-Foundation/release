@@ -45,6 +45,19 @@ impl Prompt for StdinPrompt {
             remaining.retain(|pkg| !chosen_set.contains(&pkg.name));
         }
 
+        if !remaining.is_empty() {
+            let chosen = choose_bump_group("Other release types", &remaining)?;
+            let chosen_set: HashSet<String> = chosen.into_iter().collect();
+            for pkg in &remaining {
+                if chosen_set.contains(&pkg.name) {
+                    selected.insert(
+                        pkg.name.clone(),
+                        choose_detailed_bump(&pkg.name, &pkg.version)?,
+                    );
+                }
+            }
+        }
+
         Ok(selected)
     }
 
@@ -85,4 +98,55 @@ fn choose_bump_group(label: &str, pending: &[&Pkg]) -> Result<Vec<String>> {
         .filter_map(|item| pending.get(item.index.saturating_sub(1)))
         .map(|pkg| pkg.name.clone())
         .collect())
+}
+
+fn choose_detailed_bump(pkg_name: &str, current_version: &str) -> Result<Bump> {
+    println!();
+    let parts: Vec<&str> = current_version.split('-').collect();
+    let is_prerelease = parts.len() > 1;
+
+    if is_prerelease {
+        let pre_part = parts[1];
+        let current_channel = pre_part.split('.').next().unwrap();
+        let msg = format!("{pkg_name} is currently on the {current_channel} channel. Next step?");
+        let opts = vec![
+            format!("Continue {current_channel} prerelease"),
+            "Switch prerelease channel".to_string(),
+            "Graduate to stable".to_string(),
+        ];
+        let choice = Select::new(&msg, opts).prompt()?;
+        if choice == "Graduate to stable" {
+            Ok(Bump::Graduate)
+        } else if choice == "Switch prerelease channel" {
+            let ch = Select::new("Prerelease channel", vec!["alpha", "beta", "rc"]).prompt()?;
+            Ok(Bump::Prerelease(ch.to_string()))
+        } else {
+            Ok(Bump::Prerelease(current_channel.to_string()))
+        }
+    } else {
+        let rtype = Select::new(
+            &format!("{pkg_name} release track"),
+            vec!["Pre-release", "Stable"],
+        )
+        .prompt()?;
+
+        let is_pre = rtype == "Pre-release";
+        let channel = if is_pre {
+            Some(Select::new("Prerelease channel", vec!["alpha", "beta", "rc"]).prompt()?)
+        } else {
+            None
+        };
+
+        let bump_str = Select::new("Version bump", vec!["Major", "Minor", "Patch"]).prompt()?;
+
+        Ok(match (bump_str, channel) {
+            ("Major", None) => Bump::Major,
+            ("Minor", None) => Bump::Minor,
+            ("Patch", None) => Bump::Patch,
+            ("Major", Some(c)) => Bump::PreMajor(c.to_string()),
+            ("Minor", Some(c)) => Bump::PreMinor(c.to_string()),
+            ("Patch", Some(c)) => Bump::PrePatch(c.to_string()),
+            _ => unreachable!(),
+        })
+    }
 }

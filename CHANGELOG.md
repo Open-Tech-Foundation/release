@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **version** — The grouped bump prompt now keeps an `Other release types` path so prerelease
+  and graduate releases remain available after the changeset-style stable release selection.
 - **version** — Auto-bumped packages with a missing changelog file or missing `[Unreleased]`
   section now receive the `_Dependency updates._` changelog stub instead of aborting during
   changelog rewrite; CLI errors also print their cause chain.
