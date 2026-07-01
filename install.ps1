@@ -6,17 +6,23 @@ $BinName = "otf-release"
 $Arch = (Get-WmiObject -Class Win32_Processor).Architecture
 if ($Arch -eq 9) {
     $ArchName = "x64"
+    $LegacyArchName = "x86_64"
 } elseif ($Arch -eq 12) {
     $ArchName = "arm64"
+    $LegacyArchName = "aarch64"
 } else {
     Write-Error "Unsupported architecture. Only x86_64 and ARM64 are supported."
     exit 1
 }
 
-$AssetName = "windows-${ArchName}.exe"
-
-$DownloadUrl = "https://github.com/$Repo/releases/latest/download/$AssetName"
-Write-Host "Downloading from $DownloadUrl..."
+$AssetNames = @(
+    "windows-${ArchName}.exe",
+    "win32-${ArchName}.exe",
+    "otf-release-windows-${ArchName}.exe",
+    "otf-release-windows-${LegacyArchName}.exe",
+    "otf-release-win32-${ArchName}.exe",
+    "otf-release-win32-${LegacyArchName}.exe"
+)
 
 $InstallDir = Join-Path $env:USERPROFILE ".cargo\bin"
 if (-not (Test-Path $InstallDir)) {
@@ -30,7 +36,24 @@ $DestPath = Join-Path $InstallDir "${BinName}.exe"
 # clobber a working install.
 $TmpFile = New-TemporaryFile
 try {
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $TmpFile.FullName
+    $Downloaded = $false
+    foreach ($AssetName in $AssetNames) {
+        $DownloadUrl = "https://github.com/$Repo/releases/latest/download/$AssetName"
+        Write-Host "Downloading from $DownloadUrl..."
+        try {
+            Invoke-WebRequest -Uri $DownloadUrl -OutFile $TmpFile.FullName
+            $Downloaded = $true
+            break
+        } catch {
+            if (Test-Path $TmpFile.FullName) {
+                Clear-Content -Path $TmpFile.FullName
+            }
+        }
+    }
+    if (-not $Downloaded) {
+        Write-Error "Download failed for all known Windows/$ArchName asset names."
+        exit 1
+    }
 
     # Verify we actually got an executable, not an HTML/JSON error page. This is
     # the guard that prevents installing garbage over a good binary.

@@ -20,6 +20,16 @@ case "$ARCH" in
 esac
 
 ASSET_NAME="${PLATFORM_NAME}-${ARCH_NAME}"
+LEGACY_ARCH_NAME="$ARCH_NAME"
+case "$ARCH" in
+    x86_64|amd64) LEGACY_ARCH_NAME="x86_64" ;;
+    aarch64|arm64) LEGACY_ARCH_NAME="aarch64" ;;
+esac
+
+ASSET_NAMES="$ASSET_NAME otf-release-${PLATFORM_NAME}-${LEGACY_ARCH_NAME}"
+case "$OS" in
+    darwin) ASSET_NAMES="$ASSET_NAMES darwin-${ARCH_NAME} otf-release-darwin-${LEGACY_ARCH_NAME}" ;;
+esac
 
 # Download to a temp file first. Nothing touches the installed binary until the
 # download has been fetched AND verified, so a failed/bogus response can never
@@ -28,11 +38,17 @@ TMP_FILE="$(mktemp "${TMPDIR:-/tmp}/${BIN_NAME}.XXXXXX")"
 cleanup() { rm -f "$TMP_FILE"; }
 trap cleanup EXIT INT TERM
 
-DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$ASSET_NAME"
-
-echo "Downloading from $DOWNLOAD_URL..."
-if ! curl -fL -o "$TMP_FILE" "$DOWNLOAD_URL"; then
-    echo "Error: download failed from $DOWNLOAD_URL" >&2
+downloaded=false
+for candidate in $ASSET_NAMES; do
+    DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$candidate"
+    echo "Downloading from $DOWNLOAD_URL..."
+    if curl -fL -o "$TMP_FILE" "$DOWNLOAD_URL"; then
+        downloaded=true
+        break
+    fi
+done
+if [ "$downloaded" != true ]; then
+    echo "Error: download failed for all known $OS/$ARCH asset names." >&2
     exit 1
 fi
 
