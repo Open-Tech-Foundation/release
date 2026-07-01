@@ -5,15 +5,15 @@ $BinName = "otf-release"
 
 $Arch = (Get-WmiObject -Class Win32_Processor).Architecture
 if ($Arch -eq 9) {
-    $ArchName = "x86_64"
+    $ArchName = "x64"
 } elseif ($Arch -eq 12) {
-    $ArchName = "aarch64"
+    $ArchName = "arm64"
 } else {
     Write-Error "Unsupported architecture. Only x86_64 and ARM64 are supported."
     exit 1
 }
 
-$AssetName = "${BinName}-windows-${ArchName}.exe"
+$AssetName = "win32-${ArchName}.exe"
 
 $DownloadUrl = "https://github.com/$Repo/releases/latest/download/$AssetName"
 Write-Host "Downloading from $DownloadUrl..."

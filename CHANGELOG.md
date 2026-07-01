@@ -9,6 +9,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ## [Unreleased]
 
 ### Fixed
+- **installer** — `install.sh` and `install.ps1` now request the current release asset names
+  produced by the build-only release workflow (`linux-x64`, `darwin-arm64`, `win32-x64.exe`, ...).
 - **workflow** — Generated release workflows now use `install.sh` on Linux/macOS and `install.ps1`
   on Windows, so Windows runners no longer execute the Unix installer through Git Bash.
 

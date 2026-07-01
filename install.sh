@@ -8,18 +8,18 @@ OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 
 case "$OS" in
-    linux) OS_NAME="linux" ;;
-    darwin) OS_NAME="macos" ;;
+    linux) PLATFORM_NAME="linux" ;;
+    darwin) PLATFORM_NAME="darwin" ;;
     *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
 esac
 
 case "$ARCH" in
-    x86_64|amd64) ARCH_NAME="x86_64" ;;
-    aarch64|arm64) ARCH_NAME="aarch64" ;;
+    x86_64|amd64) ARCH_NAME="x64" ;;
+    aarch64|arm64) ARCH_NAME="arm64" ;;
     *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 
-ASSET_NAME="${BIN_NAME}-${OS_NAME}-${ARCH_NAME}"
+ASSET_NAME="${PLATFORM_NAME}-${ARCH_NAME}"
 
 # Download to a temp file first. Nothing touches the installed binary until the
 # download has been fetched AND verified, so a failed/bogus response can never
