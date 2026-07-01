@@ -139,11 +139,16 @@ jobs:
                 dir_name=$(basename "$(dirname "$file")")
                 file_name=$(basename "$file")
                 ext="${file_name##*.}"
-                asset_name="$dir_name"
-                case "$asset_name" in
-                  darwin-*) asset_name="macos-${asset_name#darwin-}" ;;
-                  win32-*) asset_name="windows-${asset_name#win32-}" ;;
+                os_part="${dir_name%-*}"
+                arch_part="${dir_name##*-}"
+                case "$os_part" in
+                  darwin) os_part="macos" ;;
+                  win32) os_part="windows" ;;
                 esac
+                case "$arch_part" in
+                  x64) arch_part="x86-64" ;;
+                esac
+                asset_name="otf-release-${os_part}-${arch_part}"
                 if [ "$ext" = "$file_name" ]; then
                   cp "$file" ".flat-artifacts-otf-release/${asset_name}"
                 else

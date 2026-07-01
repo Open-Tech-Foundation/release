@@ -6,9 +6,11 @@ $BinName = "otf-release"
 $Arch = (Get-WmiObject -Class Win32_Processor).Architecture
 if ($Arch -eq 9) {
     $ArchName = "x64"
+    $PublicArchName = "x86-64"
     $LegacyArchName = "x86_64"
 } elseif ($Arch -eq 12) {
     $ArchName = "arm64"
+    $PublicArchName = "arm64"
     $LegacyArchName = "aarch64"
 } else {
     Write-Error "Unsupported architecture. Only x86_64 and ARM64 are supported."
@@ -16,6 +18,7 @@ if ($Arch -eq 9) {
 }
 
 $AssetNames = @(
+    "${BinName}-windows-${PublicArchName}.exe",
     "windows-${ArchName}.exe",
     "win32-${ArchName}.exe",
     "otf-release-windows-${ArchName}.exe",

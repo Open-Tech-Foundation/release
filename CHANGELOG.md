@@ -9,6 +9,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ## [Unreleased]
 
 ### Fixed
+- **release assets** — GitHub Release binaries are now named as public downloads with the binary
+  name, OS, and architecture (for example `otf-release-linux-x86-64`) instead of leaking internal
+  staging directories such as `darwin-arm64` or `win32-x64.exe`.
 - **installer** — `install.sh` and `install.ps1` now request standardized public release asset
   names first, then fall back to legacy release asset names so existing published releases remain
   installable during the naming migration.

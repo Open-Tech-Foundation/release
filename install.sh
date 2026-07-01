@@ -19,16 +19,21 @@ case "$ARCH" in
     *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 
-ASSET_NAME="${PLATFORM_NAME}-${ARCH_NAME}"
+PUBLIC_ARCH_NAME="$ARCH_NAME"
+case "$ARCH" in
+    x86_64|amd64) PUBLIC_ARCH_NAME="x86-64" ;;
+esac
+
+ASSET_NAME="${BIN_NAME}-${PLATFORM_NAME}-${PUBLIC_ARCH_NAME}"
 LEGACY_ARCH_NAME="$ARCH_NAME"
 case "$ARCH" in
     x86_64|amd64) LEGACY_ARCH_NAME="x86_64" ;;
     aarch64|arm64) LEGACY_ARCH_NAME="aarch64" ;;
 esac
 
-ASSET_NAMES="$ASSET_NAME otf-release-${PLATFORM_NAME}-${LEGACY_ARCH_NAME}"
+ASSET_NAMES="$ASSET_NAME ${PLATFORM_NAME}-${ARCH_NAME} ${BIN_NAME}-${PLATFORM_NAME}-${LEGACY_ARCH_NAME}"
 case "$OS" in
-    darwin) ASSET_NAMES="$ASSET_NAMES darwin-${ARCH_NAME} otf-release-darwin-${LEGACY_ARCH_NAME}" ;;
+    darwin) ASSET_NAMES="$ASSET_NAMES darwin-${ARCH_NAME} ${BIN_NAME}-darwin-${LEGACY_ARCH_NAME}" ;;
 esac
 
 # Download to a temp file first. Nothing touches the installed binary until the

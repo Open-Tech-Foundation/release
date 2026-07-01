@@ -886,6 +886,7 @@ fn render_github_release(
             &tag_regex,
         );
         if staged {
+            let asset_base = entry.bin_name.as_deref().unwrap_or(&art_slug);
             s.push_str(&format!(
                 "            rm -rf \".flat-artifacts-{art_slug}\"\n"
             ));
@@ -900,15 +901,18 @@ fn render_github_release(
             s.push_str("                dir_name=$(basename \"$(dirname \"$file\")\")\n");
             s.push_str("                file_name=$(basename \"$file\")\n");
             s.push_str("                ext=\"${file_name##*.}\"\n");
-            s.push_str("                asset_name=\"$dir_name\"\n");
-            s.push_str("                case \"$asset_name\" in\n");
-            s.push_str(
-                "                  darwin-*) asset_name=\"macos-${asset_name#darwin-}\" ;;\n",
-            );
-            s.push_str(
-                "                  win32-*) asset_name=\"windows-${asset_name#win32-}\" ;;\n",
-            );
+            s.push_str("                os_part=\"${dir_name%-*}\"\n");
+            s.push_str("                arch_part=\"${dir_name##*-}\"\n");
+            s.push_str("                case \"$os_part\" in\n");
+            s.push_str("                  darwin) os_part=\"macos\" ;;\n");
+            s.push_str("                  win32) os_part=\"windows\" ;;\n");
             s.push_str("                esac\n");
+            s.push_str("                case \"$arch_part\" in\n");
+            s.push_str("                  x64) arch_part=\"x86-64\" ;;\n");
+            s.push_str("                esac\n");
+            s.push_str(&format!(
+                "                asset_name=\"{asset_base}-${{os_part}}-${{arch_part}}\"\n"
+            ));
             s.push_str("                if [ \"$ext\" = \"$file_name\" ]; then\n");
             s.push_str(&format!(
                 "                  cp \"$file\" \".flat-artifacts-{art_slug}/${{asset_name}}\"\n"
@@ -1981,8 +1985,10 @@ mod tests {
         assert!(!out.contains("tag=\"v${{ needs.check-release.outputs.version }}\""));
         // check-release skips a re-run when the version's tag already exists on the remote.
         assert!(out.contains("if git ls-remote --tags origin \"refs/tags/$tag\" | grep -q .; then"));
-        assert!(out.contains("darwin-*) asset_name=\"macos-${asset_name#darwin-}\" ;;\n"));
-        assert!(out.contains("win32-*) asset_name=\"windows-${asset_name#win32-}\" ;;\n"));
+        assert!(out.contains("darwin) os_part=\"macos\" ;;\n"));
+        assert!(out.contains("win32) os_part=\"windows\" ;;\n"));
+        assert!(out.contains("x64) arch_part=\"x86-64\" ;;\n"));
+        assert!(out.contains("asset_name=\"otf-release-${os_part}-${arch_part}\"\n"));
         assert!(!out.contains("cargo publish"));
         assert!(!out.contains("crates.io"));
         // build-only cargo: no publish job at all.
