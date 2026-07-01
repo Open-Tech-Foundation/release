@@ -8,6 +8,7 @@
 //! subsections *inside* `[Unreleased]` (level 3) are part of the body, not boundaries.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
@@ -44,9 +45,20 @@ pub fn release_unreleased(
     date: &str,
     stub_if_empty: bool,
 ) -> Result<()> {
-    let content = read(changelog_path)?;
+    let content = match fs::read_to_string(changelog_path) {
+        Ok(content) => content,
+        Err(err) if stub_if_empty && err.kind() == ErrorKind::NotFound => {
+            "# Changelog\n\n".to_string()
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("reading {}", changelog_path.display()))
+        }
+    };
     let rewritten = rewrite_release(&content, version, date, stub_if_empty)
         .with_context(|| format!("rewriting {}", changelog_path.display()))?;
+    if let Some(parent) = changelog_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
     fs::write(changelog_path, rewritten)
         .with_context(|| format!("writing {}", changelog_path.display()))
 }
@@ -323,6 +335,29 @@ mod tests {
             out,
             "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - 2026-06-24\n\n_Dependency updates._\n\n## [1.0.0] - 2024-01-01\n\n- initial\n"
         );
+    }
+
+    #[test]
+    fn release_stubs_missing_changelog_when_auto_bumped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("packages/auto/CHANGELOG.md");
+
+        release_unreleased(&path, "1.1.0", "2026-06-24", true).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "# Changelog\n\n## [Unreleased]\n\n## [1.1.0] - 2026-06-24\n\n_Dependency updates._\n\n"
+        );
+    }
+
+    #[test]
+    fn release_errors_on_missing_changelog_without_auto_stub() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("packages/direct/CHANGELOG.md");
+
+        let err = release_unreleased(&path, "1.1.0", "2026-06-24", false).unwrap_err();
+
+        assert!(err.to_string().contains("reading"));
     }
 
     #[test]
