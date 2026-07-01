@@ -49,6 +49,8 @@ impl Prompt for ScriptedPrompt {
         _plan: &otf_release_core::summary::Plan,
         diff_stat: &str,
         _skip_pr: bool,
+        _release_branch: &str,
+        _commit_title: &str,
     ) -> Result<bool> {
         self.confirmations.borrow_mut().push(diff_stat.to_string());
         Ok(true)

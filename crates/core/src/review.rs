@@ -5,6 +5,8 @@
 //! `version` flow reaches this only through the `Prompt::confirm` trait, so tests use a fake and
 //! never enter raw mode.
 
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
@@ -13,12 +15,18 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 
-use crate::summary::Plan;
+use crate::summary::{dep_section, Plan, RangeUpdate, VersionChange};
 use crate::ui::ACCENT_RGB as ACCENT;
 
 /// Show the review full-screen and return whether the user confirmed (create the release PR).
-pub fn run(plan: &Plan, diff_stat: &str, skip_pr: bool) -> Result<bool> {
-    let lines = review_lines(plan, diff_stat, skip_pr);
+pub fn run(
+    plan: &Plan,
+    diff_stat: &str,
+    skip_pr: bool,
+    release_branch: &str,
+    commit_title: &str,
+) -> Result<bool> {
+    let lines = review_lines(plan, diff_stat, skip_pr, release_branch, commit_title);
     let mut terminal = ratatui::init();
     let result = event_loop(&mut terminal, &lines);
     ratatui::restore();
@@ -91,67 +99,26 @@ fn key_hint(keys: &'static str, desc: &'static str, color: Color) -> Span<'stati
 }
 
 /// Build the styled body of the review screen. Pure: no terminal, fully testable.
-pub fn review_lines(plan: &Plan, diff_stat: &str, skip_pr: bool) -> Vec<Line<'static>> {
+pub fn review_lines(
+    plan: &Plan,
+    diff_stat: &str,
+    skip_pr: bool,
+    release_branch: &str,
+    commit_title: &str,
+) -> Vec<Line<'static>> {
     let dim = Style::new().fg(Color::DarkGray);
     let mut lines = Vec::new();
 
-    lines.push(section("Packages to release"));
-    if plan.changes.is_empty() {
-        lines.push(Line::styled("  (none)", dim));
-    } else {
-        for c in &plan.changes {
-            let (marker, marker_style) = if c.selected {
-                (
-                    "  ● ",
-                    Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
-                )
-            } else {
-                ("  ○ ", Style::new().fg(Color::Yellow))
-            };
-            lines.push(Line::from(vec![
-                Span::styled(marker, marker_style),
-                Span::styled(c.name.clone(), Style::new().add_modifier(Modifier::BOLD)),
-                Span::raw("  "),
-                Span::styled(c.old_version.clone(), dim),
-                Span::styled(" → ", Style::new().fg(ACCENT)),
-                Span::styled(
-                    c.new_version.clone(),
-                    Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            if !c.note.is_empty() {
-                lines.push(Line::styled(format!("      {}", c.note), dim));
-            }
-        }
-    }
+    lines.push(section("Packages"));
+    let selected: Vec<&VersionChange> = plan.changes.iter().filter(|c| c.selected).collect();
+    let automatic: Vec<&VersionChange> = plan.changes.iter().filter(|c| !c.selected).collect();
+    push_package_group(&mut lines, "Selected by you", &selected, false);
+    push_package_group(&mut lines, "Added by dependency rules", &automatic, true);
     lines.push(Line::raw(""));
 
     if !plan.range_updates.is_empty() {
-        lines.push(section("Internal dependency ranges"));
-        for r in &plan.range_updates {
-            let consumer_style = if r.consumer_private {
-                dim
-            } else {
-                Style::new()
-            };
-            let mut spans = vec![
-                Span::raw("  "),
-                Span::styled(r.consumer.clone(), consumer_style),
-                Span::styled(" → ", dim),
-                Span::styled(r.dep.clone(), Style::new().fg(ACCENT)),
-                Span::raw("  "),
-                Span::styled(r.old_range.clone(), dim),
-                Span::raw(" ⇒ "),
-                Span::styled(r.new_range.clone(), Style::new().fg(Color::Green)),
-            ];
-            if r.consumer_private {
-                spans.push(Span::styled(
-                    "  (range only, not published)",
-                    Style::new().fg(Color::Yellow),
-                ));
-            }
-            lines.push(Line::from(spans));
-        }
+        lines.push(section("Dependency Range Updates"));
+        push_range_updates(&mut lines, &plan.range_updates);
         lines.push(Line::raw(""));
     }
 
@@ -172,7 +139,144 @@ pub fn review_lines(plan: &Plan, diff_stat: &str, skip_pr: bool) -> Vec<Line<'st
         ));
     }
 
+    lines.push(Line::raw(""));
+    lines.push(section("After Confirm"));
+    lines.push(Line::from(vec![
+        Span::raw("  Branch: "),
+        Span::styled(release_branch.to_string(), Style::new().fg(ACCENT)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  Commit: "),
+        Span::styled(commit_title.to_string(), Style::new().fg(Color::Green)),
+    ]));
+    lines.push(Line::styled(
+        "  Publish: not now; publishing happens after the PR is merged and CI runs.",
+        dim,
+    ));
+
     lines
+}
+
+fn push_package_group(
+    lines: &mut Vec<Line<'static>>,
+    title: &'static str,
+    changes: &[&VersionChange],
+    show_reason: bool,
+) {
+    let dim = Style::new().fg(Color::DarkGray);
+    lines.push(Line::styled(
+        format!("  {title}"),
+        Style::new().add_modifier(Modifier::BOLD),
+    ));
+    if changes.is_empty() {
+        lines.push(Line::styled("    (none)", dim));
+        return;
+    }
+    let name_width = changes
+        .iter()
+        .map(|c| c.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    for c in changes {
+        let version = format!("{} → {}", c.old_version, c.new_version);
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                format!("{:<name_width$}", c.name),
+                Style::new().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(version, Style::new().fg(Color::Green)),
+            Span::raw("  "),
+            Span::styled(bump_label(&c.note), dim),
+        ]));
+        if show_reason {
+            lines.push(Line::styled(
+                format!("      Reason: {}", friendly_reason(&c.note)),
+                dim,
+            ));
+        }
+    }
+}
+
+fn push_range_updates(lines: &mut Vec<Line<'static>>, updates: &[RangeUpdate]) {
+    let mut by_consumer: BTreeMap<&str, Vec<&RangeUpdate>> = BTreeMap::new();
+    for update in updates {
+        by_consumer
+            .entry(update.consumer.as_str())
+            .or_default()
+            .push(update);
+    }
+
+    for (consumer, updates) in by_consumer {
+        let private = updates.iter().any(|r| r.consumer_private);
+        let suffix = if private {
+            "  (range only, not published)"
+        } else {
+            ""
+        };
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                consumer.to_string(),
+                Style::new().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(suffix, Style::new().fg(Color::Yellow)),
+        ]));
+
+        let mut by_section: BTreeMap<&str, Vec<&RangeUpdate>> = BTreeMap::new();
+        for update in updates {
+            by_section
+                .entry(dep_section(&update.kind))
+                .or_default()
+                .push(update);
+        }
+
+        for (section, updates) in by_section {
+            lines.push(Line::styled(
+                format!("    {section}"),
+                Style::new().fg(Color::DarkGray),
+            ));
+            let dep_width = updates
+                .iter()
+                .map(|r| r.dep.chars().count())
+                .max()
+                .unwrap_or(0);
+            for update in updates {
+                lines.push(Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(
+                        format!("{:<dep_width$}", update.dep),
+                        Style::new().fg(ACCENT),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(update.old_range.clone(), Style::new().fg(Color::DarkGray)),
+                    Span::raw(" → "),
+                    Span::styled(update.new_range.clone(), Style::new().fg(Color::Green)),
+                ]));
+            }
+        }
+    }
+}
+
+fn bump_label(note: &str) -> String {
+    note.split([',', '—'])
+        .next()
+        .unwrap_or(note)
+        .trim()
+        .replace("mirror ", "")
+}
+
+fn friendly_reason(note: &str) -> String {
+    if let Some(dep) = note.strip_prefix("mirror ") {
+        if let Some((bump, dep)) = dep.split_once(" — peerDep on ") {
+            return format!("peer dependency {dep} was bumped; mirroring {bump}");
+        }
+    }
+    if let Some((bump, dep)) = note.split_once(" — depends on ") {
+        return format!("dependency {dep} was bumped; applying {bump}");
+    }
+    note.to_string()
 }
 
 fn section(title: &'static str) -> Line<'static> {
@@ -187,6 +291,7 @@ fn section(title: &'static str) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::DepKind;
     use crate::summary::{RangeUpdate, VersionChange};
 
     fn plan() -> Plan {
@@ -210,6 +315,7 @@ mod tests {
             range_updates: vec![RangeUpdate {
                 consumer: "@x/app".into(),
                 dep: "@x/core".into(),
+                kind: DepKind::PeerDep,
                 old_range: "^1.0.0".into(),
                 new_range: "^2.0.0".into(),
                 consumer_private: true,
@@ -237,19 +343,34 @@ mod tests {
             &plan(),
             " packages/core/package.json | 2 +-\n",
             false,
+            "release/2026-07-02",
+            "chore(release): @x/core@2.0.0",
         ));
-        assert!(out.contains("Packages to release"));
+        assert!(out.contains("Packages"));
+        assert!(out.contains("Selected by you"));
+        assert!(out.contains("Added by dependency rules"));
         assert!(out.contains("@x/core"));
         assert!(out.contains("1.0.0 → 2.0.0"));
-        assert!(out.contains("Internal dependency ranges"));
+        assert!(out.contains("Dependency Range Updates"));
+        assert!(out.contains("peerDependencies"));
+        assert!(out.contains("dependency @x/core was bumped; applying patch"));
         assert!(out.contains("(range only, not published)"));
         assert!(out.contains("Changed files"));
         assert!(out.contains("packages/core/package.json"));
+        assert!(out.contains("After Confirm"));
+        assert!(out.contains("release/2026-07-02"));
+        assert!(out.contains("chore(release): @x/core@2.0.0"));
     }
 
     #[test]
     fn skip_pr_adds_warning_and_empty_diff_is_handled() {
-        let out = text(&review_lines(&plan(), "   ", true));
+        let out = text(&review_lines(
+            &plan(),
+            "   ",
+            true,
+            "release/2026-07-02",
+            "chore(release): @x/core@2.0.0",
+        ));
         assert!(out.contains("No file changes."));
         assert!(out.contains("gh CLI unavailable"));
     }

@@ -84,6 +84,8 @@ impl Prompt for ScriptedPrompt {
         _plan: &otf_release_core::summary::Plan,
         _diff_stat: &str,
         _skip_pr: bool,
+        _release_branch: &str,
+        _commit_title: &str,
     ) -> Result<bool> {
         Ok(true)
     }

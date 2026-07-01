@@ -296,6 +296,7 @@ pub fn orchestrate_many(
                     range_updates.push(RangeUpdate {
                         consumer: p.name.clone(),
                         dep: dep.name.clone(),
+                        kind: dep.kind.clone(),
                         old_range: dep.range.clone(),
                         new_range: ctx.adapter.format_range(new_dep_ver),
                         consumer_private: !p.publishable,
@@ -384,7 +385,19 @@ pub fn orchestrate_many(
 
     // 9. Final review: show the actual files and diff produced by the release edits. On cancel,
     // discard only the generated release-branch changes and return to the original branch.
-    if !prompt.confirm(&plan, &git.diff_stat()?, opts.skip_pr)? {
+    let mut titles: Vec<String> = selected
+        .keys()
+        .map(|n| format!("{n}@{}", new_versions[n]))
+        .collect();
+    titles.sort();
+    let commit_title = format!("chore(release): {}", titles.join(", "));
+    if !prompt.confirm(
+        &plan,
+        &git.diff_stat()?,
+        opts.skip_pr,
+        &release_branch,
+        &commit_title,
+    )? {
         git.reset_hard()?;
         git.checkout_branch(&branch)?;
         println!("Cancelled. Generated release changes were discarded.");
@@ -392,12 +405,6 @@ pub fn orchestrate_many(
     }
 
     // 10. Commit, push, open the PR.
-    let mut titles: Vec<String> = selected
-        .keys()
-        .map(|n| format!("{n}@{}", new_versions[n]))
-        .collect();
-    titles.sort();
-    let commit_title = format!("chore(release): {}", titles.join(", "));
     git.add_all()?;
     git.commit(&commit_title)?;
     git.push_branch(&release_branch)?;
@@ -739,7 +746,14 @@ mod tests {
                 .collect())
         }
 
-        fn confirm(&self, _: &crate::summary::Plan, _: &str, _: bool) -> Result<bool> {
+        fn confirm(
+            &self,
+            _: &crate::summary::Plan,
+            _: &str,
+            _: bool,
+            _: &str,
+            _: &str,
+        ) -> Result<bool> {
             Ok(true)
         }
 
@@ -758,7 +772,14 @@ mod tests {
             Ok(self.bumps.clone())
         }
 
-        fn confirm(&self, _: &crate::summary::Plan, _: &str, _: bool) -> Result<bool> {
+        fn confirm(
+            &self,
+            _: &crate::summary::Plan,
+            _: &str,
+            _: bool,
+            _: &str,
+            _: &str,
+        ) -> Result<bool> {
             Ok(true)
         }
 
@@ -881,7 +902,14 @@ mod tests {
                 panic!("prompt should not be reached when the working tree is dirty");
             }
 
-            fn confirm(&self, _: &crate::summary::Plan, _: &str, _: bool) -> Result<bool> {
+            fn confirm(
+                &self,
+                _: &crate::summary::Plan,
+                _: &str,
+                _: bool,
+                _: &str,
+                _: &str,
+            ) -> Result<bool> {
                 panic!("prompt should not be reached when the working tree is dirty");
             }
 

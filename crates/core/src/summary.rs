@@ -9,6 +9,8 @@ use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Cell, Padding, Row, Table, Widget};
 
+use crate::adapter::DepKind;
+
 /// A version change for one publishable package.
 #[derive(Debug, Clone)]
 pub struct VersionChange {
@@ -26,6 +28,7 @@ pub struct VersionChange {
 pub struct RangeUpdate {
     pub consumer: String,
     pub dep: String,
+    pub kind: DepKind,
     pub old_range: String,
     pub new_range: String,
     /// True for private apps: the range is updated but the package is never published.
@@ -80,6 +83,7 @@ pub fn render(plan: &Plan) -> String {
             .map(|r| {
                 vec![
                     r.consumer.clone(),
+                    dep_section(&r.kind).to_string(),
                     r.dep.clone(),
                     r.old_range.clone(),
                     "→".to_string(),
@@ -96,13 +100,29 @@ pub fn render(plan: &Plan) -> String {
         render_table(
             &mut out,
             "Internal Range Updates",
-            &["Consumer", "Dependency", "Old", "", "New", "Notes"],
+            &[
+                "Consumer",
+                "Section",
+                "Dependency",
+                "Old",
+                "",
+                "New",
+                "Notes",
+            ],
             &rows,
         );
         out.push('\n');
     }
 
     out
+}
+
+pub fn dep_section(kind: &DepKind) -> &'static str {
+    match kind {
+        DepKind::Dep => "dependencies",
+        DepKind::PeerDep => "peerDependencies",
+        DepKind::DevDep => "devDependencies",
+    }
 }
 
 fn render_table(out: &mut String, title: &str, headers: &[&str], rows: &[Vec<String>]) {
@@ -204,6 +224,7 @@ mod tests {
             range_updates: vec![RangeUpdate {
                 consumer: "playground".into(),
                 dep: "@opentf/core".into(),
+                kind: DepKind::Dep,
                 old_range: "^1.2.0".into(),
                 new_range: "^2.0.0".into(),
                 consumer_private: true,

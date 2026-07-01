@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **version** — Release review now groups selected packages, dependency-rule bumps, dependency
+  range updates by package and dependency section, and the exact branch/commit created after
+  confirmation.
 - **version** — After creating and pushing the release branch, the command now prints a completion
   summary before PR and cleanup prompts so the next prompt has clear context.
 

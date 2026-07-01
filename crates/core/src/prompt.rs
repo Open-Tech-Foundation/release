@@ -14,7 +14,14 @@ pub trait Prompt {
     /// Choose release candidates grouped by bump type.
     fn choose_bumps(&self, pending: &[&Pkg]) -> Result<HashMap<String, Bump>>;
     /// Show the computed plan + changed-file summary and ask for final confirmation.
-    fn confirm(&self, plan: &crate::summary::Plan, diff_stat: &str, skip_pr: bool) -> Result<bool>;
+    fn confirm(
+        &self,
+        plan: &crate::summary::Plan,
+        diff_stat: &str,
+        skip_pr: bool,
+        release_branch: &str,
+        commit_title: &str,
+    ) -> Result<bool>;
     /// Ask whether to return to main and delete the local release branch after it has been pushed.
     fn confirm_post_release_cleanup(&self, release_branch: &str) -> Result<bool>;
 }
@@ -66,8 +73,15 @@ impl Prompt for StdinPrompt {
         Ok(selected)
     }
 
-    fn confirm(&self, plan: &crate::summary::Plan, diff_stat: &str, skip_pr: bool) -> Result<bool> {
-        crate::review::run(plan, diff_stat, skip_pr)
+    fn confirm(
+        &self,
+        plan: &crate::summary::Plan,
+        diff_stat: &str,
+        skip_pr: bool,
+        release_branch: &str,
+        commit_title: &str,
+    ) -> Result<bool> {
+        crate::review::run(plan, diff_stat, skip_pr, release_branch, commit_title)
     }
 
     fn confirm_post_release_cleanup(&self, release_branch: &str) -> Result<bool> {
