@@ -1525,12 +1525,10 @@ mod tests {
             name: name.to_string(),
             version: "1.0.0".to_string(),
             manifest_path: PathBuf::from(manifest_path),
-            changelog_path: PathBuf::from(
-                Path::new(manifest_path)
-                    .parent()
-                    .unwrap_or_else(|| Path::new("."))
-                    .join("CHANGELOG.md"),
-            ),
+            changelog_path: Path::new(manifest_path)
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("CHANGELOG.md"),
             publishable: true,
             internal_deps: vec![],
         }

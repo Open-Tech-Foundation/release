@@ -409,8 +409,15 @@ pub fn orchestrate_many(
         forge.open_pr(&release_branch, &commit_title, &summary_text)?;
         println!("Opened release PR from `{release_branch}`.");
     }
+    println!("{}", post_release_next_steps(&release_branch));
 
     Ok(())
+}
+
+fn post_release_next_steps(release_branch: &str) -> String {
+    format!(
+        "\nNext steps:\n  git switch main\n  git pull\n  git branch -D {release_branch}\n\nThis deletes only the local release branch after the pushed PR branch exists."
+    )
 }
 
 /// Raise every bumped member of each lockstep group to the strongest (max) bump in its group, so
@@ -924,6 +931,15 @@ mod tests {
         );
         assert_eq!(*a.lockfile_updates.borrow(), 1);
         assert_eq!(*b.lockfile_updates.borrow(), 1);
+    }
+
+    #[test]
+    fn post_release_next_steps_return_to_main_and_delete_local_branch() {
+        let out = post_release_next_steps("release/2026-06-28");
+        assert!(out.contains("git switch main"));
+        assert!(out.contains("git pull"));
+        assert!(out.contains("git branch -D release/2026-06-28"));
+        assert!(out.contains("local release branch"));
     }
 
     #[test]

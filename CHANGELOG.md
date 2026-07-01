@@ -13,6 +13,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ### Fixed
 - **workflow** — Generated matrix build jobs now omit the cross-toolchain install step when none
   of the selected targets need cross-compilation, avoiding a no-op step in native-only matrices.
+- **version** — After pushing the release branch and opening or skipping PR creation, the command
+  now prints next-step commands to return to `main` and delete the local release branch.
 - **workflow** — Regenerated the repository release workflow and updated its matrix package
   config to the current `otf-release build` placeholders, so post-release pushes skip existing tags
   and real releases stage binaries correctly.
