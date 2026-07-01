@@ -71,9 +71,9 @@ fn draw(f: &mut Frame, lines: &[Line<'static>], scroll: u16) {
     f.render_widget(body_widget, body);
 
     let footer_line = Line::from(vec![
-        key_hint("y/⏎", "create PR", Color::Green),
-        Span::raw("    "),
-        key_hint("n/esc", "cancel", Color::Red),
+        key_hint("Yes", "y/enter", Color::Green),
+        Span::styled("  |  ", Style::new().fg(Color::DarkGray)),
+        key_hint("No", "n/esc", Color::Red),
         Span::raw("    "),
         key_hint("↑↓ jk", "scroll", ACCENT),
     ]);

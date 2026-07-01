@@ -3,7 +3,7 @@
 //! spacebar multi-select, and confirm prompts.
 
 use anyhow::Result;
-use inquire::{Confirm, MultiSelect, Select};
+use inquire::{MultiSelect, Select};
 
 use crate::adapter::{Bump, Pkg};
 
@@ -95,10 +95,14 @@ impl Prompt for StdinPrompt {
     }
 
     fn confirm_post_release_cleanup(&self, release_branch: &str) -> Result<bool> {
-        Ok(Confirm::new(&format!(
-            "Post-release cleanup: switch to main, pull tags, and delete local branch `{release_branch}`?"
-        ))
-        .with_default(true)
-        .prompt()?)
+        Ok(Select::new(
+            &format!(
+                "Post-release cleanup: switch to main, pull tags, and delete local branch `{release_branch}`?"
+            ),
+            vec!["Yes", "No"],
+        )
+        .with_starting_cursor(0)
+        .prompt()?
+            == "Yes")
     }
 }
