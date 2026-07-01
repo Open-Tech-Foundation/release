@@ -11,6 +11,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 ## [0.8.0] - 2026-06-30
 
 ### Fixed
+- **workflow** — Generated matrix build jobs now omit the cross-toolchain install step when none
+  of the selected targets need cross-compilation, avoiding a no-op step in native-only matrices.
 - **workflow** — Regenerated the repository release workflow and updated its matrix package
   config to the current `otf-release build` placeholders, so post-release pushes skip existing tags
   and real releases stage binaries correctly.

@@ -579,12 +579,14 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmT
     ));
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n");
-    // Cross prep is driven by the matrix's own `cross` flag — no per-triple `if:` guesswork.
-    s.push_str("      - name: Install cross toolchain\n");
-    s.push_str("        if: ${{ matrix.cross }}\n");
-    s.push_str("        run: |\n");
-    s.push_str("          sudo apt-get update\n");
-    s.push_str("          sudo apt-get install -y gcc-${{ matrix.arch }}-linux-gnu\n");
+    // Cross prep is driven by the selected target set and each matrix row's `cross` flag.
+    if entry.targets.iter().any(|target| target.is_cross()) {
+        s.push_str("      - name: Install cross toolchain\n");
+        s.push_str("        if: ${{ matrix.cross }}\n");
+        s.push_str("        run: |\n");
+        s.push_str("          sudo apt-get update\n");
+        s.push_str("          sudo apt-get install -y gcc-${{ matrix.arch }}-linux-gnu\n");
+    }
     let (rust, node) = build_toolchains(entry);
     if rust {
         s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
@@ -1752,7 +1754,7 @@ mod tests {
         ));
         // The tool drives the build + staging per target; no `# edit me`, no inline triple list.
         assert!(out.contains("        run: otf-release build --package opentf-release --target ${{ matrix.name }}/${{ matrix.arch }}\n"));
-        assert!(out.contains("        if: ${{ matrix.cross }}\n"));
+        assert!(!out.contains("      - name: Install cross toolchain\n"));
         assert!(!out.contains("# edit me: cross-compile"));
         assert!(!out.contains("# edit me: choose a runner"));
         assert!(!out.contains("rust_target"));
@@ -1801,6 +1803,8 @@ mod tests {
             }],
         };
         let out = render_workflow(&config);
+        assert!(out.contains("      - name: Install cross toolchain\n"));
+        assert!(out.contains("        if: ${{ matrix.cross }}\n"));
         // The binaries flow to publish (needs build, merges artifacts, runs --artifacts-dir)…
         assert!(out.contains("  publish:\n"));
         assert!(out.contains("    needs: [check-release, build-opentf-web-compiler]\n"));
