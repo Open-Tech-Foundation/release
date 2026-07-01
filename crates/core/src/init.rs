@@ -205,6 +205,7 @@ pub fn orchestrate(
         packages,
         snapshot_tag: None,
         tag_format,
+        legacy_tag_formats: Vec::new(),
         provider: prompt.prompt_provider()?,
         changelog_strategy: ChangelogStrategy::Curated,
         changelog_scope: prompt.prompt_changelog_scope()?,
@@ -1604,6 +1605,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -1632,6 +1634,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -1670,6 +1673,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -1696,6 +1700,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -1715,6 +1720,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -1732,6 +1738,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -1779,6 +1786,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "v{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -1820,6 +1828,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -1875,6 +1884,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "v{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Root,
@@ -1901,6 +1911,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -1954,6 +1965,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -1978,6 +1990,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -2004,6 +2017,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -2027,6 +2041,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -2052,6 +2067,7 @@ mod tests {
         let config = ReleaseConfig {
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,

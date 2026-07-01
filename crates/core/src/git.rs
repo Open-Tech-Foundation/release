@@ -11,9 +11,9 @@ use anyhow::{bail, Context, Result};
 
 /// Read-only repository state preflight needs.
 pub trait RepoState {
-    /// The highest-versioned tag matching the configured tag format, or `None` if it has never
+    /// The highest-versioned tag matching any configured tag format, or `None` if it has never
     /// shipped.
-    fn last_tag(&self, pkg_name: &str, tag_format: &str) -> Result<Option<String>>;
+    fn last_tag(&self, pkg_name: &str, tag_formats: &[String]) -> Result<Option<String>>;
 
     /// Number of commits since `tag` that touched `pkg_dir` (scoped to the package directory,
     /// so shared root files like the lockfile or CI config don't falsely dirty it).
@@ -40,13 +40,15 @@ pub fn short_hash(root: &Path) -> Result<String> {
 }
 
 impl RepoState for GitRepo {
-    fn last_tag(&self, pkg_name: &str, tag_format: &str) -> Result<Option<String>> {
+    fn last_tag(&self, pkg_name: &str, tag_formats: &[String]) -> Result<Option<String>> {
         let stdout = run_git(&self.root, &["tag", "--list"])?;
         let best = stdout
             .lines()
-            .filter_map(|line| {
-                let version = version_from_tag(line, tag_format, pkg_name)?;
-                parse_semver(version).map(|sv| (sv, line.to_string()))
+            .flat_map(|line| {
+                tag_formats.iter().filter_map(move |format| {
+                    let version = version_from_tag(line, format, pkg_name)?;
+                    parse_semver(version).map(|sv| (sv, line.to_string()))
+                })
             })
             .max_by_key(|(sv, _)| *sv)
             .map(|(_, tag)| tag);
@@ -247,14 +249,31 @@ mod tests {
 
         let repo = GitRepo::new(root);
         assert_eq!(
-            repo.last_tag("a", "{name}@{version}").unwrap().as_deref(),
+            repo.last_tag("a", &["{name}@{version}".to_string()])
+                .unwrap()
+                .as_deref(),
             Some("a@1.10.0")
         );
-        assert_eq!(repo.last_tag("ghost", "{name}@{version}").unwrap(), None);
+        assert_eq!(
+            repo.last_tag("ghost", &["{name}@{version}".to_string()])
+                .unwrap(),
+            None
+        );
         git(root, &["tag", "v2.0.0"]);
         git(root, &["tag", "v1.9.0"]);
         assert_eq!(
-            repo.last_tag("a", "v{version}").unwrap().as_deref(),
+            repo.last_tag("a", &["v{version}".to_string()])
+                .unwrap()
+                .as_deref(),
+            Some("v2.0.0")
+        );
+        assert_eq!(
+            repo.last_tag(
+                "a",
+                &["v{version}".to_string(), "{name}@{version}".to_string()]
+            )
+            .unwrap()
+            .as_deref(),
             Some("v2.0.0")
         );
 

@@ -15,14 +15,15 @@ Every violation is collected and printed at once; the process exits non-zero **b
 ## State derivation
 
 For every **non-private** package, state comes from its last git tag matching
-`release.toml`'s global `tag_format`:
+`release.toml`'s global `tag_format` or any configured `legacy_tag_formats`:
 
 ```
 git log <tag>.. -- <pkg path>
 ```
 
 The default format is `v{version}`. Repos that want package-scoped tags can set
-`tag_format = "{name}@{version}"`.
+`tag_format = "{name}@{version}"`. Repos migrating tag schemes can keep writing new tags with
+`tag_format` while reading old history with `legacy_tag_formats = ["{name}@{version}"]`.
 
 The diff is **scoped to the package directory** so shared root files (lockfile, CI config)
 don't falsely mark a package as changed.

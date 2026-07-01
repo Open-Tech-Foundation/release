@@ -25,15 +25,15 @@ pub struct Violation {
 pub struct CheckOptions {
     /// Permit publishable packages with no prior matching release tag.
     pub allow_first_release: bool,
-    /// Configured git tag format.
-    pub tag_format: String,
+    /// Configured git tag formats used to find prior releases.
+    pub tag_formats: Vec<String>,
 }
 
 impl Default for CheckOptions {
     fn default() -> Self {
         Self {
             allow_first_release: false,
-            tag_format: crate::config::DEFAULT_TAG_FORMAT.to_string(),
+            tag_formats: vec![crate::config::DEFAULT_TAG_FORMAT.to_string()],
         }
     }
 }
@@ -67,7 +67,7 @@ pub fn check_with_options(
         let selected_for_bump = selected.iter().any(|name| name == &pkg.name);
         let pkg_dir = pkg.manifest_path.parent().unwrap_or_else(|| Path::new("."));
 
-        let violation = match repo.last_tag(&pkg.name, &opts.tag_format)? {
+        let violation = match repo.last_tag(&pkg.name, &opts.tag_formats)? {
             // First releases are explicit so accidentally untagged packages do not slip through.
             None if !opts.allow_first_release => {
                 Some("first release requires --first-release".to_string())
@@ -128,7 +128,7 @@ mod tests {
     }
 
     impl RepoState for FakeRepo {
-        fn last_tag(&self, pkg_name: &str, _: &str) -> Result<Option<String>> {
+        fn last_tag(&self, pkg_name: &str, _: &[String]) -> Result<Option<String>> {
             Ok(self.tags.get(pkg_name).cloned())
         }
         fn commit_count_since(&self, tag: &str, _pkg_dir: &Path) -> Result<usize> {

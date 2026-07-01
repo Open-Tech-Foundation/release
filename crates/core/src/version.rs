@@ -169,13 +169,14 @@ pub fn orchestrate_many(
         .iter()
         .flat_map(|ctx| ctx.packages.iter().cloned())
         .collect();
+    let history_tag_formats = config.history_tag_formats();
     let violations = preflight::check_with_options(
         repo,
         &all_packages,
         &[],
         preflight::CheckOptions {
             allow_first_release: opts.first_release,
-            tag_format: config.tag_format.clone(),
+            tag_formats: history_tag_formats.clone(),
         },
     )?;
     if !violations.is_empty() {
@@ -189,7 +190,7 @@ pub fn orchestrate_many(
 
     for p in &all_packages {
         if is_generated {
-            let last = repo.last_tag(&p.name, &config.tag_format)?;
+            let last = repo.last_tag(&p.name, &history_tag_formats)?;
             let notes = repo.commits_since(last.as_deref(), p.manifest_path.parent().unwrap())?;
             generated_notes.insert(p.name.as_str(), notes.clone());
             empties.insert(p.name.as_str(), notes.is_empty());
@@ -609,7 +610,7 @@ mod tests {
     struct FakeRepo;
 
     impl RepoState for FakeRepo {
-        fn last_tag(&self, pkg_name: &str, _: &str) -> Result<Option<String>> {
+        fn last_tag(&self, pkg_name: &str, _: &[String]) -> Result<Option<String>> {
             Ok(Some(format!("{pkg_name}@1.0.0")))
         }
 

@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Fixed
+- **version** — Added `legacy_tag_formats` so repos can migrate tag schemes without rewriting old
+  tags; preflight and generated changelog notes read both current and legacy formats while new
+  release tags still use `tag_format`.
+
 ## [0.8.0] - 2026-06-30
 
 ### Fixed

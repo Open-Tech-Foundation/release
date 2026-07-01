@@ -43,6 +43,7 @@ pub enum GlobalField {
     Provider,
     SnapshotTag,
     TagFormat,
+    LegacyTagFormats,
     ChangelogScope,
     ChangelogStrategy,
     GithubReleaseNotes,
@@ -185,6 +186,7 @@ impl ConfigPrompt for StdinConfigPrompt {
             "Provider",
             "Snapshot tag",
             "Tag format",
+            "Legacy tag formats",
             "Changelog scope",
             "Changelog strategy",
             "GitHub Release notes",
@@ -195,6 +197,7 @@ impl ConfigPrompt for StdinConfigPrompt {
                 "Provider" => GlobalField::Provider,
                 "Snapshot tag" => GlobalField::SnapshotTag,
                 "Tag format" => GlobalField::TagFormat,
+                "Legacy tag formats" => GlobalField::LegacyTagFormats,
                 "Changelog scope" => GlobalField::ChangelogScope,
                 "Changelog strategy" => GlobalField::ChangelogStrategy,
                 "GitHub Release notes" => GlobalField::GithubReleaseNotes,
@@ -381,6 +384,13 @@ fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfi
             config.tag_format = tag_format;
             save(root, config)
         }
+        GlobalField::LegacyTagFormats => {
+            let current = config.legacy_tag_formats.join(", ");
+            let edited = prompt.text("Legacy tag formats (comma-separated):", &current)?;
+            let legacy_tag_formats = parse_legacy_tag_formats(&edited)?;
+            config.legacy_tag_formats = legacy_tag_formats;
+            save(root, config)
+        }
         GlobalField::ChangelogScope => {
             config.changelog_scope = prompt.changelog_scope(&config.changelog_scope)?;
             save(root, config)
@@ -421,6 +431,14 @@ fn parse_csv(text: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+fn parse_legacy_tag_formats(text: &str) -> Result<Vec<String>> {
+    let formats = parse_csv(text);
+    for format in &formats {
+        format_tag(format, "package", "1.2.3")?;
+    }
+    Ok(formats)
 }
 
 fn optional_text(text: String) -> Option<String> {
@@ -676,6 +694,14 @@ mod tests {
         .unwrap();
         cfg = ReleaseConfig::load(tmp.path()).unwrap();
         assert_eq!(cfg.tag_format, "{name}@{version}");
+
+        orchestrate_with_prompt(
+            tmp.path(),
+            &global_prompt(GlobalField::LegacyTagFormats, vec!["{name}@{version}"]),
+        )
+        .unwrap();
+        cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(cfg.legacy_tag_formats, vec!["{name}@{version}"]);
 
         orchestrate_with_prompt(
             tmp.path(),

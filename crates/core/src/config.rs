@@ -359,6 +359,9 @@ pub struct ReleaseConfig {
     /// Git tag format for releases. Supports `{version}` and optional `{name}` placeholders.
     #[serde(default = "default_tag_format")]
     pub tag_format: String,
+    /// Older tag formats to read as release history while writing new tags with `tag_format`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legacy_tag_formats: Vec<String>,
     /// Git hosting provider (e.g. "github", "gitlab").
     #[serde(default = "default_provider")]
     pub provider: String,
@@ -411,6 +414,7 @@ impl Default for ReleaseConfig {
             packages: Vec::new(),
             snapshot_tag: None,
             tag_format: default_tag_format(),
+            legacy_tag_formats: Vec::new(),
             provider: default_provider(),
             changelog_strategy: ChangelogStrategy::default(),
             changelog_scope: ChangelogScope::default(),
@@ -427,6 +431,13 @@ pub fn format_tag(format: &str, name: &str, version: &str) -> Result<String> {
 }
 
 impl ReleaseConfig {
+    /// Tag formats used to find prior releases. New tags are still written only with `tag_format`.
+    pub fn history_tag_formats(&self) -> Vec<String> {
+        std::iter::once(self.tag_format.clone())
+            .chain(self.legacy_tag_formats.iter().cloned())
+            .collect()
+    }
+
     /// The path to `release.toml` under `root`.
     pub fn path(root: &Path) -> PathBuf {
         root.join(CONFIG_FILE)
@@ -488,6 +499,7 @@ mod tests {
         let cfg = ReleaseConfig {
             snapshot_tag: None,
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
@@ -548,6 +560,7 @@ mod tests {
         let cfg = ReleaseConfig {
             snapshot_tag: None,
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
+            legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
