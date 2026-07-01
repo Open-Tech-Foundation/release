@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-01
+
 ### Fixed
 - **release assets** — GitHub Release binaries are now named as public downloads with the binary
   name, OS, and architecture (for example `otf-release-linux-x86-64`) instead of leaking internal
