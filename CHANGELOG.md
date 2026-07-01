@@ -8,12 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
-## [0.10.0] - 2026-07-01
-
-### Fixed
 - **version** — First releases no longer require a global `--first-release` override; publishable
   packages without prior tags are allowed when they have release notes, and `skip_publish` can
   exclude packages that should not be managed by the tool.
+
+## [0.10.0] - 2026-07-01
+
+### Fixed
 - **release assets** — GitHub Release binaries are now named as public downloads with the binary
   name, OS, and architecture (for example `otf-release-linux-x86-64`) instead of leaking internal
   staging directories such as `darwin-arm64` or `win32-x64.exe`.
