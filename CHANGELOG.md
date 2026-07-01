@@ -8,11 +8,6 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-07-01
-
-- **version** — First releases no longer require a global `--first-release` override; publishable
-  packages without prior tags are allowed when they have release notes, and `skip_publish` can
-  exclude packages that should not be managed by the tool.
 - **version** — After pushing the release branch, the command now asks before switching back to
   `main`, pulling tags, and deleting the local release branch; declining still prints the manual
   post-release cleanup commands.
@@ -23,6 +18,12 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 - **npm** — Lockfile refresh now uses the repo's detected package manager instead of always
   running `npm install --package-lock-only`, fixing Bun/pnpm/Yarn workspaces that use
   `workspace:` ranges.
+
+## [0.11.0] - 2026-07-01
+
+- **version** — First releases no longer require a global `--first-release` override; publishable
+  packages without prior tags are allowed when they have release notes, and `skip_publish` can
+  exclude packages that should not be managed by the tool.
 
 ## [0.10.0] - 2026-07-01
 
