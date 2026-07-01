@@ -96,7 +96,7 @@ impl Prompt for StdinPrompt {
 
     fn confirm_post_release_cleanup(&self, release_branch: &str) -> Result<bool> {
         Ok(Confirm::new(&format!(
-            "Switch to main, pull, and delete local branch `{release_branch}`?"
+            "Post-release cleanup: switch to main, pull tags, and delete local branch `{release_branch}`?"
         ))
         .with_default(true)
         .prompt()?)

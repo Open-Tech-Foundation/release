@@ -166,7 +166,7 @@ impl GitOps for GitRepo {
 
     fn return_to_main(&self) -> Result<()> {
         run_git(&self.root, &["switch", "main"])?;
-        run_git(&self.root, &["pull"])?;
+        run_git(&self.root, &["pull", "--tags"])?;
         Ok(())
     }
 

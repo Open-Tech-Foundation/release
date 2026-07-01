@@ -421,7 +421,7 @@ pub fn orchestrate_many(
 
 fn post_release_next_steps(release_branch: &str) -> String {
     format!(
-        "\nNext steps:\n  git switch main\n  git pull\n  git branch -D {release_branch}\n\nThis deletes only the local release branch after the pushed PR branch exists."
+        "\nPost-release cleanup:\n  git switch main\n  git pull --tags\n  git branch -D {release_branch}\n\nThis deletes only the local release branch after the pushed PR branch exists."
     )
 }
 
@@ -968,7 +968,7 @@ mod tests {
     fn post_release_next_steps_return_to_main_and_delete_local_branch() {
         let out = post_release_next_steps("release/2026-06-28");
         assert!(out.contains("git switch main"));
-        assert!(out.contains("git pull"));
+        assert!(out.contains("git pull --tags"));
         assert!(out.contains("git branch -D release/2026-06-28"));
         assert!(out.contains("local release branch"));
     }

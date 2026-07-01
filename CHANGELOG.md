@@ -14,8 +14,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   packages without prior tags are allowed when they have release notes, and `skip_publish` can
   exclude packages that should not be managed by the tool.
 - **version** — After pushing the release branch, the command now asks before switching back to
-  `main`, pulling, and deleting the local release branch; declining still prints the manual
-  cleanup commands.
+  `main`, pulling tags, and deleting the local release branch; declining still prints the manual
+  post-release cleanup commands.
 
 ## [0.10.0] - 2026-07-01
 
