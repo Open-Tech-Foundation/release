@@ -70,7 +70,9 @@ an unresolvable `workspace:*` range.
 After version writes, refresh the npm lockfile so CI installs do not drift from the manifests.
 This runs in the **same commit** as the version changes (see
 [version step 9](../commands/version.md)). Generated release workflows use the repo's root
-lockfile to choose the install command: Bun, pnpm, Yarn, or npm.
+lockfile to choose the install command: Bun, pnpm, Yarn, or npm. The local version flow uses the
+same lockfile detection when refreshing the lockfile, so Bun/pnpm/Yarn workspaces do not fall back
+to `npm install --package-lock-only`.
 
 ## Range syntax (`format_range`)
 

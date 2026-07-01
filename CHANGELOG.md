@@ -20,6 +20,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   choices instead of only key hints.
 - **version** — Package bump selection now follows a changeset-style flow: choose all major
   packages, then minor, then patch, with a select-all option in each group.
+- **npm** — Lockfile refresh now uses the repo's detected package manager instead of always
+  running `npm install --package-lock-only`, fixing Bun/pnpm/Yarn workspaces that use
+  `workspace:` ranges.
 
 ## [0.10.0] - 2026-07-01
 

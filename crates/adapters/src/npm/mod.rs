@@ -203,11 +203,10 @@ impl Adapter for NpmAdapter {
     }
 
     fn update_lockfile(&self, root: &Path) -> Result<()> {
-        let out = self
-            .runner
-            .run("npm", &["install", "--package-lock-only"], root)?;
+        let (program, args) = lockfile_update_command(root);
+        let out = self.runner.run(program, &args, root)?;
         if !out.success {
-            bail!("`npm install --package-lock-only` failed:\n{}", out.stderr);
+            bail!("`{} {}` failed:\n{}", program, args.join(" "), out.stderr);
         }
         Ok(())
     }
@@ -283,6 +282,18 @@ fn skip_reason(manifest: &Manifest) -> Result<Option<String>> {
         (false, true) => Some("missing \"version\"".to_string()),
         (false, false) => None,
     })
+}
+
+fn lockfile_update_command(root: &Path) -> (&'static str, Vec<&'static str>) {
+    if root.join("bun.lock").exists() || root.join("bun.lockb").exists() {
+        ("bun", vec!["install", "--lockfile-only"])
+    } else if root.join("pnpm-lock.yaml").exists() {
+        ("pnpm", vec!["install", "--lockfile-only"])
+    } else if root.join("yarn.lock").exists() {
+        ("yarn", vec!["install", "--mode=update-lockfile"])
+    } else {
+        ("npm", vec!["install", "--package-lock-only"])
+    }
 }
 
 /// `dependencies`/`optionalDependencies` -> `Dep`; `peerDependencies` -> `PeerDep`;
@@ -608,6 +619,35 @@ mod tests {
             ["publish", "--access", "public", "--no-workspaces"]
         );
         assert_eq!(calls[0].2, PathBuf::from("/repo/packages/a"));
+    }
+
+    #[test]
+    fn update_lockfile_defaults_to_npm_without_a_known_lockfile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = FakeRunner::new(true, "", "");
+        let adapter = NpmAdapter::with_runner(tmp.path(), Box::new(fake.clone()));
+
+        adapter.update_lockfile(tmp.path()).unwrap();
+
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls[0].0, "npm");
+        assert_eq!(calls[0].1, ["install", "--package-lock-only"]);
+        assert_eq!(calls[0].2, tmp.path());
+    }
+
+    #[test]
+    fn update_lockfile_uses_bun_when_a_bun_lockfile_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("bun.lock"), "").unwrap();
+        let fake = FakeRunner::new(true, "", "");
+        let adapter = NpmAdapter::with_runner(tmp.path(), Box::new(fake.clone()));
+
+        adapter.update_lockfile(tmp.path()).unwrap();
+
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls[0].0, "bun");
+        assert_eq!(calls[0].1, ["install", "--lockfile-only"]);
+        assert_eq!(calls[0].2, tmp.path());
     }
 
     #[test]
