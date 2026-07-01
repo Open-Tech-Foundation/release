@@ -10,6 +10,7 @@ ARCH="$(uname -m)"
 case "$OS" in
     linux) OS_NAME="linux" ;;
     darwin) OS_NAME="macos" ;;
+    mingw*|msys*|cygwin*) OS_NAME="windows" ;;
     *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
 esac
 
@@ -19,7 +20,12 @@ case "$ARCH" in
     *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 
-ASSET_NAME="${BIN_NAME}-${OS_NAME}-${ARCH_NAME}"
+EXE=""
+if [ "$OS_NAME" = "windows" ]; then
+    EXE=".exe"
+fi
+
+ASSET_NAME="${BIN_NAME}-${OS_NAME}-${ARCH_NAME}${EXE}"
 
 # Download to a temp file first. Nothing touches the installed binary until the
 # download has been fetched AND verified, so a failed/bogus response can never
@@ -47,6 +53,7 @@ MAGIC="$(dd if="$TMP_FILE" bs=4 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
 case "$MAGIC" in
     7f454c46*) ;;                                          # ELF (Linux)
     feedface*|feedfacf*|cafebabe*|cffaedfe*|cefaedfe*) ;;  # Mach-O (macOS)
+    4d5a*) ;;                                              # PE/COFF (Windows)
     *)
         echo "Error: downloaded file is not an executable binary." >&2
         case "$MAGIC" in
@@ -60,14 +67,28 @@ esac
 
 chmod +x "$TMP_FILE"
 
-INSTALL_DIR="/usr/local/bin"
-DEST="$INSTALL_DIR/$BIN_NAME"
-if [ ! -w "$INSTALL_DIR" ]; then
+if [ "$OS_NAME" = "windows" ]; then
+    INSTALL_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
+    mkdir -p "$INSTALL_DIR"
+else
+    INSTALL_DIR="/usr/local/bin"
+fi
+
+DEST="$INSTALL_DIR/$BIN_NAME$EXE"
+if [ "$OS_NAME" != "windows" ] && [ ! -w "$INSTALL_DIR" ]; then
     echo "Requires sudo to install to $INSTALL_DIR"
     sudo mv "$TMP_FILE" "$DEST"
 else
     mv "$TMP_FILE" "$DEST"
 fi
 trap - EXIT INT TERM  # installed successfully; temp file has been moved
+
+if [ -n "${GITHUB_PATH:-}" ]; then
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -w "$INSTALL_DIR" >> "$GITHUB_PATH"
+    else
+        printf '%s\n' "$INSTALL_DIR" >> "$GITHUB_PATH"
+    fi
+fi
 
 echo "$BIN_NAME installed successfully to $DEST"
