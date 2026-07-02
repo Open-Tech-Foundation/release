@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-07-02
+
 - **internal** — Removed the crate-wide `#![allow(dead_code, unused_variables)]` from the core
   crate so drift warnings (and CI's `-D warnings`) are visible again; removed the one dead local it
   was masking.
