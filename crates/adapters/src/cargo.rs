@@ -1,4 +1,4 @@
-//! The cargo adapter — the Rust / crates.io ecosystem (initial implementation).
+//! The cargo adapter — the Rust / crates.io ecosystem.
 //!
 //! Mirrors the npm adapter over `Cargo.toml`, using `toml_edit` for format-preserving edits.
 //! Cargo differs from npm in ways the roadmap calls out (see `docs/roadmap.md`):

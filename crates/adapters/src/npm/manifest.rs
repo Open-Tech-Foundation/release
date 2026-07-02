@@ -46,6 +46,7 @@ impl Manifest {
     }
 
     /// Construct from in-memory content (used in tests).
+    #[cfg(test)]
     pub fn new(path: PathBuf, content: String) -> Self {
         Self { path, content }
     }

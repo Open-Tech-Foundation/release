@@ -11,6 +11,10 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 - **internal** — Removed the crate-wide `#![allow(dead_code, unused_variables)]` from the core
   crate so drift warnings (and CI's `-D warnings`) are visible again; removed the one dead local it
   was masking.
+- **internal** — Removed the same crate-wide allow from the adapters crate (scoping a test-only
+  constructor to test builds), refreshed stale "npm is the only adapter" doc comments now that
+  cargo and generic are real, and made `last_tag` prefer the stable tag over a same-core-version
+  prerelease so the pick no longer depends on `git tag --list` order.
 - **self-update** — Now compares versions semantically instead of by string equality, so a local
   dev build ahead of the latest release (e.g. `0.15.0` vs a `0.14.0` release) no longer "updates"
   and downgrades itself.

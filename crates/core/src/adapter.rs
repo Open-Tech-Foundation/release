@@ -2,7 +2,7 @@
 //!
 //! Core never reads a `package.json` (or any manifest) directly — every ecosystem-specific
 //! decision (range syntax, cascade rule, publish mechanics, registry lookups) lives behind
-//! this trait. v1 ships exactly one implementation: the npm adapter in `opentf-release-adapters`.
+//! this trait. Implementations live in `otf-release-adapters` (npm, cargo, and generic).
 
 use std::path::{Path, PathBuf};
 

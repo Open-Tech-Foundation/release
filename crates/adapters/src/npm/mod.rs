@@ -1,4 +1,4 @@
-//! The npm adapter — the only implemented adapter in v1.
+//! The npm adapter — the npm / Node ecosystem.
 //!
 //! Baked-in rules & gotchas (see `docs/adapters/npm.md`), already battle-tested:
 //!

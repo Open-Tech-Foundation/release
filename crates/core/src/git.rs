@@ -47,11 +47,16 @@ impl RepoState for GitRepo {
             .flat_map(|line| {
                 tag_formats.iter().filter_map(move |format| {
                     let version = version_from_tag(line, format, pkg_name)?;
-                    parse_semver(version).map(|sv| (sv, line.to_string()))
+                    // `parse_semver` drops the prerelease suffix, so a stable and a prerelease tag
+                    // of the same core version (`v2.0.0` vs `v2.0.0-rc.1`) tie on the semver key.
+                    // Break that tie in favor of the stable tag so the pick is deterministic
+                    // instead of depending on `git tag --list` order.
+                    let is_stable = !version.contains('-');
+                    parse_semver(version).map(|sv| (sv, is_stable, line.to_string()))
                 })
             })
-            .max_by_key(|(sv, _)| *sv)
-            .map(|(_, tag)| tag);
+            .max_by_key(|(sv, is_stable, _)| (*sv, *is_stable))
+            .map(|(_, _, tag)| tag);
         Ok(best)
     }
 
@@ -305,5 +310,28 @@ mod tests {
         write(pkg_dir.join("index.js"), "// code\n");
         commit_all(root, "change package a");
         assert_eq!(repo.commit_count_since("a@1.10.0", &pkg_dir).unwrap(), 1);
+    }
+
+    #[test]
+    fn last_tag_prefers_the_stable_tag_over_a_same_version_prerelease() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        git(root, &["init", "-q"]);
+        write(root.join("f"), "x");
+        commit_all(root, "init");
+
+        // Same core version as both a prerelease and a stable release. `git tag --list` sorts
+        // these lexically (`v3.0.0` before `v3.0.0-rc.1`), so without a tie-break the pick would
+        // depend on that order; the stable tag must win regardless.
+        git(root, &["tag", "v3.0.0-rc.1"]);
+        git(root, &["tag", "v3.0.0"]);
+
+        let repo = GitRepo::new(root);
+        assert_eq!(
+            repo.last_tag("a", &["v{version}".to_string()])
+                .unwrap()
+                .as_deref(),
+            Some("v3.0.0")
+        );
     }
 }
