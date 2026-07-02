@@ -494,7 +494,7 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
     render_workflow_with_npm_tool(config, NpmTool::Npm)
 }
 
-fn render_workflow_for_root(config: &ReleaseConfig, root: &Path) -> String {
+pub(crate) fn render_workflow_for_root(config: &ReleaseConfig, root: &Path) -> String {
     render_workflow_with_npm_tool(config, NpmTool::detect(root))
 }
 

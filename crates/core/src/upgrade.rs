@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use inquire::Confirm;
 
 use crate::config::ReleaseConfig;
-use crate::init::render_workflow;
+use crate::init::render_workflow_for_root;
 
 /// Options for an `upgrade` run.
 #[derive(Debug, Clone, Default)]
@@ -20,7 +20,7 @@ pub struct UpgradeOptions {
 pub fn orchestrate(root: &Path, opts: &UpgradeOptions) -> Result<()> {
     let config = ReleaseConfig::load(root)
         .context("Could not load release.toml. Are you in an initialized repo?")?;
-    let yaml = render_workflow(&config);
+    let yaml = render_workflow_for_root(&config, root);
     let yml_path = root.join(".github/workflows/release.yml");
 
     if yml_path.exists() && !opts.force {
@@ -38,4 +38,57 @@ pub fn orchestrate(root: &Path, opts: &UpgradeOptions) -> Result<()> {
     println!("Upgraded {}", yml_path.display());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use crate::config::{
+        ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Hooks, Mode,
+        PackageEntry, ReleaseConfig,
+    };
+
+    use super::*;
+
+    #[test]
+    fn upgrade_uses_detected_npm_tool_from_repo_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("bun.lock"), "").unwrap();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            skip_publish: Vec::new(),
+            hooks: Hooks::default(),
+            packages: vec![PackageEntry {
+                name: "docs-site".to_string(),
+                adapter: Ecosystem::Npm,
+                mode: Mode::Publish,
+                matrix: false,
+                targets: Vec::new(),
+                command: "npm run build".to_string(),
+                artifacts: "dist/**".to_string(),
+                bin_name: None,
+                compress: None,
+                manifest: None,
+                version_field: None,
+                publish: None,
+            }],
+            snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
+            provider: "github".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
+        };
+        config.save(tmp.path()).unwrap();
+
+        orchestrate(tmp.path(), &UpgradeOptions { force: true }).unwrap();
+
+        let workflow =
+            fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
+        assert!(workflow.contains("      - uses: oven-sh/setup-bun@v2\n"));
+        assert!(workflow.contains("      - run: bun install --frozen-lockfile\n"));
+        assert!(!workflow.contains("      - run: npm ci\n"));
+    }
 }
