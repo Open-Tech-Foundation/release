@@ -246,7 +246,7 @@ pub fn orchestrate_many(
         let graph = Graph::build(&ctx.packages)?;
         let mut bumps = graph.cascade(ctx.adapter, &selected_for_adapter)?;
         // Lockstep crates share one version; reconcile their bumps so they can't diverge.
-        reconcile_version_groups(&mut bumps, &ctx.adapter.version_groups()?);
+        reconcile_version_groups(&mut bumps, &ctx.adapter.version_groups()?)?;
         for (name, bump) in &bumps {
             let pkg = by_name[name.as_str()];
             new_versions.insert(name.clone(), apply_bump(&pkg.version, bump)?);
@@ -440,27 +440,38 @@ fn post_release_next_steps(release_branch: &str) -> String {
     )
 }
 
-/// Raise every bumped member of each lockstep group to the strongest (max) bump in its group, so
+/// Raise every bumped member of each lockstep group to the strongest bump in its group, so
 /// packages versioned together (cargo `version.workspace = true`) resolve to one deterministic
-/// version instead of diverging by the order their manifests were written. Members that received
-/// no bump are left untouched — the adapter still moves them on disk via the shared version, and
-/// `publish` ships them from the bumped working tree.
-fn reconcile_version_groups(bumps: &mut HashMap<String, Bump>, groups: &[Vec<String>]) {
+/// version instead of diverging by the order their manifests were written. "Strongest" is a
+/// prerelease-aware [`Bump::merge`], not a raw enum `max`, so a member bumped into a prerelease
+/// channel drags the whole group into that channel rather than being masked by a stable sibling.
+/// Members that received no bump are left untouched — the adapter still moves them on disk via the
+/// shared version, and `publish` ships them from the bumped working tree. Errors if two members
+/// were pushed into conflicting prerelease channels.
+fn reconcile_version_groups(
+    bumps: &mut HashMap<String, Bump>,
+    groups: &[Vec<String>],
+) -> Result<()> {
     for group in groups {
-        let Some(max) = group
-            .iter()
-            .filter_map(|name| bumps.get(name))
-            .max()
-            .cloned()
-        else {
+        let mut strongest: Option<Bump> = None;
+        for bump in group.iter().filter_map(|name| bumps.get(name)) {
+            strongest = Some(match strongest {
+                None => bump.clone(),
+                Some(acc) => acc.merge(bump).with_context(|| {
+                    format!("reconciling lockstep group [{}]", group.join(", "))
+                })?,
+            });
+        }
+        let Some(strongest) = strongest else {
             continue; // no member of this group was bumped
         };
         for name in group {
             if let Some(slot) = bumps.get_mut(name) {
-                *slot = max.clone();
+                *slot = strongest.clone();
             }
         }
     }
+    Ok(())
 }
 
 /// Apply a bump to an `x.y.z` version (pre-release/build metadata is dropped unless entering/iterating prerelease).
@@ -1081,7 +1092,7 @@ mod tests {
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
             vec!["loner".to_string()],
         ];
-        reconcile_version_groups(&mut bumps, &groups);
+        reconcile_version_groups(&mut bumps, &groups).unwrap();
 
         // a and b were both bumped → both raised to the group max (major).
         assert_eq!(bumps["a"], Bump::Major);
@@ -1090,6 +1101,30 @@ mod tests {
         assert!(!bumps.contains_key("c"));
         // A singleton group is unaffected.
         assert_eq!(bumps["loner"], Bump::Patch);
+    }
+
+    #[test]
+    fn reconcile_version_groups_prerelease_member_pulls_the_group_into_its_channel() {
+        // One member is stable Patch, another entered a beta prerelease. The group must move
+        // together into the prerelease — a stable sibling must not mask the prerelease intent.
+        let mut bumps = HashMap::from([
+            ("a".to_string(), Bump::Patch),
+            ("b".to_string(), Bump::PreMinor("beta".to_string())),
+        ]);
+        let groups = vec![vec!["a".to_string(), "b".to_string()]];
+        reconcile_version_groups(&mut bumps, &groups).unwrap();
+        assert_eq!(bumps["a"], Bump::PreMinor("beta".to_string()));
+        assert_eq!(bumps["b"], Bump::PreMinor("beta".to_string()));
+    }
+
+    #[test]
+    fn reconcile_version_groups_errors_on_conflicting_prerelease_channels() {
+        let mut bumps = HashMap::from([
+            ("a".to_string(), Bump::PreMinor("beta".to_string())),
+            ("b".to_string(), Bump::PreMinor("rc".to_string())),
+        ]);
+        let groups = vec![vec!["a".to_string(), "b".to_string()]];
+        assert!(reconcile_version_groups(&mut bumps, &groups).is_err());
     }
 
     #[test]

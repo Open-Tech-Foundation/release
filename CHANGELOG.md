@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **version** — Cascade and lockstep-group bump merges are now prerelease-aware: a package reached
+  by both a prerelease path (e.g. a peerDep mirroring a `PreMajor` beta) and a stable path no
+  longer silently collapses to the stable bump — the prerelease intent wins, so a stable release
+  can't ship with an internal range pointing at a `-beta` version. Two conflicting prerelease
+  channels reaching one package are now a clear error instead of an order-dependent guess.
+
 ## [0.15.0] - 2026-07-02
 
 - **workflow** — Bun-based npm publish jobs now still configure npm registry auth via

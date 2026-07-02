@@ -2,12 +2,14 @@
 //! engine (for version).
 //!
 //! The cascade is transitive — each newly bumped dependent is re-fed into the walk — and
-//! takes the **max** bump when a package is reached by multiple paths. It **terminates at
-//! private packages**, which are graph leaves that are never versioned or published.
+//! **merges** bumps (via [`crate::adapter::Bump::merge`]) when a package is reached by multiple
+//! paths, so a prerelease reached alongside a stable bump keeps its prerelease intent instead of
+//! being masked by a numerically-larger stable bump. It **terminates at private packages**, which
+//! are graph leaves that are never versioned or published.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 use crate::adapter::{Adapter, Bump, DepKind, Pkg};
 
@@ -120,7 +122,7 @@ impl<'a> Graph<'a> {
             if !self.packages[idx].publishable {
                 continue;
             }
-            if raise(&mut result, name, bump.clone()) {
+            if raise(&mut result, name, bump.clone())? {
                 work.push_back(idx);
             }
         }
@@ -137,7 +139,7 @@ impl<'a> Graph<'a> {
                     continue; // cascade terminates at private leaves
                 }
                 let bump = adapter.dependent_bump(src_bump.clone(), kind);
-                if raise(&mut result, &dep_pkg.name, bump) {
+                if raise(&mut result, &dep_pkg.name, bump)? {
                     work.push_back(*dep_idx);
                 }
             }
@@ -147,13 +149,25 @@ impl<'a> Graph<'a> {
     }
 }
 
-/// Raise `name`'s bump to at least `bump`. Returns `true` if it increased (or was new).
-fn raise(result: &mut HashMap<String, Bump>, name: &str, bump: Bump) -> bool {
+/// Merge `bump` into `name`'s current bump via [`Bump::merge`] (prerelease-aware, not raw enum
+/// order). Returns `true` if the stored bump changed, so the caller re-propagates to dependents.
+/// Errors only on an unresolvable cross-channel conflict, naming the package involved.
+fn raise(result: &mut HashMap<String, Bump>, name: &str, bump: Bump) -> Result<bool> {
     match result.get(name) {
-        Some(existing) if existing >= &bump => false,
-        _ => {
+        Some(existing) => {
+            let merged = existing
+                .merge(&bump)
+                .with_context(|| format!("merging bumps for package `{name}`"))?;
+            if &merged == existing {
+                Ok(false)
+            } else {
+                result.insert(name.to_string(), merged);
+                Ok(true)
+            }
+        }
+        None => {
             result.insert(name.to_string(), bump);
-            true
+            Ok(true)
         }
     }
 }
@@ -288,6 +302,47 @@ mod tests {
         assert_eq!(result.get("sdk"), Some(&Bump::Major)); // peer -> mirror
         assert_eq!(result.get("x"), Some(&Bump::Major)); // max(patch, major)
         assert_eq!(result.get("app"), None, "private leaf is never bumped");
+    }
+
+    #[test]
+    fn cascade_keeps_prerelease_when_merged_with_a_stable_path() {
+        // x is reached two ways from core: a peerDep (mirrors the PreMajor beta) and a plain dep
+        // (patch). The old raw-enum `max` kept Patch — a stable bump whose peer range would point
+        // at `-beta`. The merge must keep the prerelease.
+        let pkgs = vec![
+            pkg("core", true, &[]),
+            pkg(
+                "x",
+                true,
+                &[("core", DepKind::PeerDep), ("core", DepKind::Dep)],
+            ),
+        ];
+        let graph = Graph::build(&pkgs).unwrap();
+        let selected = HashMap::from([("core".to_string(), Bump::PreMajor("beta".to_string()))]);
+        let result = graph.cascade(&FakeAdapter, &selected).unwrap();
+
+        assert_eq!(result.get("x"), Some(&Bump::PreMajor("beta".to_string())));
+    }
+
+    #[test]
+    fn cascade_errors_on_conflicting_prerelease_channels() {
+        // x mirrors two peers going to *different* prerelease channels — unresolvable.
+        let pkgs = vec![
+            pkg("beta-core", true, &[]),
+            pkg("rc-core", true, &[]),
+            pkg(
+                "x",
+                true,
+                &[("beta-core", DepKind::PeerDep), ("rc-core", DepKind::PeerDep)],
+            ),
+        ];
+        let graph = Graph::build(&pkgs).unwrap();
+        let selected = HashMap::from([
+            ("beta-core".to_string(), Bump::PreMajor("beta".to_string())),
+            ("rc-core".to_string(), Bump::PreMajor("rc".to_string())),
+        ]);
+        let err = graph.cascade(&FakeAdapter, &selected).unwrap_err().to_string();
+        assert!(err.contains('x'), "error should name the package: {err}");
     }
 
     #[test]

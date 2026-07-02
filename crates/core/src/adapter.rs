@@ -12,8 +12,13 @@ use crate::config::ChangelogScope;
 
 /// A semantic-version bump level.
 ///
-/// Variants are ordered `Patch < Minor < Major` so that `max(...)` over a set of bumps
-/// (used when a package is reached by several cascade paths) yields the strongest bump.
+/// The derived `Ord` is used only to pick the stronger of two bumps *within the same channel*:
+/// stable bumps order `Patch < Minor < Major`, and prerelease bumps of one channel order
+/// `Prerelease < PrePatch < PreMinor < PreMajor`. It is **not** a meaningful total order across
+/// channels — a stable `Patch` outranking a `PreMajor` by declaration order would silently drop
+/// prerelease intent when a package is reached by several cascade paths. Cross-channel merges go
+/// through [`Bump::merge`] instead, which keeps the prerelease and refuses genuinely ambiguous
+/// mixes (two different prerelease channels).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Bump {
     Graduate,
@@ -24,6 +29,41 @@ pub enum Bump {
     Patch,
     Minor,
     Major,
+}
+
+impl Bump {
+    /// The prerelease channel this bump targets (`beta`, `rc`, …), or `None` for a stable bump
+    /// (`Patch`/`Minor`/`Major`) or a `Graduate` (which produces a stable version).
+    fn prerelease_channel(&self) -> Option<&str> {
+        match self {
+            Bump::Prerelease(ch)
+            | Bump::PrePatch(ch)
+            | Bump::PreMinor(ch)
+            | Bump::PreMajor(ch) => Some(ch),
+            _ => None,
+        }
+    }
+
+    /// Merge two bumps that reach the same package by different cascade (or lockstep) paths,
+    /// returning the stronger one.
+    ///
+    /// Within a single channel this is the larger magnitude (`max` over the derived order). A
+    /// prerelease bump **dominates** a stable one, because a stable release whose internal range
+    /// points at a prerelease (e.g. a peer range of `^2.0.0-beta.0`) is a broken release — the
+    /// prerelease intent must not be dropped. Two *different* prerelease channels (e.g. `beta`
+    /// and `rc`) cannot be reconciled by magnitude and are a hard error; release them separately.
+    pub fn merge(&self, other: &Bump) -> Result<Bump> {
+        match (self.prerelease_channel(), other.prerelease_channel()) {
+            (None, None) => Ok(self.max(other).clone()),
+            (Some(_), None) => Ok(self.clone()),
+            (None, Some(_)) => Ok(other.clone()),
+            (Some(a), Some(b)) if a == b => Ok(self.max(other).clone()),
+            (Some(a), Some(b)) => anyhow::bail!(
+                "conflicting prerelease channels `{a}` and `{b}` reach the same package; \
+                 release these channels in separate runs"
+            ),
+        }
+    }
 }
 
 impl std::fmt::Display for Bump {
@@ -126,4 +166,44 @@ pub trait Adapter {
     /// Publish `pkg`. `staged_assets` points at a prebuilt-artifact directory if the workflow
     /// staged binaries for this package, otherwise `None` (registry-only publish).
     fn publish(&self, pkg: &Pkg, staged_assets: Option<&Path>) -> Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pre(ch: &str) -> Bump {
+        Bump::PreMajor(ch.to_string())
+    }
+
+    #[test]
+    fn merge_takes_max_within_the_stable_channel() {
+        assert_eq!(Bump::Patch.merge(&Bump::Major).unwrap(), Bump::Major);
+        assert_eq!(Bump::Minor.merge(&Bump::Patch).unwrap(), Bump::Minor);
+    }
+
+    #[test]
+    fn merge_takes_max_within_one_prerelease_channel() {
+        assert_eq!(
+            Bump::Prerelease("beta".into())
+                .merge(&Bump::PreMajor("beta".into()))
+                .unwrap(),
+            Bump::PreMajor("beta".into())
+        );
+    }
+
+    #[test]
+    fn merge_lets_a_prerelease_dominate_a_stable_bump() {
+        // The bug this guards: a package reached by a PreMajor peer path and a Patch dep path must
+        // stay a prerelease, not silently become a stable Patch pointing at a `-beta` peer range.
+        assert_eq!(Bump::Patch.merge(&pre("beta")).unwrap(), pre("beta"));
+        assert_eq!(pre("beta").merge(&Bump::Patch).unwrap(), pre("beta"));
+        assert_eq!(Bump::Major.merge(&pre("beta")).unwrap(), pre("beta"));
+    }
+
+    #[test]
+    fn merge_refuses_conflicting_prerelease_channels() {
+        let err = pre("beta").merge(&pre("rc")).unwrap_err().to_string();
+        assert!(err.contains("beta") && err.contains("rc"), "got: {err}");
+    }
 }
