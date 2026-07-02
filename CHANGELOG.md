@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-07-02
+
 - **workflow** — Bun-based npm publish jobs now still configure npm registry auth via
   `actions/setup-node`, so `otf-release publish` can run `npm publish` with `NPM_TOKEN`.
 
