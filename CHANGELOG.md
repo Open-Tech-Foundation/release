@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **config** — Added a `default_branch` key to `release.toml` (defaults to `main`). `version` now
+  starts a release from, and returns to, this branch, so repos on `master`, `trunk`, or a release
+  train branch can use the tool.
 - **version** — Iterating a prerelease now matches the channel on its exact first identifier
   instead of a prefix, so bumping channel `rc` against an existing `rc2.1` (or `beta` against
   `beta2`) correctly starts a fresh `rc.0` rather than treating `rc2` as the same channel.

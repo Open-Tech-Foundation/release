@@ -77,6 +77,7 @@ mod tests {
             tag_format: "{name}@{version}".to_string(),
             legacy_tag_formats: Vec::new(),
             provider: "github".to_string(),
+            default_branch: "main".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,

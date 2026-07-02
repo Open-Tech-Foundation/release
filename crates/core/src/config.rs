@@ -68,6 +68,9 @@ pub const DEFAULT_VERSION_FIELD: &str = "version";
 /// The default git tag format for releases.
 pub const DEFAULT_TAG_FORMAT: &str = "v{version}";
 
+/// The default branch a release is cut from and returned to.
+pub const DEFAULT_BRANCH: &str = "main";
+
 /// Common git tag formats shown by interactive prompts before falling back to custom input.
 pub const COMMON_TAG_FORMATS: &[&str] = &[
     "v{version}",
@@ -376,6 +379,9 @@ pub struct ReleaseConfig {
     /// Git hosting provider (e.g. "github", "gitlab").
     #[serde(default = "default_provider")]
     pub provider: String,
+    /// The branch a release is started from and returned to (e.g. `main`, `master`, `trunk`).
+    #[serde(default = "default_branch")]
+    pub default_branch: String,
     /// How the changelog is managed.
     #[serde(default)]
     pub changelog_strategy: ChangelogStrategy,
@@ -413,6 +419,10 @@ fn default_provider() -> String {
     "github".to_string()
 }
 
+fn default_branch() -> String {
+    DEFAULT_BRANCH.to_string()
+}
+
 fn default_tag_format() -> String {
     DEFAULT_TAG_FORMAT.to_string()
 }
@@ -428,6 +438,7 @@ impl Default for ReleaseConfig {
             tag_format: default_tag_format(),
             legacy_tag_formats: Vec::new(),
             provider: default_provider(),
+            default_branch: default_branch(),
             changelog_strategy: ChangelogStrategy::default(),
             changelog_scope: ChangelogScope::default(),
             github_release_notes: GithubReleaseNotes::default(),
@@ -527,6 +538,7 @@ mod tests {
             legacy_tag_formats: Vec::new(),
             skip_publish: vec!["private-tool".to_string()],
             provider: "github".to_string(),
+            default_branch: "main".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
@@ -594,6 +606,7 @@ mod tests {
             legacy_tag_formats: Vec::new(),
             skip_publish: Vec::new(),
             provider: "github".to_string(),
+            default_branch: "main".to_string(),
             changelog_strategy: ChangelogStrategy::Curated,
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
@@ -637,6 +650,22 @@ mod tests {
         assert!(!packages[0].publishable);
         assert!(packages[1].publishable);
         assert_eq!(cfg.build_only_names(), vec!["@scope/manual"]);
+    }
+
+    #[test]
+    fn default_branch_defaults_to_main_and_round_trips_a_custom_value() {
+        // Absent from the file → defaults to main.
+        let cfg: ReleaseConfig = toml::from_str("adapters = [\"npm\"]\n").unwrap();
+        assert_eq!(cfg.default_branch, "main");
+
+        // Explicit value survives a save/load round-trip.
+        let custom: ReleaseConfig = toml::from_str(
+            "adapters = [\"npm\"]\ndefault_branch = \"trunk\"\n",
+        )
+        .unwrap();
+        assert_eq!(custom.default_branch, "trunk");
+        let text = toml::to_string_pretty(&custom).unwrap();
+        assert!(text.contains("default_branch = \"trunk\""));
     }
 
     #[test]

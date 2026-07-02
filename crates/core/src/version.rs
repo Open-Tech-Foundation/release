@@ -56,8 +56,11 @@ pub fn run_many(
             bail!("working tree is not clean; commit or stash first");
         }
         let branch = repo.current_branch()?;
-        if branch != "main" {
-            bail!("must be on `main` to start a release (currently on `{branch}`)");
+        if branch != config.default_branch {
+            bail!(
+                "must be on `{}` to start a release (currently on `{branch}`)",
+                config.default_branch
+            );
         }
     }
     if std::process::Command::new("gh")
@@ -211,8 +214,11 @@ pub fn orchestrate_many(
             bail!("working tree is not clean; commit or stash first");
         }
         let branch = git.current_branch()?;
-        if branch != "main" {
-            bail!("must be on `main` to start a release (currently on `{branch}`)");
+        if branch != config.default_branch {
+            bail!(
+                "must be on `{}` to start a release (currently on `{branch}`)",
+                config.default_branch
+            );
         }
         Some(branch)
     };
@@ -418,9 +424,9 @@ pub fn orchestrate_many(
         println!("PR: opened from `{release_branch}`.");
     }
     if prompt.confirm_post_release_cleanup(&release_branch)? {
-        git.return_to_main()?;
+        git.return_to_default_branch(&branch)?;
         git.delete_local_branch(&release_branch)?;
-        println!("Returned to `main` and deleted local branch `{release_branch}`.");
+        println!("Returned to `{branch}` and deleted local branch `{release_branch}`.");
     } else {
         println!("{}", post_release_next_steps(&release_branch));
     }
@@ -739,8 +745,8 @@ mod tests {
             Ok(false)
         }
 
-        fn return_to_main(&self) -> Result<()> {
-            *self.branch.borrow_mut() = "main".to_string();
+        fn return_to_default_branch(&self, branch: &str) -> Result<()> {
+            *self.branch.borrow_mut() = branch.to_string();
             Ok(())
         }
 
@@ -1019,6 +1025,73 @@ mod tests {
         );
         assert_eq!(*a.lockfile_updates.borrow(), 1);
         assert_eq!(*b.lockfile_updates.borrow(), 1);
+    }
+
+    #[test]
+    fn release_cuts_from_and_returns_to_the_configured_default_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let adapter = FakeVersionAdapter::new(test_pkg(root, "npm-lib"));
+        let git = FakeGit::new();
+        *git.branch.borrow_mut() = "trunk".to_string();
+        let forge = FakeForge {
+            prs: RefCell::new(Vec::new()),
+        };
+        let config = crate::config::ReleaseConfig {
+            default_branch: "trunk".to_string(),
+            changelog_strategy: crate::config::ChangelogStrategy::Curated,
+            ..Default::default()
+        };
+
+        orchestrate_many(
+            &[&adapter],
+            &FakeRepo,
+            &git,
+            &forge,
+            &FakePrompt,
+            root,
+            "2026-06-28",
+            &VersionOptions::default(),
+            &config,
+            &crate::hooks::fakes::FakeHookRunner::new(),
+        )
+        .unwrap();
+
+        assert_eq!(git.created.borrow().as_slice(), ["release/2026-06-28"]);
+        // Cleanup returns to the configured branch, not a hardcoded `main`.
+        assert_eq!(git.current_branch().unwrap(), "trunk");
+    }
+
+    #[test]
+    fn release_rejects_starting_from_the_wrong_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let adapter = FakeVersionAdapter::new(test_pkg(root, "npm-lib"));
+        let git = FakeGit::new(); // on `main`
+        let config = crate::config::ReleaseConfig {
+            default_branch: "master".to_string(),
+            changelog_strategy: crate::config::ChangelogStrategy::Curated,
+            ..Default::default()
+        };
+
+        let err = orchestrate_many(
+            &[&adapter],
+            &FakeRepo,
+            &git,
+            &FakeForge {
+                prs: RefCell::new(Vec::new()),
+            },
+            &FakePrompt,
+            root,
+            "2026-06-28",
+            &VersionOptions::default(),
+            &config,
+            &crate::hooks::fakes::FakeHookRunner::new(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("must be on `master`"), "got: {err}");
     }
 
     #[test]
