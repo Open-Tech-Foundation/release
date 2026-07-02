@@ -9,7 +9,7 @@ members = [
 # Shared metadata + dependency versions for every crate in the workspace.
 # Individual crates inherit these with `field.workspace = true`.
 [workspace.package]
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/Open-Tech-Foundation/release"
