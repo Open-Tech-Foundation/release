@@ -498,9 +498,12 @@ fn apply_bump(version: &str, bump: &Bump) -> Result<String> {
         }
         Bump::Prerelease(ch) => {
             if let Some(p) = pre {
-                if p.starts_with(ch) {
-                    let mut p_parts = p.split('.');
-                    p_parts.next(); // skip channel name
+                // Match the exact first dot-separated identifier, not a prefix: iterating channel
+                // `rc` against an existing `rc2.1` (or `beta` against `beta2`) must start a fresh
+                // `rc.0`, not treat `rc2` as the same channel and bump it to `rc2.2`.
+                let mut p_parts = p.split('.');
+                let existing_channel = p_parts.next().unwrap_or(p);
+                if existing_channel == ch {
                     let num: u64 = p_parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
                     return Ok(format!("{core}-{ch}.{}", num + 1));
                 }
@@ -867,6 +870,22 @@ mod tests {
         assert_eq!(
             apply_bump("1.3.0-alpha.1", &Bump::Prerelease("beta".to_string())).unwrap(),
             "1.3.0-beta.0"
+        );
+
+        // Channel match is on the exact first identifier, not a prefix: `rc` against `rc2.1` is a
+        // different channel and must reset to `rc.0`, never bump `rc2` to `rc2.2`.
+        assert_eq!(
+            apply_bump("1.3.0-rc2.1", &Bump::Prerelease("rc".to_string())).unwrap(),
+            "1.3.0-rc.0"
+        );
+        assert_eq!(
+            apply_bump("1.3.0-beta2.0", &Bump::Prerelease("beta".to_string())).unwrap(),
+            "1.3.0-beta.0"
+        );
+        // The reverse still iterates the true `rc2` channel.
+        assert_eq!(
+            apply_bump("1.3.0-rc2.1", &Bump::Prerelease("rc2".to_string())).unwrap(),
+            "1.3.0-rc2.2"
         );
 
         // Test graduate

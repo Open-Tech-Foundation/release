@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **version** — Iterating a prerelease now matches the channel on its exact first identifier
+  instead of a prefix, so bumping channel `rc` against an existing `rc2.1` (or `beta` against
+  `beta2`) correctly starts a fresh `rc.0` rather than treating `rc2` as the same channel.
 - **version** — Cascade and lockstep-group bump merges are now prerelease-aware: a package reached
   by both a prerelease path (e.g. a peerDep mirroring a `PreMajor` beta) and a stable path no
   longer silently collapses to the stable bump — the prerelease intent wins, so a stable release
