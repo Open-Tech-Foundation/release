@@ -55,6 +55,12 @@ impl NpmTool {
         match self {
             Self::Bun => {
                 s.push_str("      - uses: oven-sh/setup-bun@v2\n");
+                if registry {
+                    s.push_str("      - uses: actions/setup-node@v4\n");
+                    s.push_str(
+                        "        with:\n          node-version: 24\n          registry-url: https://registry.npmjs.org\n",
+                    );
+                }
             }
             Self::Pnpm => {
                 s.push_str("      - uses: pnpm/action-setup@v4\n");
@@ -1864,6 +1870,8 @@ mod tests {
         let out = render_workflow_for_root(&config, tmp.path());
 
         assert!(out.contains("      - uses: oven-sh/setup-bun@v2\n"));
+        assert!(out.contains("      - uses: actions/setup-node@v4\n"));
+        assert!(out.contains("          registry-url: https://registry.npmjs.org\n"));
         assert!(out.contains("      - run: bun install --frozen-lockfile\n"));
         assert!(!out.contains("      - run: npm ci\n"));
     }
@@ -1901,10 +1909,14 @@ mod tests {
 
         let pnpm = render_workflow_with_npm_tool(&config, NpmTool::Pnpm);
         assert!(pnpm.contains("      - uses: pnpm/action-setup@v4\n"));
+        assert!(pnpm.contains("      - uses: actions/setup-node@v4\n"));
+        assert!(pnpm.contains("          registry-url: https://registry.npmjs.org\n"));
         assert!(pnpm.contains("      - run: pnpm install --frozen-lockfile\n"));
         assert!(!pnpm.contains("corepack"));
 
         let yarn = render_workflow_with_npm_tool(&config, NpmTool::Yarn);
+        assert!(yarn.contains("      - uses: actions/setup-node@v4\n"));
+        assert!(yarn.contains("          registry-url: https://registry.npmjs.org\n"));
         assert!(yarn.contains("      - run: yarn install --immutable\n"));
         assert!(!yarn.contains("corepack"));
     }
