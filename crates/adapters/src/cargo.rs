@@ -407,9 +407,19 @@ impl Adapter for CargoAdapter {
 
     fn publish(&self, pkg: &Pkg, _staged_assets: Option<&Path>) -> Result<()> {
         // crates.io is source-only; staged binaries are distributed out-of-band.
-        let out = self
-            .runner
-            .run("cargo", &["publish", "-p", &pkg.name], &self.root)?;
+        //
+        // `--allow-dirty` is deliberate: `publish` calls `resolve_workspace_links` immediately
+        // before this to inject concrete `version`s onto internal path deps. In the normal flow
+        // the release PR already wrote those, so the resolve is a no-op and the tree is clean; but
+        // when it does edit a manifest (e.g. a path dep added without a version after the release
+        // PR), the tree is dirty and a plain `cargo publish` would abort mid-run — after earlier
+        // crates in the graph already shipped, with no rollback. Allowing the dirty tree lets the
+        // intended resolve edits through instead of stranding a partial release.
+        let out = self.runner.run(
+            "cargo",
+            &["publish", "-p", &pkg.name, "--allow-dirty"],
+            &self.root,
+        )?;
         if !out.success {
             bail!("`cargo publish -p {}` failed:\n{}", pkg.name, out.stderr);
         }
@@ -642,7 +652,7 @@ mod tests {
         let adapter = CargoAdapter::with_runner("/repo", Box::new(pubrunner.clone()));
         adapter.publish(&pkg, None).unwrap();
         let calls = pubrunner.calls.lock().unwrap();
-        assert_eq!(calls[0].0, ["publish", "-p", "a"]);
+        assert_eq!(calls[0].0, ["publish", "-p", "a", "--allow-dirty"]);
         assert_eq!(calls[0].1, PathBuf::from("/repo"));
     }
 }

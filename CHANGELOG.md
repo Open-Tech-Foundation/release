@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **publish** — `cargo publish` now runs with `--allow-dirty`. `resolve_workspace_links` may edit
+  `Cargo.toml` to inject concrete dependency versions right before publish; without this flag any
+  such edit would dirty the tree and make cargo refuse to publish mid-run, after earlier crates in
+  the graph had already shipped.
 - **config** — Added a `default_branch` key to `release.toml` (defaults to `main`). `version` now
   starts a release from, and returns to, this branch, so repos on `master`, `trunk`, or a release
   train branch can use the tool.
