@@ -16,7 +16,6 @@
 //! - [`init`]     — the interactive `release.yml` generator.
 //!
 //! See `docs/` at the repo root for the full design.
-#![allow(dead_code, unused_variables)]
 
 pub mod adapter;
 pub mod build;

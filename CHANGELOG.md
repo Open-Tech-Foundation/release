@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **internal** — Removed the crate-wide `#![allow(dead_code, unused_variables)]` from the core
+  crate so drift warnings (and CI's `-D warnings`) are visible again; removed the one dead local it
+  was masking.
 - **self-update** — Now compares versions semantically instead of by string equality, so a local
   dev build ahead of the latest release (e.g. `0.15.0` vs a `0.14.0` release) no longer "updates"
   and downgrades itself.

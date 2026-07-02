@@ -1430,7 +1430,6 @@ impl InitPrompt for StdinInitPrompt {
 
         // 2. Add any the scan missed (or all of them, if nothing was detected) by hand.
         loop {
-            let first = out.is_empty() && found.is_empty();
             let question = if found.is_empty() {
                 "Add a generic package?"
             } else {
