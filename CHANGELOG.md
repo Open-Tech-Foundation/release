@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **self-update** — Now compares versions semantically instead of by string equality, so a local
+  dev build ahead of the latest release (e.g. `0.15.0` vs a `0.14.0` release) no longer "updates"
+  and downgrades itself.
 - **publish** — `cargo publish` now runs with `--allow-dirty`. `resolve_workspace_links` may edit
   `Cargo.toml` to inject concrete dependency versions right before publish; without this flag any
   such edit would dirty the tree and make cargo refuse to publish mid-run, after earlier crates in

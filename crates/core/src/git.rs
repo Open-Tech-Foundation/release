@@ -198,8 +198,8 @@ fn version_from_tag<'a>(tag: &'a str, tag_format: &str, pkg_name: &str) -> Optio
     tag.strip_prefix(&prefix)?.strip_suffix(&suffix)
 }
 
-/// Parse `x.y.z` (ignoring any pre-release suffix, which v1 doesn't produce) for tag ordering.
-fn parse_semver(version: &str) -> Option<(u64, u64, u64)> {
+/// Parse the `x.y.z` core of a version (ignoring any pre-release suffix) into a comparable tuple.
+pub fn parse_semver(version: &str) -> Option<(u64, u64, u64)> {
     let core = version.split('-').next().unwrap_or(version);
     let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
