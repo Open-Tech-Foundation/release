@@ -8,12 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **workflow** — Bun-based npm publish jobs now still configure npm registry auth via
+  `actions/setup-node`, so `otf-release publish` can run `npm publish` with `NPM_TOKEN`.
+
 ## [0.14.0] - 2026-07-02
 
 - **upgrade** — Regenerated npm release workflows now use the repo's detected package manager
   instead of falling back to `npm ci`, fixing Bun/pnpm/Yarn repos without `package-lock.json`.
-- **workflow** — Bun-based npm publish jobs now still configure npm registry auth via
-  `actions/setup-node`, so `otf-release publish` can run `npm publish` with `NPM_TOKEN`.
 - **version** — Release review now groups selected packages, dependency-rule bumps, dependency
   range updates by package and dependency section, and the exact branch/commit created after
   confirmation.
