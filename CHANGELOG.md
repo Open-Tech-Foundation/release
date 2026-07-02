@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-02
+
 - **upgrade** — Regenerated npm release workflows now use the repo's detected package manager
   instead of falling back to `npm ci`, fixing Bun/pnpm/Yarn repos without `package-lock.json`.
 - **version** — Release review now groups selected packages, dependency-rule bumps, dependency
