@@ -2,6 +2,11 @@
 
 > Manual-bump, changelog-aware release CLI for polyglot monorepos.
 
+<p align="center">
+  <img src="assets/version-preview.png" width="820"
+       alt="otf-release version — the interactive Release Review: chosen bumps, dependency-rule cascades, dependency-range updates, and changed files, confirmed before the release PR is opened." />
+</p>
+
 `otf-release` is a single Rust binary that helps a repo move from curated release notes to a
 release PR, then to CI-driven publishing.
 
