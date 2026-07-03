@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-03
+
 - **check** — Added `otf-release check`, the CI release gate. It prints `true` when any configured
   package has a real (non-`0.0.0`) version whose tag doesn't exist yet, else `false`, reusing the
   same version/tag logic `publish` ships with. The generated `check-release` job is now the one-line
