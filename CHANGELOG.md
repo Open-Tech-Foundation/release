@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **check** — Added `otf-release check`, the CI release gate. It prints `true` when any configured
+  package has a real (non-`0.0.0`) version whose tag doesn't exist yet, else `false`, reusing the
+  same version/tag logic `publish` ships with. The generated `check-release` job is now the one-line
+  `should_release=$(otf-release check)`, replacing hand-rolled bash that read a single sentinel
+  package: in a multi-package repo, a bump to any other package was skipped whenever the sentinel's
+  tag already existed. Build-only packages are counted too, so a build-only-only release isn't
+  missed. `init`/`upgrade` emit the delegated gate (with `fetch-depth: 0` so tags are present).
+
 ## [0.16.0] - 2026-07-02
 
 - **internal** — Removed the crate-wide `#![allow(dead_code, unused_variables)]` from the core
