@@ -333,7 +333,10 @@ mod tests {
             pkg(
                 "x",
                 true,
-                &[("beta-core", DepKind::PeerDep), ("rc-core", DepKind::PeerDep)],
+                &[
+                    ("beta-core", DepKind::PeerDep),
+                    ("rc-core", DepKind::PeerDep),
+                ],
             ),
         ];
         let graph = Graph::build(&pkgs).unwrap();
@@ -341,7 +344,10 @@ mod tests {
             ("beta-core".to_string(), Bump::PreMajor("beta".to_string())),
             ("rc-core".to_string(), Bump::PreMajor("rc".to_string())),
         ]);
-        let err = graph.cascade(&FakeAdapter, &selected).unwrap_err().to_string();
+        let err = graph
+            .cascade(&FakeAdapter, &selected)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains('x'), "error should name the package: {err}");
     }
 

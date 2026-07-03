@@ -659,10 +659,8 @@ mod tests {
         assert_eq!(cfg.default_branch, "main");
 
         // Explicit value survives a save/load round-trip.
-        let custom: ReleaseConfig = toml::from_str(
-            "adapters = [\"npm\"]\ndefault_branch = \"trunk\"\n",
-        )
-        .unwrap();
+        let custom: ReleaseConfig =
+            toml::from_str("adapters = [\"npm\"]\ndefault_branch = \"trunk\"\n").unwrap();
         assert_eq!(custom.default_branch, "trunk");
         let text = toml::to_string_pretty(&custom).unwrap();
         assert!(text.contains("default_branch = \"trunk\""));

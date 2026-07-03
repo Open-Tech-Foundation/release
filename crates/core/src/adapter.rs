@@ -36,10 +36,9 @@ impl Bump {
     /// (`Patch`/`Minor`/`Major`) or a `Graduate` (which produces a stable version).
     fn prerelease_channel(&self) -> Option<&str> {
         match self {
-            Bump::Prerelease(ch)
-            | Bump::PrePatch(ch)
-            | Bump::PreMinor(ch)
-            | Bump::PreMajor(ch) => Some(ch),
+            Bump::Prerelease(ch) | Bump::PrePatch(ch) | Bump::PreMinor(ch) | Bump::PreMajor(ch) => {
+                Some(ch)
+            }
             _ => None,
         }
     }
