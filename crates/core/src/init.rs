@@ -397,39 +397,23 @@ fn select_targets(prompt: &str) -> Result<Vec<Target>> {
 }
 
 /// The preliminary job that checks if a release is needed, guarding the expensive build steps.
-fn render_check_release_job(s: &mut String, version_cmd: &str, needs_edit: bool, tag_expr: &str) {
+fn render_check_release_job(s: &mut String) {
     s.push_str("  check-release:\n");
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    outputs:\n");
     s.push_str("      should_release: ${{ steps.check.outputs.should_release }}\n");
-    s.push_str("      version: ${{ steps.check.outputs.version }}\n");
     s.push_str("    steps:\n");
+    // `fetch-depth: 0` so release tags are present locally for `otf-release check` to compare
+    // against — a shallow checkout carries no tags.
     s.push_str("      - uses: actions/checkout@v4\n");
+    s.push_str("        with:\n");
+    s.push_str("          fetch-depth: 0\n");
+    push_install_otf_release(s);
+    // The gate delegates to the binary, like every other job (`matrix`/`build`/`publish`): the tool
+    // reads each package's version and tag with the *same* logic it publishes with, so the gate can
+    // never drift. It prints `true` when any configured package has an untagged version to release.
     s.push_str("      - id: check\n");
-    s.push_str("        run: |\n");
-    // Only carry an `# edit me` hint when the version command is a heuristic the tool couldn't
-    // pin down — a generated npm/cargo/generic-manifest read is left clean.
-    let hint = if needs_edit {
-        "  # edit me: where the version lives"
-    } else {
-        ""
-    };
-    s.push_str(&format!("          version=\"$({version_cmd})\"{hint}\n"));
-    s.push_str("          echo \"version=$version\" >> \"$GITHUB_OUTPUT\"\n");
-    s.push_str("          if [ \"$version\" = \"0.0.0\" ]; then\n");
-    s.push_str("            echo \"Version is 0.0.0 (unreleased); skipping build.\"\n");
-    s.push_str("            echo \"should_release=false\" >> \"$GITHUB_OUTPUT\"\n");
-    s.push_str("            exit 0\n");
-    s.push_str("          fi\n");
-    // Skip when this version was already released, so ordinary pushes to main (docs, chores) don't
-    // re-run the full cross-build. A real release bumps the version, whose tag won't exist yet.
-    s.push_str(&format!("          tag=\"{tag_expr}\"\n"));
-    s.push_str("          if git ls-remote --tags origin \"refs/tags/$tag\" | grep -q .; then\n");
-    s.push_str("            echo \"Tag $tag already exists; nothing to release.\"\n");
-    s.push_str("            echo \"should_release=false\" >> \"$GITHUB_OUTPUT\"\n");
-    s.push_str("            exit 0\n");
-    s.push_str("          fi\n");
-    s.push_str("          echo \"should_release=true\" >> \"$GITHUB_OUTPUT\"\n\n");
+    s.push_str("        run: echo \"should_release=$(otf-release check)\" >> \"$GITHUB_OUTPUT\"\n\n");
 }
 
 /// Render `.github/workflows/release.yml` from the config.
@@ -523,12 +507,7 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
         s.push_str("\npermissions:\n  contents: write  # create tags and GitHub Releases\n");
     }
     s.push_str("\njobs:\n");
-    let (version_cmd, confident) = version_read_cmd(config);
-    let tag_expr = workflow_tag_expr(
-        &config.tag_format,
-        release_entry(config).map(|e| e.name.as_str()).unwrap_or(""),
-    );
-    render_check_release_job(&mut s, &version_cmd, !confident, &tag_expr);
+    render_check_release_job(&mut s);
 
     // Build jobs only for packages that actually declare a build command.
     let has_build = |p: &&PackageEntry| !p.command.trim().is_empty();
@@ -584,28 +563,20 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
     s
 }
 
-/// The package whose version drives the release tag / `check-release`: the first build-only one,
-/// else the first publishable one, else the first listed.
-fn release_entry(config: &ReleaseConfig) -> Option<&PackageEntry> {
-    config
-        .packages
-        .iter()
-        .find(|p| p.is_build_only())
-        .or_else(|| config.packages.iter().find(|p| p.is_publish()))
-        .or_else(|| config.packages.first())
-}
-
-/// The shell command that reads the release version, plus whether it is a confident, ready-to-run
-/// command. `false` ⇒ the tool couldn't pin the source down and the workflow carries an `# edit me`
-/// hint; a generated npm/cargo/generic-manifest read is confident and left clean.
+/// Packages whose own version + tag drive `check-release`: everything CI actually ships this run —
+/// each publish or build-only package — minus any `skip_publish` package (released by hand, so its
+/// tag must not gate CI). Each is checked against *its own* manifest version, not a shared sentinel.
+/// The shell command that reads a single package's version, plus whether it is a confident,
+/// ready-to-run command. `false` ⇒ the tool couldn't pin the source down and the workflow carries
+/// an `# edit me` hint; a generated npm/cargo/generic-manifest read is confident and left clean.
 const CARGO_VERSION_CMD: &str =
     "cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'";
 
-fn version_read_cmd(config: &ReleaseConfig) -> (String, bool) {
-    match release_entry(config) {
-        Some(e) if e.adapter == Ecosystem::Generic => {
-            let manifest = e.manifest.as_deref().unwrap_or("deno.json");
-            let field = e.version_field.as_deref().unwrap_or("version");
+fn version_read_cmd_for(entry: &PackageEntry) -> (String, bool) {
+    match entry.adapter {
+        Ecosystem::Generic => {
+            let manifest = entry.manifest.as_deref().unwrap_or("deno.json");
+            let field = entry.version_field.as_deref().unwrap_or("version");
             if manifest.ends_with(".json") {
                 (format!("node -p \"require('./{manifest}').{field}\""), true)
             } else if manifest == "Cargo.toml" && field == "version" {
@@ -619,17 +590,18 @@ fn version_read_cmd(config: &ReleaseConfig) -> (String, bool) {
                 (format!("cat {manifest}"), false)
             }
         }
-        Some(e) if e.adapter == Ecosystem::Npm => (npm_version_read_cmd(e), true),
-        Some(_) => (CARGO_VERSION_CMD.to_string(), true),
-        None if config.adapters.contains(&Ecosystem::Npm) => (
-            "node -p \"require('./package.json').version\"".to_string(),
-            true,
-        ),
-        None if config.adapters.contains(&Ecosystem::Cargo) => {
-            (CARGO_VERSION_CMD.to_string(), true)
-        }
-        _ => ("echo 0.0.0".to_string(), false),
+        Ecosystem::Npm => (npm_version_read_cmd(entry), true),
+        Ecosystem::Cargo => (cargo_version_read_cmd(entry), true),
     }
+}
+
+/// Per-package cargo version read: filters `cargo metadata` by crate name so a workspace member's
+/// own version drives its release check — not whichever crate happens to be `packages[0]`.
+fn cargo_version_read_cmd(entry: &PackageEntry) -> String {
+    format!(
+        "cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name==\"{}\") | .version'",
+        entry.name
+    )
 }
 
 fn rel_path(root: &Path, path: &Path) -> String {
@@ -875,10 +847,13 @@ fn render_github_release(
     s.push_str("      - name: Create GitHub Release\n");
     s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     s.push_str("        run: |\n");
-    s.push_str("          version=\"${{ needs.check-release.outputs.version }}\"\n");
     for entry in build_only {
         let art_slug = slug(&entry.name);
         let tag_regex = workflow_tag_regex(tag_format, &entry.name);
+        // Each build-only package reads *its own* version so its tag is correct even when packages
+        // are versioned independently — `check-release` no longer exports a single shared version.
+        let (version_cmd, _) = version_read_cmd_for(entry);
+        s.push_str(&format!("          version=\"$({version_cmd})\"\n"));
         s.push_str(&format!(
             "          tag=\"{}\"\n",
             workflow_tag_expr(tag_format, &entry.name)
@@ -1839,9 +1814,10 @@ mod tests {
         assert!(out.contains("  publish:\n"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         assert!(out.contains("          node-version: 24\n"));
-        assert!(
-            out.contains("          version=\"$(node -p \"require('./package.json').version\")\"")
-        );
+        // The gate delegates to the binary — no hand-rolled inline version reads in the YAML.
+        assert!(out
+            .contains("        run: echo \"should_release=$(otf-release check)\" >> \"$GITHUB_OUTPUT\"\n"));
+        assert!(!out.contains("version=\"$(node -p"));
         assert!(!out.contains("version=\"$(cargo metadata"));
         assert!(out.contains("      - name: Install otf-release\n"));
         assert!(out.contains("        run: otf-release publish\n"));
@@ -1925,50 +1901,6 @@ mod tests {
     }
 
     #[test]
-    fn npm_package_entry_reads_known_manifest_version_path() {
-        let mut package = npm_publish("docs-site");
-        package.manifest = Some("packages/docs-site/package.json".to_string());
-        let config = ReleaseConfig {
-            snapshot_tag: None,
-            tag_format: "{name}@{version}".to_string(),
-            legacy_tag_formats: Vec::new(),
-            provider: "github".to_string(),
-            default_branch: "main".to_string(),
-            changelog_strategy: ChangelogStrategy::Curated,
-            changelog_scope: ChangelogScope::Package,
-            github_release_notes: GithubReleaseNotes::AutoGenerate,
-            hooks: crate::config::Hooks::default(),
-            adapters: vec![Ecosystem::Npm],
-            skip_publish: Vec::new(),
-            packages: vec![package],
-        };
-        let out = render_workflow(&config);
-        assert!(out.contains("version=\"$(jq -r '.version' packages/docs-site/package.json)\""));
-        assert!(!out.contains("workspaces"));
-        assert!(!out.contains("const patterns"));
-    }
-
-    #[test]
-    fn npm_package_without_manifest_reads_root_package_version() {
-        let config = ReleaseConfig {
-            snapshot_tag: None,
-            tag_format: "{name}@{version}".to_string(),
-            legacy_tag_formats: Vec::new(),
-            provider: "github".to_string(),
-            default_branch: "main".to_string(),
-            changelog_strategy: ChangelogStrategy::Curated,
-            changelog_scope: ChangelogScope::Package,
-            github_release_notes: GithubReleaseNotes::AutoGenerate,
-            hooks: crate::config::Hooks::default(),
-            adapters: vec![Ecosystem::Npm],
-            skip_publish: Vec::new(),
-            packages: vec![npm_publish("docs-site")],
-        };
-        let out = render_workflow(&config);
-        assert!(out.contains("version=\"$(jq -r '.version' package.json)\""));
-    }
-
-    #[test]
     fn cargo_build_only_renders_github_release_no_registry() {
         let config = ReleaseConfig {
             snapshot_tag: None,
@@ -2008,8 +1940,14 @@ mod tests {
         assert!(out.contains("            rm -rf \".flat-artifacts-opentf-release\"\n"));
         assert!(out.contains("          if gh release view \"$tag\" >/dev/null 2>&1; then\n"));
         assert!(!out.contains("tag=\"v${{ needs.check-release.outputs.version }}\""));
-        // check-release skips a re-run when the version's tag already exists on the remote.
-        assert!(out.contains("if git ls-remote --tags origin \"refs/tags/$tag\" | grep -q .; then"));
+        // check-release delegates the "is anything to release?" decision to the binary, and needs
+        // full tag history (`fetch-depth: 0`) to compare against.
+        assert!(out.contains(
+            "  check-release:\n    runs-on: ubuntu-latest\n    outputs:\n      should_release:"
+        ));
+        assert!(out
+            .contains("        run: echo \"should_release=$(otf-release check)\" >> \"$GITHUB_OUTPUT\"\n"));
+        assert!(!out.contains("git ls-remote"));
         assert!(out.contains("darwin) os_part=\"macos\" ;;\n"));
         assert!(out.contains("win32) os_part=\"windows\" ;;\n"));
         assert!(out.contains("x64) arch_part=\"x86-64\" ;;\n"));
@@ -2458,13 +2396,16 @@ mod tests {
 
         orchestrate(&factory, &prompt, tmp.path(), &InitOptions { force: true }).unwrap();
 
+        // The discovered manifest path is persisted to release.toml — that's what `otf-release
+        // check`/`publish` read the version from at runtime, so it must be recorded even though the
+        // generated workflow no longer inlines a version-read for it.
         let cfg = ReleaseConfig::load(tmp.path()).unwrap();
         assert_eq!(
             cfg.packages[0].manifest.as_deref(),
             Some("packages/web-compiler/package.json")
         );
         let yml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
-        assert!(yml.contains("jq -r '.version' packages/web-compiler/package.json"));
+        assert!(yml.contains("should_release=$(otf-release check)"));
         assert!(!yml.contains("workspaces"));
     }
 

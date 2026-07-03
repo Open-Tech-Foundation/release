@@ -36,6 +36,7 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 | `otf-release init` | ✅ Supported | Interactive setup. Writes `release.toml` and `.github/workflows/release.yml`. |
 | `otf-release version` | ✅ Supported | Interactive local release flow. Use `--dry-run` to preview the plan without writing files, and `--first-release` when a package has no prior matching tag. |
 | `otf-release publish` | ✅ Supported | CI-oriented publish flow. Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. Refuses to publish a matrix package whose per-platform binaries weren't staged. |
+| `otf-release check` | ✅ Supported | CI gate. Prints `true` when any configured package has a real version whose tag doesn't exist yet, else `false` — drives the workflow's `check-release` job so a non-release push to `main` skips the build. |
 | `otf-release matrix` | ✅ Supported | CI helper. Prints the GitHub Actions build matrix (JSON) for a matrix package from `release.toml`, so `release.yml` never carries a hand-maintained target list. |
 | `otf-release build` | ✅ Supported | CI helper. Builds one matrix target (`--package`/`--target`), cross-compiling as needed, and stages the binary at `bin/<platform>-<arch>/<bin>[.br]` for publish. |
 | `otf-release snapshot` | 🧪 Experimental | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |

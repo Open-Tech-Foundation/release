@@ -90,11 +90,11 @@ workflow).
 
 ## The generated file is yours
 
-`init` emits a workflow that is ready to run for the common cases: the matrix path is fully driven
-by `otf-release matrix`/`otf-release build` with **no `# edit me`** markers. The remaining markers
-are narrow — the `check-release` version-read heuristic, and generic-adapter toolchain/secret
-steps the tool can't infer. Re-running `init` (or `upgrade`) warns before overwrite (`--force` to
-replace) and does not try to manage the file after generation.
+`init` emits a workflow that is ready to run for the common cases: the gate and the matrix path are
+fully driven by the binary (`otf-release check`/`matrix`/`build`) with **no `# edit me`** markers.
+The remaining markers are narrow — generic-adapter toolchain/secret steps the tool can't infer.
+Re-running `init` (or `upgrade`) warns before overwrite (`--force` to replace) and does not try to
+manage the file after generation.
 
 ## See also
 

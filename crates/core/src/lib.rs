@@ -20,6 +20,7 @@
 pub mod adapter;
 pub mod build;
 pub mod changelog;
+pub mod check;
 pub mod config;
 pub mod config_cmd;
 pub mod date;

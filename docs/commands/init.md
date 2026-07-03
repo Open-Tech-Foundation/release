@@ -75,7 +75,11 @@ github_release_notes = "auto-generate"
 
 From the config, `init` emits jobs:
 
-- a **`check-release`** job that decides whether downstream jobs should run;
+- a **`check-release`** job that decides whether downstream jobs should run. It is a one-liner —
+  `should_release=$(otf-release check)` — delegating to the binary like every other job, so it can't
+  drift from what actually ships. `check` returns `true` if **any** configured package has a real
+  version whose tag doesn't exist yet (`publish`/`github-release` are per-package idempotent and skip
+  the rest); it needs `fetch-depth: 0` so the tags are present to compare against;
 - a **`build-<pkg>`** job per package with a build step (a matrix when *build matrix* is yes);
 - a single **`publish`** job when registry publishing is enabled — runs `otf-release publish`
   once, and the CLI loops the enabled adapters internally;

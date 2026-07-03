@@ -102,6 +102,9 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// CI gate: print `true` if any configured package has an untagged version to release, else
+    /// `false`. Drives the workflow's `check-release` job so a non-release push skips the build.
+    Check,
     /// Non-interactive, CI: publish changed packages in dependency order. Idempotent.
     Publish {
         /// Directory of staged binary artifacts (`.artifacts/`).
@@ -238,6 +241,25 @@ fn run() -> Result<()> {
             let adapter_refs: Vec<&dyn Adapter> =
                 adapters.iter().map(|adapter| adapter.as_ref()).collect();
             version::run_many(&adapter_refs, &root, &opts, &config)?;
+            Ok(())
+        }
+
+        Command::Check => {
+            let config = ReleaseConfig::load(&root)?;
+            let factory = CliAdapterFactory {
+                root: root.clone(),
+                generic: generic_pkgs(&config),
+            };
+            let adapters: Vec<Box<dyn Adapter>> = config
+                .adapters
+                .iter()
+                .map(|eco| factory.make(*eco))
+                .collect();
+            let adapter_refs: Vec<&dyn Adapter> =
+                adapters.iter().map(|adapter| adapter.as_ref()).collect();
+            let should_release =
+                otf_release_core::check::run_many(&adapter_refs, &root, &config)?;
+            println!("{should_release}");
             Ok(())
         }
 
