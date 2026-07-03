@@ -413,7 +413,9 @@ fn render_check_release_job(s: &mut String) {
     // reads each package's version and tag with the *same* logic it publishes with, so the gate can
     // never drift. It prints `true` when any configured package has an untagged version to release.
     s.push_str("      - id: check\n");
-    s.push_str("        run: echo \"should_release=$(otf-release check)\" >> \"$GITHUB_OUTPUT\"\n\n");
+    s.push_str(
+        "        run: echo \"should_release=$(otf-release check)\" >> \"$GITHUB_OUTPUT\"\n\n",
+    );
 }
 
 /// Render `.github/workflows/release.yml` from the config.
@@ -1815,8 +1817,9 @@ mod tests {
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         assert!(out.contains("          node-version: 24\n"));
         // The gate delegates to the binary — no hand-rolled inline version reads in the YAML.
-        assert!(out
-            .contains("        run: echo \"should_release=$(otf-release check)\" >> \"$GITHUB_OUTPUT\"\n"));
+        assert!(out.contains(
+            "        run: echo \"should_release=$(otf-release check)\" >> \"$GITHUB_OUTPUT\"\n"
+        ));
         assert!(!out.contains("version=\"$(node -p"));
         assert!(!out.contains("version=\"$(cargo metadata"));
         assert!(out.contains("      - name: Install otf-release\n"));
@@ -1945,8 +1948,9 @@ mod tests {
         assert!(out.contains(
             "  check-release:\n    runs-on: ubuntu-latest\n    outputs:\n      should_release:"
         ));
-        assert!(out
-            .contains("        run: echo \"should_release=$(otf-release check)\" >> \"$GITHUB_OUTPUT\"\n"));
+        assert!(out.contains(
+            "        run: echo \"should_release=$(otf-release check)\" >> \"$GITHUB_OUTPUT\"\n"
+        ));
         assert!(!out.contains("git ls-remote"));
         assert!(out.contains("darwin) os_part=\"macos\" ;;\n"));
         assert!(out.contains("win32) os_part=\"windows\" ;;\n"));

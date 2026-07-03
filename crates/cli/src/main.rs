@@ -257,8 +257,7 @@ fn run() -> Result<()> {
                 .collect();
             let adapter_refs: Vec<&dyn Adapter> =
                 adapters.iter().map(|adapter| adapter.as_ref()).collect();
-            let should_release =
-                otf_release_core::check::run_many(&adapter_refs, &root, &config)?;
+            let should_release = otf_release_core::check::run_many(&adapter_refs, &root, &config)?;
             println!("{should_release}");
             Ok(())
         }
