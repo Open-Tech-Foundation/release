@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **docs** — Refactored root `README.md` into a longer landing page: centered title, highlighted
+  core rule, quick start with install as step 1, role-based links into `docs/`, grouped
+  command/adapter/capability tables with reference links, a collapsible doc index at the bottom,
+  a broader tagline (single projects and monorepos, including polyglot setups), and removal of
+  stale `--first-release` references.
+
 ## [0.17.0] - 2026-07-03
 
 - **check** — Added `otf-release check`, the CI release gate. It prints `true` when any configured
