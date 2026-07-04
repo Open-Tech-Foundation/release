@@ -101,33 +101,33 @@ Commands are grouped by where they run. Each links to reference docs where avail
 
 ### Setup & configuration
 
-| Command | | What it does |
-| --- | --- | --- |
-| [`init`](docs/commands/init.md) | `supported` | Interactive setup. Writes [`release.toml`](docs/configuration.md) and `.github/workflows/release.yml`. |
-| [`config`](docs/commands/config.md) | `supported` | Interactive editor for hooks, ecosystems, package build fields, generic package fields, provider, snapshot tag, changelog scope/strategy, and GitHub Release notes. |
-| [`upgrade`](docs/commands/config.md) | `partial` | Regenerates `release.yml` from the current `release.toml`. Use `--force` to overwrite. |
+| Command | What it does |
+| --- | --- |
+| [`init`](docs/commands/init.md) | Interactive setup. Writes [`release.toml`](docs/configuration.md) and `.github/workflows/release.yml`. |
+| [`config`](docs/commands/config.md) | Interactive editor for hooks, ecosystems, package build fields, generic package fields, provider, snapshot tag, changelog scope/strategy, and GitHub Release notes. |
+| [`upgrade`](docs/commands/config.md) | Regenerates `release.yml` from the current `release.toml`. Use `--force` to overwrite. |
 
 ### Local release
 
-| Command | | What it does |
-| --- | --- | --- |
-| [`version`](docs/commands/version.md) | `supported` | Interactive local release flow. Choose bumps, cascade dependents, update manifests and changelogs, open the release PR. Flag: `--dry-run`. |
+| Command | What it does |
+| --- | --- |
+| [`version`](docs/commands/version.md) | Interactive local release flow. Choose bumps, cascade dependents, update manifests and changelogs, open the release PR. Flag: `--dry-run`. |
 
 ### CI pipeline
 
-| Command | | What it does |
-| --- | --- | --- |
-| [`check`](docs/commands/check.md) | `supported` | Prints `true` when any configured package has a real version whose tag doesn't exist yet, else `false`. Drives the workflow `check-release` job so ordinary pushes to `main` skip the build. |
-| [`matrix`](docs/commands/matrix-build.md) | `supported` | Prints the GitHub Actions build matrix (JSON) for a matrix package from `release.toml` — no hand-maintained target list in YAML. |
-| [`build`](docs/commands/matrix-build.md) | `supported` | Builds one matrix target (`--package` / `--target`), cross-compiling as needed, and stages the binary at `bin/<platform>-<arch>/<bin>[.br]` for publish. |
-| [`publish`](docs/commands/publish.md) | `supported` | Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. Refuses to publish a matrix package whose per-platform binaries weren't staged. |
-| [`snapshot`](docs/roadmap.md) | `experimental` | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |
+| Command | What it does |
+| --- | --- |
+| [`check`](docs/commands/check.md) | Prints `true` when any configured package has a real version whose tag doesn't exist yet, else `false`. Drives the workflow `check-release` job so ordinary pushes to `main` skip the build. |
+| [`matrix`](docs/commands/matrix-build.md) | Prints the GitHub Actions build matrix (JSON) for a matrix package from `release.toml` — no hand-maintained target list in YAML. |
+| [`build`](docs/commands/matrix-build.md) | Builds one matrix target (`--package` / `--target`), cross-compiling as needed, and stages the binary at `bin/<platform>-<arch>/<bin>[.br]` for publish. |
+| [`publish`](docs/commands/publish.md) | Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. Refuses to publish a matrix package whose per-platform binaries weren't staged. |
+| [`snapshot`](docs/roadmap.md) | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |
 
 ### Maintenance
 
-| Command | | What it does |
-| --- | --- | --- |
-| [`self-update`](docs/README.md) | `supported` | Checks GitHub Releases and reruns the install script when a newer CLI version exists. |
+| Command | What it does |
+| --- | --- |
+| [`self-update`](docs/README.md) | Checks GitHub Releases and reruns the install script when a newer CLI version exists. |
 
 ## ⚙️ Configuration
 
@@ -149,11 +149,11 @@ There is **no `--adapter` flag** — enabled ecosystems and per-package build st
 Adapters own ecosystem-specific manifest reads, range syntax, cascade rules, registry checks, and
 publish commands. The core never reads a `package.json` or `Cargo.toml` directly.
 
-| Adapter | | Reference | Notes |
-| --- | --- | --- | --- |
-| **npm** | `supported` | [npm.md](docs/adapters/npm.md) | Discovers npm workspaces, preserves dependency range operators, resolves `workspace:*`, checks `npm view`, publishes with `npm publish --access public --no-workspaces`. |
-| **Cargo** | `supported` | [cargo.md](docs/adapters/cargo.md) | Discovers Cargo workspaces, supports concrete crate versions and `version.workspace = true`, updates path dependency versions, checks `cargo info`, publishes with `cargo publish -p`. |
-| **Generic** | `supported` | [generic.md](docs/adapters/generic.md) | Versions configured JSON/TOML/text manifest fields; optional publish command for registries such as JSR. Idempotency is tag-based. |
+| Adapter | Reference | Notes |
+| --- | --- | --- |
+| **npm** | [npm.md](docs/adapters/npm.md) | Discovers npm workspaces, preserves dependency range operators, resolves `workspace:*`, checks `npm view`, publishes with `npm publish --access public --no-workspaces`. |
+| **Cargo** | [cargo.md](docs/adapters/cargo.md) | Discovers Cargo workspaces, supports concrete crate versions and `version.workspace = true`, updates path dependency versions, checks `cargo info`, publishes with `cargo publish -p`. |
+| **Generic** | [generic.md](docs/adapters/generic.md) | Versions configured JSON/TOML/text manifest fields; optional publish command for registries such as JSR. Idempotency is tag-based. |
 
 Implementing a new adapter? Start at [adapters/overview.md](docs/adapters/overview.md).
 

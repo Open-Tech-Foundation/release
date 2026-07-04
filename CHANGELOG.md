@@ -13,6 +13,7 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   command/adapter/capability tables with reference links, a collapsible doc index at the bottom,
   a broader tagline (single projects and monorepos, including polyglot setups), and removal of
   stale `--first-release` references.
+- **docs** — Removed the status column from command and adapter tables in `README.md`.
 
 ## [0.17.0] - 2026-07-03
 
