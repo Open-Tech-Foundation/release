@@ -21,6 +21,8 @@ legacy_tag_formats = ["{name}@{version}"]
 # Publishable packages that otf-release should not version or publish.
 skip_publish = ["@scope/internal-tool"]
 
+# Optional: per-package globs that should warn instead of block when only these paths changed.
+# Add one entry per package name.
 [publish.ignore_paths]
 "@scope/docs-site" = ["docs/**", "**/*.test.ts", "**/__tests__/**"]
 

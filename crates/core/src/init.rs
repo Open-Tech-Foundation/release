@@ -10,6 +10,7 @@
 //! interactive choices go through the [`InitPrompt`] trait, and package discovery through the
 //! [`AdapterFactory`] trait, so the flow is testable.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -144,6 +145,20 @@ pub trait InitPrompt {
 pub fn run(factory: &dyn AdapterFactory, root: &Path, opts: &InitOptions) -> Result<()> {
     print_intro();
     orchestrate(factory, &StdinInitPrompt, root, opts)
+}
+
+fn publish_ignore_paths_seed(
+    discovered_publishable: &[Pkg],
+    configured_packages: &[PackageEntry],
+) -> HashMap<String, Vec<String>> {
+    let mut names: Vec<String> = discovered_publishable
+        .iter()
+        .map(|pkg| pkg.name.clone())
+        .collect();
+    names.extend(configured_packages.iter().map(|pkg| pkg.name.clone()));
+    names.sort();
+    names.dedup();
+    names.into_iter().map(|name| (name, Vec::new())).collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,7 +322,9 @@ pub fn orchestrate(
 
     let config = ReleaseConfig {
         hooks: crate::config::Hooks::default(),
-        publish: crate::config::PublishConfig::default(),
+        publish: crate::config::PublishConfig {
+            ignore_paths: publish_ignore_paths_seed(&publishable, &packages),
+        },
         adapters: enabled,
         skip_publish: Vec::new(),
         packages,
@@ -2330,6 +2347,10 @@ mod tests {
         assert_eq!(cfg.build_only_names(), vec!["opentf-release".to_string()]);
         assert_eq!(cfg.tag_format, DEFAULT_TAG_FORMAT);
         assert_eq!(cfg.snapshot_tag, None);
+        assert_eq!(
+            cfg.publish.ignore_paths.get("opentf-release"),
+            Some(&Vec::new())
+        );
 
         // workflow generated from it.
         let yml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
@@ -2394,6 +2415,7 @@ mod tests {
         assert_eq!(p.manifest.as_deref(), Some("deno.json"));
         assert_eq!(p.publish.as_deref(), Some("npx jsr publish"));
         assert_eq!(p.mode, Mode::Publish);
+        assert_eq!(cfg.publish.ignore_paths.get("jsr-lib"), Some(&Vec::new()));
     }
 
     #[test]

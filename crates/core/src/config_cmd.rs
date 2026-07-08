@@ -43,6 +43,7 @@ pub enum GlobalField {
     Provider,
     SnapshotTag,
     SkipPublish,
+    PublishIgnorePaths,
     TagFormat,
     LegacyTagFormats,
     ChangelogScope,
@@ -188,6 +189,7 @@ impl ConfigPrompt for StdinConfigPrompt {
             "Provider",
             "Snapshot tag",
             "Skip publish packages",
+            "Publish ignore paths",
             "Tag format",
             "Legacy tag formats",
             "Changelog scope",
@@ -200,6 +202,7 @@ impl ConfigPrompt for StdinConfigPrompt {
                 "Provider" => GlobalField::Provider,
                 "Snapshot tag" => GlobalField::SnapshotTag,
                 "Skip publish packages" => GlobalField::SkipPublish,
+                "Publish ignore paths" => GlobalField::PublishIgnorePaths,
                 "Tag format" => GlobalField::TagFormat,
                 "Legacy tag formats" => GlobalField::LegacyTagFormats,
                 "Changelog scope" => GlobalField::ChangelogScope,
@@ -420,6 +423,27 @@ fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfi
             config.skip_publish = parse_csv(&edited);
             save(root, config)
         }
+        GlobalField::PublishIgnorePaths => {
+            let choices = publish_ignore_path_packages(config);
+            let Some(name) = prompt.package(&choices)? else {
+                return Ok(());
+            };
+            let current = config
+                .publish
+                .ignore_paths
+                .get(name)
+                .map(|paths| paths.join(", "))
+                .unwrap_or_default();
+            let edited = prompt.text(
+                &format!("Ignored publish paths for {name} (comma-separated globs):"),
+                &current,
+            )?;
+            config
+                .publish
+                .ignore_paths
+                .insert(name.to_string(), parse_csv(&edited));
+            save(root, config)
+        }
         GlobalField::TagFormat => {
             let tag_format = prompt.tag_format(&config.tag_format)?;
             format_tag(&tag_format, "package", "1.2.3")?;
@@ -503,6 +527,30 @@ fn parse_targets(text: &str) -> Vec<Target> {
         .filter_map(|s| {
             let (name, arch) = s.split_once('-')?;
             Some(Target::resolved(name, arch))
+        })
+        .collect()
+}
+
+fn publish_ignore_path_packages(config: &ReleaseConfig) -> Vec<PackageEntry> {
+    let mut names: Vec<String> = config.publish.ignore_paths.keys().cloned().collect();
+    names.extend(config.packages.iter().map(|pkg| pkg.name.clone()));
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .map(|name| PackageEntry {
+            name,
+            adapter: Ecosystem::Generic,
+            mode: Mode::Publish,
+            matrix: false,
+            targets: Vec::new(),
+            command: String::new(),
+            artifacts: String::new(),
+            bin_name: None,
+            compress: None,
+            manifest: None,
+            version_field: None,
+            publish: None,
         })
         .collect()
 }
@@ -604,6 +652,9 @@ mod tests {
             adapters: vec![Ecosystem::Npm],
             provider: "github".to_string(),
             snapshot_tag: Some("snapshot".to_string()),
+            publish: crate::config::PublishConfig {
+                ignore_paths: [("pkg".to_string(), Vec::new())].into_iter().collect(),
+            },
             packages: vec![PackageEntry {
                 name: "pkg".to_string(),
                 adapter: Ecosystem::Generic,
@@ -636,6 +687,7 @@ mod tests {
     fn global_prompt(field: GlobalField, text: Vec<&str>) -> FakePrompt {
         FakePrompt {
             actions: RefCell::new(vec![ConfigAction::GlobalSettings, ConfigAction::Exit]),
+            package: RefCell::new(Some("pkg".to_string())),
             global_field: RefCell::new(field),
             scope: RefCell::new(ChangelogScope::Root),
             strategy: RefCell::new(ChangelogStrategy::Generated),
@@ -740,6 +792,20 @@ mod tests {
         .unwrap();
         cfg = ReleaseConfig::load(tmp.path()).unwrap();
         assert_eq!(cfg.skip_publish, vec!["@scope/old", "pkg-internal"]);
+
+        orchestrate_with_prompt(
+            tmp.path(),
+            &global_prompt(
+                GlobalField::PublishIgnorePaths,
+                vec!["docs/**, **/*.test.ts"],
+            ),
+        )
+        .unwrap();
+        cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.publish.ignore_paths.get("pkg").unwrap(),
+            &vec!["docs/**".to_string(), "**/*.test.ts".to_string()]
+        );
 
         orchestrate_with_prompt(
             tmp.path(),
