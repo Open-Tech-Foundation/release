@@ -19,6 +19,10 @@ pub trait RepoState {
     /// so shared root files like the lockfile or CI config don't falsely dirty it).
     fn commit_count_since(&self, tag: &str, pkg_dir: &Path) -> Result<usize>;
 
+    /// Files changed since `tag` that touched `pkg_dir`, returned relative to that package
+    /// directory so package-specific ignore globs can be evaluated naturally.
+    fn changed_files_since(&self, tag: &str, pkg_dir: &Path) -> Result<Vec<PathBuf>>;
+
     /// Get the formatted commits touching `pkg_dir` since `tag` (or all if None).
     fn commits_since(&self, tag: Option<&str>, pkg_dir: &Path) -> Result<String>;
 }
@@ -66,6 +70,28 @@ impl RepoState for GitRepo {
         let range = format!("{tag}..HEAD");
         let stdout = run_git(&self.root, &["rev-list", "--count", &range, "--", pathspec])?;
         Ok(stdout.trim().parse().unwrap_or(0))
+    }
+
+    fn changed_files_since(&self, tag: &str, pkg_dir: &Path) -> Result<Vec<PathBuf>> {
+        let pathspec = repo_pathspec(&self.root, pkg_dir)?;
+        let range = format!("{tag}..HEAD");
+        let stdout = run_git(&self.root, &["diff", "--name-only", &range, "--", pathspec])?;
+        let pkg_rel = repo_pathspec(&self.root, pkg_dir)?;
+        let pkg_prefix = if pkg_rel == "." {
+            None
+        } else {
+            Some(format!("{pkg_rel}/"))
+        };
+
+        Ok(stdout
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| match &pkg_prefix {
+                Some(prefix) => line.strip_prefix(prefix).unwrap_or(line),
+                None => line,
+            })
+            .map(PathBuf::from)
+            .collect())
     }
 
     fn commits_since(&self, tag: Option<&str>, pkg_dir: &Path) -> Result<String> {
@@ -310,6 +336,10 @@ mod tests {
         write(pkg_dir.join("index.js"), "// code\n");
         commit_all(root, "change package a");
         assert_eq!(repo.commit_count_since("a@1.10.0", &pkg_dir).unwrap(), 1);
+        assert_eq!(
+            repo.changed_files_since("a@1.10.0", &pkg_dir).unwrap(),
+            vec![PathBuf::from("index.js")]
+        );
     }
 
     #[test]

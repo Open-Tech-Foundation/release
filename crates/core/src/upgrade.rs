@@ -59,6 +59,7 @@ mod tests {
             adapters: vec![Ecosystem::Npm],
             skip_publish: Vec::new(),
             hooks: Hooks::default(),
+            publish: crate::config::PublishConfig::default(),
             packages: vec![PackageEntry {
                 name: "docs-site".to_string(),
                 adapter: Ecosystem::Npm,

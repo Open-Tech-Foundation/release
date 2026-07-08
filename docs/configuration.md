@@ -21,6 +21,9 @@ legacy_tag_formats = ["{name}@{version}"]
 # Publishable packages that otf-release should not version or publish.
 skip_publish = ["@scope/internal-tool"]
 
+[publish.ignore_paths]
+"@scope/docs-site" = ["docs/**", "**/*.test.ts", "**/__tests__/**"]
+
 # GitHub Release body source for build-only packages.
 github_release_notes = "auto-generate"
 
@@ -74,6 +77,7 @@ artifacts = "dist/**"
 | `tag_format` | Global git tag format used by `version`, preflight, `publish`, and generated GitHub Release jobs. Must include `{version}`; may include `{name}` for package-scoped tags, e.g. `{name}@{version}`. |
 | `legacy_tag_formats` | Optional older tag formats used only to find prior release history during `version`/preflight and generated changelog notes. New tags are still written with `tag_format`. |
 | `skip_publish` | Optional package names to exclude from versioning, preflight, and registry publish even if their manifests are otherwise publishable. |
+| `publish.ignore_paths` | Optional per-package path globs. If a package has commits since its last tag, `[Unreleased]` is empty, and **every** changed file matches one of these globs, the release flow prints a warning and continues instead of aborting. |
 | `changelog_scope` | Where curated release notes live: `"root"` uses the root `CHANGELOG.md` for every package; `"package"` uses each package's adapter-discovered `CHANGELOG.md`. |
 | `github_release_notes` | GitHub Release body source for `build-only` packages: `"auto-generate"` lets GitHub generate notes, `"curated-changelog"` copies root notes in root scope or combines released sections from all configured package changelogs in package scope, and `"semantic-commits"` writes a commit list since the previous matching `tag_format` tag. `init` asks for this and `config` can edit it later. |
 | `[[package]]` | A package with an explicit build step. |
@@ -128,6 +132,21 @@ See [adapters/generic.md](./adapters/generic.md).
   packages (both modes) are versioned, changelog-rolled, committed, pushed, and opened as one PR.
 - **`publish`** acts on every enabled adapter but **skips `build-only` packages** — those ship
   via the GitHub Release the workflow creates, not through a registry.
+
+## Publish Ignore Paths
+
+`publish.ignore_paths` is keyed by package name, not adapter, so it applies even to packages
+that do not have a `[[package]]` build entry. Use it for churn that should not force changelog
+notes by itself, for example docs-only and tests-only edits:
+
+```toml
+[publish.ignore_paths]
+"@scope/pkg-a" = ["docs/**", "**/*.md"]
+"@scope/pkg-b" = ["**/*.test.ts", "**/*.spec.ts", "**/__tests__/**"]
+```
+
+This is a short-term escape hatch, not a release classifier. Mixed changes still fail if any
+non-ignored file changed and `[Unreleased]` is empty.
 
 ## See also
 

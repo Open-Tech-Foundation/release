@@ -169,16 +169,27 @@ pub fn orchestrate_many(
         .flat_map(|ctx| ctx.packages.iter().cloned())
         .collect();
     let history_tag_formats = config.history_tag_formats();
-    let violations = preflight::check_with_options(
+    let report = preflight::check_with_options(
         repo,
         &all_packages,
         &[],
         preflight::CheckOptions {
             tag_formats: history_tag_formats.clone(),
+            ignore_paths: all_packages
+                .iter()
+                .filter_map(|pkg| {
+                    let ignores = config.publish_ignore_paths_for(&pkg.name);
+                    (!ignores.is_empty()).then(|| (pkg.name.clone(), ignores.to_vec()))
+                })
+                .collect(),
         },
     )?;
-    if !violations.is_empty() {
-        bail!("{}", preflight::format_violations(&violations));
+    if !report.warnings.is_empty() {
+        println!("{}", preflight::format_warnings(&report.warnings));
+        println!();
+    }
+    if !report.violations.is_empty() {
+        bail!("{}", preflight::format_violations(&report.violations));
     }
 
     // 2. Pending = publishable packages that carry curated [Unreleased] notes.
@@ -655,6 +666,10 @@ mod tests {
 
         fn commit_count_since(&self, _: &str, _: &Path) -> Result<usize> {
             Ok(0)
+        }
+
+        fn changed_files_since(&self, _: &str, _: &Path) -> Result<Vec<std::path::PathBuf>> {
+            Ok(Vec::new())
         }
 
         fn commits_since(&self, _: Option<&str>, _: &Path) -> Result<String> {

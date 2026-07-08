@@ -1,13 +1,14 @@
 //! Strict preflight gate — all-or-nothing, runs before any prompt or mutation.
 //!
 //! For every non-private package, state is derived from its last git tag matching the configured
-//! tag format.
-//! A single violation collects *all* violations, prints them, and exits non-zero before
-//! any `release/*` branch is created or any file is written. See `docs/preflight.md`.
+//! tag format. Missing changelog notes on packages with only ignorable path changes are downgraded
+//! to warnings; hard violations still collect *all* failures and exit non-zero before any
+//! `release/*` branch is created or any file is written. See `docs/preflight.md`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use glob::Pattern;
 
 use crate::adapter::Pkg;
 use crate::changelog;
@@ -20,17 +21,34 @@ pub struct Violation {
     pub message: String,
 }
 
+/// A non-fatal preflight condition that should be surfaced before continuing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Warning {
+    pub package: String,
+    pub message: String,
+}
+
+/// The full result of a preflight check.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Report {
+    pub violations: Vec<Violation>,
+    pub warnings: Vec<Warning>,
+}
+
 /// Preflight behavior switches supplied by the caller.
 #[derive(Debug, Clone)]
 pub struct CheckOptions {
     /// Configured git tag formats used to find prior releases.
     pub tag_formats: Vec<String>,
+    /// Per-package glob patterns that should be ignored when classifying path-scoped changes.
+    pub ignore_paths: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl Default for CheckOptions {
     fn default() -> Self {
         Self {
             tag_formats: vec![crate::config::DEFAULT_TAG_FORMAT.to_string()],
+            ignore_paths: std::collections::HashMap::new(),
         }
     }
 }
@@ -42,7 +60,7 @@ pub fn check(
     packages: &[Pkg],
     selected: &[String],
 ) -> Result<Vec<Violation>> {
-    check_with_options(repo, packages, selected, CheckOptions::default())
+    Ok(check_with_options(repo, packages, selected, CheckOptions::default())?.violations)
 }
 
 /// Run the gate with explicit behavior switches.
@@ -51,8 +69,8 @@ pub fn check_with_options(
     packages: &[Pkg],
     selected: &[String],
     opts: CheckOptions,
-) -> Result<Vec<Violation>> {
-    let mut violations = Vec::new();
+) -> Result<Report> {
+    let mut report = Report::default();
 
     for pkg in packages {
         // Private packages may carry commits and need no changelog.
@@ -70,9 +88,27 @@ pub fn check_with_options(
             Some(tag) => {
                 let count = repo.commit_count_since(&tag, pkg_dir)?;
                 if empty && count > 0 {
-                    Some(format!(
-                        "{count} commit(s) since {tag} but [Unreleased] is empty"
-                    ))
+                    let changed_files = repo.changed_files_since(&tag, pkg_dir)?;
+                    let ignored = only_ignored_changes(
+                        &changed_files,
+                        opts.ignore_paths
+                            .get(&pkg.name)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                    )?;
+                    if ignored {
+                        report.warnings.push(Warning {
+                            package: pkg.name.clone(),
+                            message: format!(
+                                "{count} commit(s) since {tag} but [Unreleased] is empty; only ignored paths changed"
+                            ),
+                        });
+                        None
+                    } else {
+                        Some(format!(
+                            "{count} commit(s) since {tag} but [Unreleased] is empty"
+                        ))
+                    }
                 } else if empty && selected_for_bump {
                     Some("selected for bump but [Unreleased] is empty".to_string())
                 } else {
@@ -82,14 +118,14 @@ pub fn check_with_options(
         };
 
         if let Some(message) = violation {
-            violations.push(Violation {
+            report.violations.push(Violation {
                 package: pkg.name.clone(),
                 message,
             });
         }
     }
 
-    Ok(violations)
+    Ok(report)
 }
 
 /// Render violations as the CLI abort block.
@@ -97,6 +133,15 @@ pub fn format_violations(violations: &[Violation]) -> String {
     let mut out = String::from("release aborted — preflight violations:\n");
     for v in violations {
         out.push_str(&format!("\n  {}: {}", v.package, v.message));
+    }
+    out
+}
+
+/// Render warnings as a CLI block printed before the release flow continues.
+pub fn format_warnings(warnings: &[Warning]) -> String {
+    let mut out = String::from("preflight warnings:\n");
+    for w in warnings {
+        out.push_str(&format!("\n  {}: {}", w.package, w.message));
     }
     out
 }
@@ -109,6 +154,24 @@ fn unreleased_is_empty(changelog_path: &Path) -> Result<bool> {
     Ok(changelog::parse_unreleased(changelog_path)?.is_empty())
 }
 
+fn only_ignored_changes(changed_files: &[PathBuf], ignore_paths: &[String]) -> Result<bool> {
+    if changed_files.is_empty() {
+        return Ok(false);
+    }
+    if ignore_paths.is_empty() {
+        return Ok(false);
+    }
+
+    let patterns: Result<Vec<Pattern>, glob::PatternError> =
+        ignore_paths.iter().map(|glob| Pattern::new(glob)).collect();
+    let patterns = patterns?;
+
+    Ok(changed_files.iter().all(|path| {
+        let candidate = path.to_string_lossy();
+        patterns.iter().any(|pattern| pattern.matches(&candidate))
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +181,7 @@ mod tests {
     struct FakeRepo {
         tags: HashMap<String, String>,
         counts: HashMap<String, usize>,
+        files: HashMap<String, Vec<PathBuf>>,
     }
 
     impl RepoState for FakeRepo {
@@ -126,6 +190,9 @@ mod tests {
         }
         fn commit_count_since(&self, tag: &str, _pkg_dir: &Path) -> Result<usize> {
             Ok(self.counts.get(tag).copied().unwrap_or(0))
+        }
+        fn changed_files_since(&self, tag: &str, _pkg_dir: &Path) -> Result<Vec<PathBuf>> {
+            Ok(self.files.get(tag).cloned().unwrap_or_default())
         }
         fn commits_since(&self, _: Option<&str>, _: &Path) -> Result<String> {
             Ok(String::new())
@@ -153,19 +220,24 @@ mod tests {
         }
     }
 
-    fn messages(violations: &[Violation]) -> HashMap<String, String> {
-        violations
+    fn messages<T>(
+        items: &[T],
+        package: fn(&T) -> &String,
+        message: fn(&T) -> &String,
+    ) -> HashMap<String, String> {
+        items
             .iter()
-            .map(|v| (v.package.clone(), v.message.clone()))
+            .map(|v| (package(v).clone(), message(v).clone()))
             .collect()
     }
 
     #[test]
-    fn collects_all_violation_kinds_and_skips_clean_and_private() {
+    fn collects_hard_violations_and_downgrades_ignored_only_changes_to_warnings() {
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path();
         let packages = vec![
-            pkg(d, "core", true, Some(EMPTY)), // tag + commits + empty -> commits violation
+            pkg(d, "core", true, Some(EMPTY)), // tag + commits + empty -> ignored-only warning
+            pkg(d, "engine", true, Some(EMPTY)), // tag + commits + empty -> hard violation
             pkg(d, "utils", true, Some(WITH_NOTES)), // tag + commits + notes -> ok
             pkg(d, "sdk", true, Some(EMPTY)),  // tag, no commits, empty, selected -> selected
             pkg(d, "new", true, Some(EMPTY)), // no tag + empty notes -> first-release notes violation
@@ -177,24 +249,54 @@ mod tests {
         let repo = FakeRepo {
             tags: HashMap::from([
                 ("core".into(), "core@1.2.0".into()),
+                ("engine".into(), "engine@1.2.0".into()),
                 ("utils".into(), "utils@0.5.0".into()),
                 ("sdk".into(), "sdk@2.0.0".into()),
             ]),
             counts: HashMap::from([
                 ("core@1.2.0".into(), 3),
+                ("engine@1.2.0".into(), 2),
                 ("utils@0.5.0".into(), 2),
                 ("sdk@2.0.0".into(), 0),
+            ]),
+            files: HashMap::from([
+                (
+                    "core@1.2.0".into(),
+                    vec![
+                        PathBuf::from("docs/guide.md"),
+                        PathBuf::from("src/lib.test.ts"),
+                    ],
+                ),
+                ("engine@1.2.0".into(), vec![PathBuf::from("src/lib.rs")]),
             ]),
         };
 
         let selected = vec!["sdk".to_string()];
-        let violations = check(&repo, &packages, &selected).unwrap();
-        let msgs = messages(&violations);
+        let report = check_with_options(
+            &repo,
+            &packages,
+            &selected,
+            CheckOptions {
+                tag_formats: vec![crate::config::DEFAULT_TAG_FORMAT.to_string()],
+                ignore_paths: HashMap::from([(
+                    "core".into(),
+                    vec!["docs/**".into(), "**/*.test.ts".into()],
+                )]),
+            },
+        )
+        .unwrap();
+        let msgs = messages(&report.violations, |v| &v.package, |v| &v.message);
+        let warns = messages(&report.warnings, |w| &w.package, |w| &w.message);
 
-        assert_eq!(violations.len(), 4, "got: {msgs:?}");
+        assert_eq!(report.violations.len(), 4, "got: {msgs:?}");
+        assert_eq!(report.warnings.len(), 1, "got: {warns:?}");
         assert_eq!(
-            msgs.get("core").unwrap(),
-            "3 commit(s) since core@1.2.0 but [Unreleased] is empty"
+            warns.get("core").unwrap(),
+            "3 commit(s) since core@1.2.0 but [Unreleased] is empty; only ignored paths changed"
+        );
+        assert_eq!(
+            msgs.get("engine").unwrap(),
+            "2 commit(s) since engine@1.2.0 but [Unreleased] is empty"
         );
         assert_eq!(
             msgs.get("sdk").unwrap(),
@@ -209,6 +311,7 @@ mod tests {
             msgs.get("miss").unwrap(),
             "first release but [Unreleased] is empty"
         );
+        assert!(!msgs.contains_key("core"));
         assert!(!msgs.contains_key("utils"));
         assert!(!msgs.contains_key("app"));
     }
@@ -224,10 +327,11 @@ mod tests {
         let repo = FakeRepo {
             tags: HashMap::new(),
             counts: HashMap::new(),
+            files: HashMap::new(),
         };
 
         let violations = check(&repo, &packages, &[]).unwrap();
-        let msgs = messages(&violations);
+        let msgs = messages(&violations, |v| &v.package, |v| &v.message);
 
         assert_eq!(violations.len(), 1, "got: {msgs:?}");
         assert_eq!(
@@ -245,6 +349,7 @@ mod tests {
         let repo = FakeRepo {
             tags: HashMap::from([("core".into(), "core@1.0.0".into())]),
             counts: HashMap::from([("core@1.0.0".into(), 1)]),
+            files: HashMap::from([("core@1.0.0".into(), vec![PathBuf::from("src/lib.rs")])]),
         };
         assert!(check(&repo, &packages, &[]).unwrap().is_empty());
     }
@@ -265,5 +370,23 @@ mod tests {
         assert!(out.contains("preflight violations"));
         assert!(out.contains("  core: boom"));
         assert!(out.contains("  cli: bang"));
+    }
+
+    #[test]
+    fn format_warnings_lists_each_package() {
+        let v = vec![
+            Warning {
+                package: "core".into(),
+                message: "heads up".into(),
+            },
+            Warning {
+                package: "cli".into(),
+                message: "draft only".into(),
+            },
+        ];
+        let out = format_warnings(&v);
+        assert!(out.contains("preflight warnings"));
+        assert!(out.contains("  core: heads up"));
+        assert!(out.contains("  cli: draft only"));
     }
 }

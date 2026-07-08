@@ -24,6 +24,7 @@
 //! artifacts = "dist/**"
 //! ```
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -352,6 +353,15 @@ pub struct Hooks {
     pub post_publish: Vec<String>,
 }
 
+/// Publish policy knobs that affect release gating.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PublishConfig {
+    /// Per-package path globs that publish flow checks should ignore when deciding whether path-scoped
+    /// commits without changelog notes deserve only a warning.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub ignore_paths: HashMap<String, Vec<String>>,
+}
+
 /// The whole `release.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseConfig {
@@ -363,6 +373,9 @@ pub struct ReleaseConfig {
     /// Global lifecycle hooks.
     #[serde(default)]
     pub hooks: Hooks,
+    /// Publish path-ignore policy keyed by package name.
+    #[serde(default)]
+    pub publish: PublishConfig,
     /// Packages with an explicit build step. Packages absent here are published as-is by their
     /// adapter (no build), in `publish` mode.
     #[serde(default, rename = "package")]
@@ -433,6 +446,7 @@ impl Default for ReleaseConfig {
             adapters: Vec::new(),
             skip_publish: Vec::new(),
             hooks: Hooks::default(),
+            publish: PublishConfig::default(),
             packages: Vec::new(),
             snapshot_tag: None,
             tag_format: default_tag_format(),
@@ -459,6 +473,15 @@ impl ReleaseConfig {
         std::iter::once(self.tag_format.clone())
             .chain(self.legacy_tag_formats.iter().cloned())
             .collect()
+    }
+
+    /// The configured publish ignore globs for this package name.
+    pub fn publish_ignore_paths_for(&self, pkg_name: &str) -> &[String] {
+        self.publish
+            .ignore_paths
+            .get(pkg_name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// Mark configured packages as non-publishable so version/preflight/publish treat them like
@@ -544,6 +567,12 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             hooks: Hooks::default(),
+            publish: PublishConfig {
+                ignore_paths: HashMap::from([(
+                    "docs-site".into(),
+                    vec!["docs/**".into(), "**/*.test.ts".into()],
+                )]),
+            },
             packages: vec![
                 PackageEntry {
                     name: "web-compiler".into(),
@@ -584,12 +613,17 @@ mod tests {
         assert!(text.contains("mode = \"publish\""));
         assert!(text.contains("github_release_notes = \"auto-generate\""));
         assert!(text.contains("skip_publish = [\"private-tool\"]"));
+        assert!(text.contains("[publish.ignore_paths]"));
 
         let back: ReleaseConfig = toml::from_str(&text).unwrap();
         assert_eq!(back.adapters, cfg.adapters);
         assert_eq!(back.github_release_notes, GithubReleaseNotes::AutoGenerate);
         assert_eq!(back.skip_publish, vec!["private-tool"]);
         assert_eq!(back.changelog_scope, ChangelogScope::Package);
+        assert_eq!(
+            back.publish_ignore_paths_for("docs-site"),
+            ["docs/**", "**/*.test.ts"]
+        );
         assert_eq!(back.packages.len(), 2);
         assert_eq!(
             back.build_only_names(),
@@ -612,6 +646,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             adapters: vec![Ecosystem::Cargo],
             hooks: Hooks::default(),
+            publish: PublishConfig::default(),
             packages: vec![],
         };
         cfg.save(tmp.path()).unwrap();
@@ -650,6 +685,12 @@ mod tests {
         assert!(!packages[0].publishable);
         assert!(packages[1].publishable);
         assert_eq!(cfg.build_only_names(), vec!["@scope/manual"]);
+    }
+
+    #[test]
+    fn publish_ignore_paths_default_to_empty() {
+        let cfg = ReleaseConfig::default();
+        assert!(cfg.publish_ignore_paths_for("missing").is_empty());
     }
 
     #[test]
