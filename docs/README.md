@@ -23,9 +23,13 @@ polyglot monorepos.
 | [architecture.md](./architecture.md) | Crate layout, the core/adapter seam, data flow. |
 | [commands/version.md](./commands/version.md) | The interactive, local `version` command. |
 | [commands/publish.md](./commands/publish.md) | The non-interactive, CI `publish` command. |
+| [commands/check.md](./commands/check.md) | The CI release gate (`otf-release check`). |
 | [commands/matrix-build.md](./commands/matrix-build.md) | The `matrix` / `build` CI helpers for cross-compiled binary packages. |
 | [commands/init.md](./commands/init.md) | Interactive setup: writes `release.toml`, generates `release.yml`. |
 | [commands/config.md](./commands/config.md) | Interactive editor for `release.toml`. |
+| [commands/upgrade.md](./commands/upgrade.md) | Regenerate `release.yml` from `release.toml`. |
+| [commands/snapshot.md](./commands/snapshot.md) | Experimental hash-based CI snapshot releases. |
+| [commands/self-update.md](./commands/self-update.md) | Update the installed CLI from GitHub Releases. |
 | [configuration.md](./configuration.md) | The `release.toml` schema — the committed source of truth. |
 | [adapters/overview.md](./adapters/overview.md) | The `Adapter` trait and domain types. |
 | [adapters/npm.md](./adapters/npm.md) | The npm adapter — rules, gotchas, commands. |

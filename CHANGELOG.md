@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **docs** — Added dedicated command references for `upgrade`, experimental snapshot releases,
+  and `self-update`, and linked them from the root and documentation indexes.
 - **workflow** — Generated release workflows now gate, build, and publish configured packages
   independently. `check --package` and `publish --package` keep a package's matrix and publish job
   isolated, while the fallback publisher excludes packages owned by those local pipelines, so an

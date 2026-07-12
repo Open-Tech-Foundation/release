@@ -105,7 +105,7 @@ Commands are grouped by where they run. Each links to reference docs where avail
 | --- | --- |
 | [`init`](docs/commands/init.md) | Interactive setup. Writes [`release.toml`](docs/configuration.md) and `.github/workflows/release.yml`. |
 | [`config`](docs/commands/config.md) | Interactive editor for hooks, ecosystems, package build fields, generic package fields, provider, snapshot tag, changelog scope/strategy, and GitHub Release notes. |
-| [`upgrade`](docs/commands/config.md) | Regenerates `release.yml` from the current `release.toml`. Use `--force` to overwrite. |
+| [`upgrade`](docs/commands/upgrade.md) | Regenerates `release.yml` from the current `release.toml`. Use `--force` to overwrite. |
 
 ### Local release
 
@@ -121,13 +121,13 @@ Commands are grouped by where they run. Each links to reference docs where avail
 | [`matrix`](docs/commands/matrix-build.md) | Prints the GitHub Actions build matrix (JSON) for a matrix package from `release.toml` — no hand-maintained target list in YAML. |
 | [`build`](docs/commands/matrix-build.md) | Builds one matrix target (`--package` / `--target`), cross-compiling as needed, and stages the binary at `bin/<platform>-<arch>/<bin>[.br]` for publish. |
 | [`publish`](docs/commands/publish.md) | Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. Refuses to publish a matrix package whose per-platform binaries weren't staged. |
-| [`snapshot`](docs/roadmap.md) | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |
+| [`snapshot`](docs/commands/snapshot.md) | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |
 
 ### Maintenance
 
 | Command | What it does |
 | --- | --- |
-| [`self-update`](docs/README.md) | Checks GitHub Releases and reruns the install script when a newer CLI version exists. |
+| [`self-update`](docs/commands/self-update.md) | Checks GitHub Releases and reruns the install script when a newer CLI version exists. |
 
 ## ⚙️ Configuration
 
@@ -233,6 +233,9 @@ flowchart TD
 | [check](docs/commands/check.md) | CI gate — should this push run the release pipeline? |
 | [matrix / build](docs/commands/matrix-build.md) | Matrix JSON and per-target cross-compiled builds. |
 | [config](docs/commands/config.md) | Interactive `release.toml` editor. |
+| [upgrade](docs/commands/upgrade.md) | Regenerate `release.yml` from `release.toml`. |
+| [snapshot](docs/commands/snapshot.md) | Experimental hash-based CI snapshot releases. |
+| [self-update](docs/commands/self-update.md) | Update the installed CLI from GitHub Releases. |
 
 **Configuration & CI**
 
