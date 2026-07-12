@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-12
+
 - **docs** — Added dedicated command references for `upgrade`, experimental snapshot releases,
   and `self-update`, and linked them from the root and documentation indexes.
 - **workflow** — Generated release workflows now gate, build, and publish configured packages
