@@ -14,7 +14,7 @@ A single CLI run can't span OS runners, so the work is split into pieces the wor
 ```
 matrix-<pkg>   →   otf-release matrix --package <pkg>   (emit the matrix, once, on ubuntu)
 build-<pkg>    →   otf-release build  --package <pkg> --target <name>/<arch>   (per runner)
-publish        →   otf-release publish --artifacts-dir .artifacts             (gather + push)
+publish-<pkg>  →   otf-release publish --package <pkg> --artifacts-dir .artifacts
 ```
 
 ## `otf-release matrix`
@@ -56,9 +56,9 @@ where an install looks for it.
 
 ## How the pieces meet `publish`
 
-Each leg uploads its `.artifacts/<package>` tree as a separate artifact. The `publish` job merges
+Each leg uploads its `.artifacts/<package>` tree as a separate artifact. Its package-local publish job merges
 them back into `.artifacts/<package>` (`download-artifact` with `merge-multiple: true`), then
-`otf-release publish` copies that tree into the package before `npm publish`. A matrix package is
+`otf-release publish --package <pkg>` copies that tree into the package before `npm publish`. A matrix package is
 **only** published when its staged binaries are present — `publish` refuses a binary-less push (the
 invariant that replaced the old `private:true` guard).
 

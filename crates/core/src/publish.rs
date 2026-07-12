@@ -18,6 +18,10 @@ use crate::graph::Graph;
 /// Options for a `publish` run.
 #[derive(Debug, Clone)]
 pub struct PublishOptions {
+    /// Restrict the run to one package, leaving all other pending packages untouched.
+    pub package: Option<String>,
+    /// Packages owned by separate package-local pipelines.
+    pub exclude_packages: Vec<String>,
     /// Root of the staged-artifact tree (`.artifacts/`), if the workflow staged binaries.
     pub artifacts_dir: Option<PathBuf>,
     /// Resolve the plan and print it, but do not publish or push tags.
@@ -50,6 +54,8 @@ pub fn run(
 impl Default for PublishOptions {
     fn default() -> Self {
         Self {
+            package: None,
+            exclude_packages: Vec::new(),
             artifacts_dir: None,
             dry_run: false,
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
@@ -118,6 +124,10 @@ pub fn orchestrate_many(
 
     for adapter in adapters {
         let mut packages = adapter.discover_packages()?;
+        if let Some(name) = &opts.package {
+            packages.retain(|pkg| &pkg.name == name);
+        }
+        packages.retain(|pkg| !opts.exclude_packages.contains(&pkg.name));
         apply_changelog_scope(root, &opts.changelog_scope, &mut packages);
         let graph = Graph::build(&packages)?;
 

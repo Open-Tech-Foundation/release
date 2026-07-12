@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **workflow** — Generated release workflows now gate, build, and publish configured packages
+  independently. `check --package` and `publish --package` keep a package's matrix and publish job
+  isolated, while the fallback publisher excludes packages owned by those local pipelines, so an
+  unrelated release can neither trigger their builds nor be blocked by their skipped jobs.
 - **docs** — Refactored root `README.md` into a longer landing page: centered title, highlighted
   core rule, quick start with install as step 1, role-based links into `docs/`, grouped
   command/adapter/capability tables with reference links, a collapsible doc index at the bottom,

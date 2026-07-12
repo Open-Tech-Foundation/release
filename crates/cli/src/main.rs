@@ -104,9 +104,22 @@ enum Command {
     },
     /// CI gate: print `true` if any configured package has an untagged version to release, else
     /// `false`. Drives the workflow's `check-release` job so a non-release push skips the build.
-    Check,
+    Check {
+        /// Check only this package instead of the whole repository.
+        #[arg(long)]
+        package: Option<String>,
+        /// Exclude a package owned by its own package-local pipeline.
+        #[arg(long = "exclude-package")]
+        exclude_packages: Vec<String>,
+    },
     /// Non-interactive, CI: publish changed packages in dependency order. Idempotent.
     Publish {
+        /// Publish only this package. Other pending packages are left untouched.
+        #[arg(long)]
+        package: Option<String>,
+        /// Leave this package for its own package-local publish job.
+        #[arg(long = "exclude-package")]
+        exclude_packages: Vec<String>,
         /// Directory of staged binary artifacts (`.artifacts/`).
         #[arg(long)]
         artifacts_dir: Option<PathBuf>,
@@ -244,7 +257,10 @@ fn run() -> Result<()> {
             Ok(())
         }
 
-        Command::Check => {
+        Command::Check {
+            package,
+            exclude_packages,
+        } => {
             let config = ReleaseConfig::load(&root)?;
             let factory = CliAdapterFactory {
                 root: root.clone(),
@@ -257,12 +273,20 @@ fn run() -> Result<()> {
                 .collect();
             let adapter_refs: Vec<&dyn Adapter> =
                 adapters.iter().map(|adapter| adapter.as_ref()).collect();
-            let should_release = otf_release_core::check::run_many(&adapter_refs, &root, &config)?;
+            let should_release = otf_release_core::check::run_many_for_package(
+                &adapter_refs,
+                &root,
+                &config,
+                package.as_deref(),
+                &exclude_packages,
+            )?;
             println!("{should_release}");
             Ok(())
         }
 
         Command::Publish {
+            package,
+            exclude_packages,
             artifacts_dir,
             dry_run,
         } => {
@@ -293,6 +317,8 @@ fn run() -> Result<()> {
                     skip,
                     require_staged,
                     changelog_scope: config.changelog_scope.clone(),
+                    package,
+                    exclude_packages,
                 },
                 &config.hooks,
             )?;

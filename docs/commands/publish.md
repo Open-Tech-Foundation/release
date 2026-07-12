@@ -3,12 +3,14 @@
 **Non-interactive. Run in CI. Stateless. Idempotent and resumable.**
 
 ```
-otf-release publish [--artifacts-dir <DIR>] [--dry-run]
+otf-release publish [--package <NAME>] [--artifacts-dir <DIR>] [--dry-run]
 ```
 
 | Flag | Effect |
 | --- | --- |
 | `--artifacts-dir <DIR>` | Root of staged binary artifacts (`.artifacts/`). Per-package assets live in `<DIR>/<pkg>/`. |
+| `--package <NAME>` | Publish only this package; leave every other pending package untouched. |
+| `--exclude-package <NAME>` | Exclude a package owned by a separate package-local CI pipeline. Repeatable. |
 | `--dry-run` | Resolve and print the publish plan, but do not publish or push tags. |
 
 Implemented in `crates/core/src/publish.rs`. Triggered by a merge to `main` (see

@@ -23,6 +23,17 @@ const UNRELEASED_VERSION: &str = "0.0.0";
 
 /// Wire up the real git repo, discover every enabled adapter's packages, and decide.
 pub fn run_many(adapters: &[&dyn Adapter], root: &Path, config: &ReleaseConfig) -> Result<bool> {
+    run_many_for_package(adapters, root, config, None, &[])
+}
+
+/// Decide whether one package, or any package when omitted, has a pending release.
+pub fn run_many_for_package(
+    adapters: &[&dyn Adapter],
+    root: &Path,
+    config: &ReleaseConfig,
+    package: Option<&str>,
+    exclude_packages: &[String],
+) -> Result<bool> {
     let repo = GitRepo::new(root);
     let mut packages = Vec::new();
     for adapter in adapters {
@@ -30,6 +41,10 @@ pub fn run_many(adapters: &[&dyn Adapter], root: &Path, config: &ReleaseConfig) 
         // Fold `skip_publish` into `publishable = false` so the decision below excludes both those
         // and private apps with one check — matching how `publish` treats them.
         config.apply_publish_skips(&mut discovered);
+        if let Some(name) = package {
+            discovered.retain(|pkg| pkg.name == name);
+        }
+        discovered.retain(|pkg| !exclude_packages.contains(&pkg.name));
         packages.extend(discovered);
     }
     any_pending(&packages, &config.tag_format, |tag| repo.tag_exists(tag))

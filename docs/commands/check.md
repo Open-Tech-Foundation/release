@@ -8,6 +8,7 @@ A non-interactive helper that answers one question: **does this commit release a
 
 ```
 otf-release check
+otf-release check --package @opentf/web-compiler
 ```
 
 ## Why it exists
@@ -61,7 +62,9 @@ check-release:
 
 `fetch-depth: 0` matters: the tag comparison is against **local** tags, and a shallow checkout
 carries none. Every downstream job is gated on
-`if: needs.check-release.outputs.should_release == 'true'`.
+The generated workflow also runs the package form for every configured build package. Its matrix,
+build, and publish jobs consume only that package-local result; another package cannot start or
+block the chain.
 
 ## See also
 

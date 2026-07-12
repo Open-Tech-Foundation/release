@@ -385,6 +385,10 @@ fn slug(name: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
+fn release_output(name: &str) -> String {
+    format!("release_{}", slug(name).replace('-', "_"))
+}
+
 /// Multi-select build targets from the built-in registry, returning fully-resolved [`Target`]s
 /// (triple/runner/stage_as/ext/cross all filled). 32-bit targets are offered but off by default.
 fn select_targets(prompt: &str) -> Result<Vec<Target>> {
@@ -415,11 +419,18 @@ fn select_targets(prompt: &str) -> Result<Vec<Target>> {
 }
 
 /// The preliminary job that checks if a release is needed, guarding the expensive build steps.
-fn render_check_release_job(s: &mut String) {
+fn render_check_release_job(s: &mut String, config: &ReleaseConfig) {
     s.push_str("  check-release:\n");
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    outputs:\n");
     s.push_str("      should_release: ${{ steps.check.outputs.should_release }}\n");
+    for entry in &config.packages {
+        s.push_str(&format!(
+            "      {}: ${{{{ steps.check.outputs.{} }}}}\n",
+            release_output(&entry.name),
+            release_output(&entry.name)
+        ));
+    }
     s.push_str("    steps:\n");
     // `fetch-depth: 0` so release tags are present locally for `otf-release check` to compare
     // against — a shallow checkout carries no tags.
@@ -431,9 +442,20 @@ fn render_check_release_job(s: &mut String) {
     // reads each package's version and tag with the *same* logic it publishes with, so the gate can
     // never drift. It prints `true` when any configured package has an untagged version to release.
     s.push_str("      - id: check\n");
-    s.push_str(
-        "        run: echo \"should_release=$(otf-release check)\" >> \"$GITHUB_OUTPUT\"\n\n",
-    );
+    s.push_str("        run: |\n");
+    s.push_str("          echo \"should_release=$(otf-release check");
+    for entry in &config.packages {
+        s.push_str(&format!(" --exclude-package {}", entry.name));
+    }
+    s.push_str(")\" >> \"$GITHUB_OUTPUT\"\n");
+    for entry in &config.packages {
+        s.push_str(&format!(
+            "          echo \"{}=$(otf-release check --package {})\" >> \"$GITHUB_OUTPUT\"\n",
+            release_output(&entry.name),
+            entry.name
+        ));
+    }
+    s.push('\n');
 }
 
 /// Render `.github/workflows/release.yml` from the config.
@@ -527,7 +549,7 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
         s.push_str("\npermissions:\n  contents: write  # create tags and GitHub Releases\n");
     }
     s.push_str("\njobs:\n");
-    render_check_release_job(&mut s);
+    render_check_release_job(&mut s, config);
 
     // Build jobs only for packages that actually declare a build command.
     let has_build = |p: &&PackageEntry| !p.command.trim().is_empty();
@@ -535,26 +557,29 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
         render_build_job(&mut s, entry, npm_tool);
     }
 
+    for entry in config
+        .packages
+        .iter()
+        .filter(|p| p.is_publish() && has_build(p))
+    {
+        render_package_publish_job(&mut s, entry, npm_tool);
+    }
+
     if needs_publish {
-        let needs: Vec<String> = config
-            .packages
-            .iter()
-            .filter(|p| p.is_publish() && has_build(p))
-            .map(|p| build_job(&p.name))
-            .collect();
-        let matrix_pubs: Vec<&PackageEntry> = config
-            .packages
-            .iter()
-            .filter(|p| p.is_publish() && p.matrix)
-            .collect();
         render_publish_job(
             &mut s,
-            &needs,
-            &matrix_pubs,
+            &[],
+            &[],
             npm_enabled,
             npm_tool,
             cargo_publishes,
             generic_publishes,
+            &config
+                .packages
+                .iter()
+                .filter(|p| p.is_publish() && has_build(p))
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -564,20 +589,22 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
             .iter()
             .filter(|p| p.is_build_only())
             .collect();
-        let needs: Vec<String> = build_only
-            .iter()
-            .filter(|p| has_build(p))
-            .map(|p| build_job(&p.name))
-            .collect();
-        render_github_release(
-            &mut s,
-            &needs,
-            &config.packages,
-            &build_only,
-            &config.tag_format,
-            &config.changelog_scope,
-            &config.github_release_notes,
-        );
+        for entry in build_only {
+            let needs = if entry.command.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![build_job(&entry.name)]
+            };
+            render_github_release(
+                &mut s,
+                &needs,
+                &config.packages,
+                &[entry],
+                &config.tag_format,
+                &config.changelog_scope,
+                &config.github_release_notes,
+            );
+        }
     }
 
     s
@@ -669,7 +696,10 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmT
     // 1. Emit the matrix from release.toml.
     s.push_str(&format!("  {matrix_job}:\n"));
     s.push_str("    needs: [check-release]\n");
-    s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
+    s.push_str(&format!(
+        "    if: needs.check-release.outputs.{} == 'true'\n",
+        release_output(name)
+    ));
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    outputs:\n      matrix: ${{ steps.set.outputs.matrix }}\n");
     s.push_str("    steps:\n");
@@ -683,7 +713,10 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmT
     // 2. Fan out over the matrix and build + stage each target.
     s.push_str(&format!("  {build}:\n"));
     s.push_str(&format!("    needs: [check-release, {matrix_job}]\n"));
-    s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
+    s.push_str(&format!(
+        "    if: needs.check-release.outputs.{} == 'true'\n",
+        release_output(name)
+    ));
     s.push_str("    runs-on: ${{ matrix.runner }}\n");
     s.push_str("    strategy:\n      fail-fast: false\n");
     s.push_str(&format!(
@@ -728,7 +761,10 @@ fn render_single_build_job(s: &mut String, entry: &PackageEntry, npm_tool: NpmTo
     let art_slug = slug(&entry.name);
     s.push_str(&format!("  {job}:\n"));
     s.push_str("    needs: [check-release]\n");
-    s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
+    s.push_str(&format!(
+        "    if: needs.check-release.outputs.{} == 'true'\n",
+        release_output(&entry.name)
+    ));
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n");
@@ -781,6 +817,7 @@ fn render_publish_job(
     npm_tool: NpmTool,
     cargo: bool,
     generic: bool,
+    excluded_packages: &[&str],
 ) {
     s.push_str("  publish:\n");
     let mut actual_needs = vec!["check-release".to_string()];
@@ -826,10 +863,14 @@ fn render_publish_job(
     s.push_str("      - name: Publish\n");
     let any_staged = has_non_matrix_feeder || !matrix_pubs.is_empty();
     if any_staged {
-        s.push_str("        run: otf-release publish --artifacts-dir .artifacts\n");
+        s.push_str("        run: otf-release publish --artifacts-dir .artifacts");
     } else {
-        s.push_str("        run: otf-release publish\n");
+        s.push_str("        run: otf-release publish");
     }
+    for package in excluded_packages {
+        s.push_str(&format!(" --exclude-package {package}"));
+    }
+    s.push('\n');
     s.push_str("        env:\n");
     if npm {
         s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n");
@@ -844,6 +885,56 @@ fn render_publish_job(
     s.push('\n');
 }
 
+/// Publish one configured build package after, and only after, its own build succeeds.
+fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm_tool: NpmTool) {
+    let name = &entry.name;
+    let slug = slug(name);
+    s.push_str(&format!("  publish-{slug}:\n"));
+    s.push_str(&format!(
+        "    needs: [check-release, {}]\n",
+        build_job(name)
+    ));
+    s.push_str(&format!(
+        "    if: needs.check-release.outputs.{} == 'true'\n",
+        release_output(name)
+    ));
+    s.push_str("    runs-on: ubuntu-latest\n");
+    s.push_str("    steps:\n");
+    s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
+    match entry.adapter {
+        Ecosystem::Npm => npm_tool.setup_node(s, true),
+        Ecosystem::Cargo => s.push_str("      - uses: dtolnay/rust-toolchain@stable\n"),
+        Ecosystem::Generic => {}
+    }
+    s.push_str("      - uses: actions/download-artifact@v4\n");
+    s.push_str("        with:\n");
+    if entry.matrix {
+        s.push_str(&format!("          pattern: {slug}-*\n"));
+        s.push_str(&format!("          path: .artifacts/{name}\n"));
+        s.push_str("          merge-multiple: true\n");
+    } else {
+        s.push_str(&format!("          name: {slug}\n"));
+        s.push_str("          path: .artifacts\n");
+    }
+    if entry.adapter == Ecosystem::Npm {
+        s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
+    }
+    push_install_otf_release(s);
+    s.push_str("      - name: Publish\n");
+    s.push_str(&format!(
+        "        run: otf-release publish --package {name} --artifacts-dir .artifacts\n"
+    ));
+    s.push_str("        env:\n");
+    match entry.adapter {
+        Ecosystem::Npm => s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n"),
+        Ecosystem::Cargo => {
+            s.push_str("          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n")
+        }
+        Ecosystem::Generic => {}
+    }
+    s.push_str("          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n\n");
+}
+
 /// The GitHub Release job for `build-only` packages: attach each package's staged artifacts to a
 /// configured release tag, idempotently (skip an existing release). No registry push.
 fn render_github_release(
@@ -855,11 +946,17 @@ fn render_github_release(
     changelog_scope: &ChangelogScope,
     github_release_notes: &GithubReleaseNotes,
 ) {
-    s.push_str("  github-release:\n");
+    let owner = build_only
+        .first()
+        .expect("a GitHub Release job must own a package");
+    s.push_str(&format!("  github-release-{}:\n", slug(&owner.name)));
     let mut actual_needs = vec!["check-release".to_string()];
     actual_needs.extend_from_slice(needs);
     needs_line(s, &actual_needs);
-    s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
+    s.push_str(&format!(
+        "    if: needs.check-release.outputs.{} == 'true'\n",
+        release_output(&owner.name)
+    ));
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
@@ -1836,9 +1933,7 @@ mod tests {
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         assert!(out.contains("          node-version: 24\n"));
         // The gate delegates to the binary — no hand-rolled inline version reads in the YAML.
-        assert!(out.contains(
-            "        run: echo \"should_release=$(otf-release check)\" >> \"$GITHUB_OUTPUT\"\n"
-        ));
+        assert!(out.contains("should_release=$(otf-release check)"));
         assert!(!out.contains("version=\"$(node -p"));
         assert!(!out.contains("version=\"$(cargo metadata"));
         assert!(out.contains("      - name: Install otf-release\n"));
@@ -1959,7 +2054,7 @@ mod tests {
         assert!(!out.contains("rust_target"));
         // Ships via a GitHub Release, idempotently — no registry, no cargo publish.
         assert!(out.contains("permissions:\n  contents: write"));
-        assert!(out.contains("  github-release:\n"));
+        assert!(out.contains("  github-release-opentf-release:\n"));
         assert!(out.contains("    needs: [check-release, build-opentf-release]\n"));
         assert!(out.contains("          tag=\"opentf-release@$version\"\n"));
         assert!(out.contains("            rm -rf \".flat-artifacts-opentf-release\"\n"));
@@ -1970,9 +2065,9 @@ mod tests {
         assert!(out.contains(
             "  check-release:\n    runs-on: ubuntu-latest\n    outputs:\n      should_release:"
         ));
-        assert!(out.contains(
-            "        run: echo \"should_release=$(otf-release check)\" >> \"$GITHUB_OUTPUT\"\n"
-        ));
+        assert!(
+            out.contains("should_release=$(otf-release check --exclude-package opentf-release)")
+        );
         assert!(!out.contains("git ls-remote"));
         assert!(out.contains("darwin) os_part=\"macos\" ;;\n"));
         assert!(out.contains("win32) os_part=\"windows\" ;;\n"));
@@ -2021,10 +2116,11 @@ mod tests {
         assert!(out.contains("        if: ${{ matrix.cross }}\n"));
         // The binaries flow to publish (needs build, merges artifacts, runs --artifacts-dir)…
         assert!(out.contains("  publish:\n"));
+        assert!(out.contains("  publish-opentf-web-compiler:\n"));
         assert!(out.contains("    needs: [check-release, build-opentf-web-compiler]\n"));
         assert!(out.contains("          pattern: opentf-web-compiler-*\n"));
         assert!(out.contains("          path: .artifacts/@opentf/web-compiler\n"));
-        assert!(out.contains("        run: otf-release publish --artifacts-dir .artifacts\n"));
+        assert!(out.contains("        run: otf-release publish --package @opentf/web-compiler --artifacts-dir .artifacts\n"));
         // …and NOT to a cosmetic GitHub Release of raw binaries.
         assert!(!out.contains("  github-release:\n"));
         // A generated npm version read is confident — no stray `# edit me` hint.
@@ -2069,6 +2165,12 @@ mod tests {
         // A matrix npm package builds a Rust binary, so both toolchains are set up in the fan-out.
         assert!(out.contains("  matrix-opentf-web-compiler:\n"));
         assert!(out.contains("  build-opentf-web-compiler:\n"));
+        assert!(out.contains(
+            "release_opentf_web_compiler=$(otf-release check --package @opentf/web-compiler)"
+        ));
+        assert!(
+            out.contains("if: needs.check-release.outputs.release_opentf_web_compiler == 'true'")
+        );
         assert!(out.contains("      - uses: dtolnay/rust-toolchain@stable\n"));
         assert!(out.contains("          targets: ${{ matrix.triple }}\n"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
@@ -2081,11 +2183,12 @@ mod tests {
 
         // The publish job merges each target's artifact back into `.artifacts/<package>` so the
         // staged `bin/<stage_as>/…` tree is whole before packing — the load-bearing fix.
-        assert!(out.contains("  publish:\n"));
+        assert!(out.contains("  publish-opentf-web-compiler:\n"));
         assert!(out.contains("          pattern: opentf-web-compiler-*\n"));
         assert!(out.contains("          path: .artifacts/@opentf/web-compiler\n"));
         assert!(out.contains("          merge-multiple: true\n"));
-        assert!(out.contains("        run: otf-release publish --artifacts-dir .artifacts\n"));
+        assert!(out.contains("        run: otf-release publish --package @opentf/web-compiler --artifacts-dir .artifacts\n"));
+        assert!(out.contains("run: otf-release publish --exclude-package @opentf/web-compiler\n"));
         // Hygiene: the npm auth secret is NPM_TOKEN, matching the snapshot workflow.
         assert!(out.contains("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n"));
         assert!(!out.contains("secrets.NODE_AUTH_TOKEN"));
@@ -2233,7 +2336,7 @@ mod tests {
         assert!(!out.contains("setup-node"));
         // Version comes from the configured manifest (deno.json), shipped via a GitHub Release.
         assert!(out.contains("          version=\"$(node -p \"require('./deno.json').version\")\""));
-        assert!(out.contains("  github-release:\n"));
+        assert!(out.contains("  github-release-release:\n"));
         assert!(out.contains("          tag=\"release@$version\"\n"));
         assert!(!out.contains("  publish:\n"));
         assert!(!out.contains("crates.io"));
@@ -2286,10 +2389,12 @@ mod tests {
         let out = render_workflow(&config);
         assert!(out.contains("  build-jsr-lib:\n"));
         // A unified publish job runs `otf-release publish` (which runs the configured command).
-        assert!(out.contains("  publish:\n"));
+        assert!(out.contains("  publish-jsr-lib:\n"));
         assert!(out.contains("    needs: [check-release, build-jsr-lib]\n"));
         assert!(out.contains("      - name: Install otf-release\n"));
-        assert!(out.contains("        run: otf-release publish --artifacts-dir .artifacts\n"));
+        assert!(out.contains(
+            "        run: otf-release publish --package jsr-lib --artifacts-dir .artifacts\n"
+        ));
         // The tool can't know a generic registry's toolchain/secret → edit-me markers.
         assert!(out.contains("# edit me: set up the toolchain your generic publish command needs"));
         assert!(!out.contains("github-release"));
@@ -2321,7 +2426,7 @@ mod tests {
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         assert!(out.contains("      - name: Install otf-release\n"));
         // cargo side is build-only: a GitHub Release depending on the cargo build.
-        assert!(out.contains("  github-release:\n"));
+        assert!(out.contains("  github-release-web-compiler:\n"));
         assert!(out.contains("    needs: [check-release, build-web-compiler]\n"));
         assert!(out.contains("          tag=\"web-compiler@$version\"\n"));
     }
@@ -2354,7 +2459,7 @@ mod tests {
 
         // workflow generated from it.
         let yml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
-        assert!(yml.contains("  github-release:\n"));
+        assert!(yml.contains("  github-release-opentf-release:\n"));
         assert!(!tmp.path().join(".github/workflows/snapshot.yml").exists());
     }
 
@@ -2445,7 +2550,9 @@ mod tests {
             Some("packages/web-compiler/package.json")
         );
         let yml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
-        assert!(yml.contains("should_release=$(otf-release check)"));
+        assert!(yml.contains(
+            "should_release=$(otf-release check --exclude-package @opentf/web-compiler)"
+        ));
         assert!(!yml.contains("workspaces"));
     }
 

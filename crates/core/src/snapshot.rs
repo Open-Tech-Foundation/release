@@ -66,6 +66,8 @@ pub fn run(adapter: &dyn Adapter, root: &Path, config: &ReleaseConfig) -> Result
         adapter,
         root,
         &publish::PublishOptions {
+            package: None,
+            exclude_packages: Vec::new(),
             artifacts_dir: None,
             dry_run: false,
             tag_format: config.tag_format.clone(),

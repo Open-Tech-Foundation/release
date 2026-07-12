@@ -16,8 +16,8 @@ check-release
       │                         │
       ├──▶ build-<pkg>          │         (non-matrix packages: a single runner)
       │          │             │
-      │          ├──────────┬──┴──▶ publish          (otf-release publish)
-      │          │          └─────▶ github-release   (build-only artifacts)
+      │          ├──────────┬──┴──▶ publish-<pkg>    (only that package)
+      │          │          └─────▶ github-release-<pkg>
       │
       └──▶ publish / github-release when no build job is needed
 ```
@@ -31,10 +31,10 @@ check-release
   and stages the binary under `.artifacts/<pkg>/bin/<stage_as>/`. For a non-matrix package it is a
   single runner that runs the entry's `command` and uploads its `artifacts`. **No `# edit me`** —
   the tool owns the triple/runner/cross/stage_as reconciliation.
-- **`publish`** — present when at least one enabled adapter has registry publishing. It runs
-  `otf-release publish` once; the CLI loops enabled adapters internally. It publishes only
-  registry-publish packages (`build-only` ones are skipped).
-- **`github-release`** — present when any package is `build-only`. Downloads the staged artifacts
+- **`publish-<pkg>`** — owns one configured build package and runs only when that package has an
+  untagged current version. The fallback `publish` job excludes all such packages and handles only
+  dynamically discovered packages that do not need a configured build.
+- **`github-release-<pkg>`** — present for each `build-only` package. Downloads its staged artifacts
   and attaches each package's artifacts to a GitHub Release tagged from `release.toml`'s
   `tag_format`. The release body follows `github_release_notes`: GitHub-generated notes, curated
   notes from root `CHANGELOG.md` in root scope, combined notes from configured package changelogs
