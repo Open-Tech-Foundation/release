@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **internal** — Fixed the CI clippy failure (`clippy::too_many_arguments`, denied by `-D warnings`)
+  by dropping two always-empty parameters (`needs`, `matrix_pubs`) and their now-dead
+  artifact-download code from the workflow publish-job renderer — leftovers from the 0.18.0
+  package-local refactor. The generated workflow is unchanged.
+
 ## [0.19.0] - 2026-07-16
 
 - **npm/init** — The tool now owns the build for plain npm packages; npm just publishes. For a

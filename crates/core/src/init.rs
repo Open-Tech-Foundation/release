@@ -617,8 +617,6 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
     if needs_publish {
         render_publish_job(
             &mut s,
-            &[],
-            &[],
             npm_enabled,
             npm_tool,
             cargo_publishes,
@@ -858,10 +856,13 @@ fn download_artifacts(s: &mut String, needs: &[String]) -> bool {
 /// enabled adapter internally, so this one job covers npm + crates.io + generic. It sets up only
 /// the toolchains the active registries need; generic publish steps carry `# edit me` markers
 /// since the tool can't know your registry's toolchain or secret.
+///
+/// This is the catch-all publisher for packages shipped **as-is** (no build step of their own):
+/// every package with its own build gets a dedicated `publish-<pkg>` job and is listed in
+/// `excluded_packages`, so this job never stages artifacts itself — it publishes what the registry
+/// packs directly.
 fn render_publish_job(
     s: &mut String,
-    needs: &[String],
-    matrix_pubs: &[&PackageEntry],
     npm: bool,
     npm_tool: NpmTool,
     cargo: bool,
@@ -869,9 +870,7 @@ fn render_publish_job(
     excluded_packages: &[&str],
 ) {
     s.push_str("  publish:\n");
-    let mut actual_needs = vec!["check-release".to_string()];
-    actual_needs.extend_from_slice(needs);
-    needs_line(s, &actual_needs);
+    needs_line(s, &["check-release".to_string()]);
     s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    steps:\n");
@@ -885,37 +884,12 @@ fn render_publish_job(
     if generic {
         s.push_str("      # edit me: set up the toolchain your generic publish command needs\n");
     }
-    // Non-matrix build artifacts (e.g. an npm package's `dist/`) come down in one shot. Matrix
-    // packages are handled below, so skip this when nothing else feeds the job (avoids a redundant
-    // download of the per-target artifacts we re-merge anyway).
-    let matrix_jobs: Vec<String> = matrix_pubs.iter().map(|p| build_job(&p.name)).collect();
-    let has_non_matrix_feeder = needs.iter().any(|n| !matrix_jobs.contains(n));
-    if has_non_matrix_feeder {
-        s.push_str("      - uses: actions/download-artifact@v4\n");
-        s.push_str("        with:\n          path: .artifacts\n");
-    }
-    // A matrix package's per-target binaries upload as separate artifacts; merge each package's
-    // back into `.artifacts/<package>/bin/<stage_as>/…` — the exact tree `publish` copies into the
-    // package before packing, so the install-time resolver finds every platform's binary.
-    for pkg in matrix_pubs {
-        let art_slug = slug(&pkg.name);
-        s.push_str("      - uses: actions/download-artifact@v4\n");
-        s.push_str("        with:\n");
-        s.push_str(&format!("          pattern: {art_slug}-*\n"));
-        s.push_str(&format!("          path: .artifacts/{}\n", pkg.name));
-        s.push_str("          merge-multiple: true\n");
-    }
     if npm {
         s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
     }
     push_install_otf_release(s);
     s.push_str("      - name: Publish\n");
-    let any_staged = has_non_matrix_feeder || !matrix_pubs.is_empty();
-    if any_staged {
-        s.push_str("        run: otf-release publish --artifacts-dir .artifacts");
-    } else {
-        s.push_str("        run: otf-release publish");
-    }
+    s.push_str("        run: otf-release publish");
     for package in excluded_packages {
         s.push_str(&format!(" --exclude-package {package}"));
     }
