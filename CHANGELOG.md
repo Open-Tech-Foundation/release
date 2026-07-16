@@ -8,6 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **npm/init** — The tool now owns the build for plain npm packages; npm just publishes. For a
+  non-matrix npm publish package, `init` auto-detects its `package.json` `scripts.build` (no prompt)
+  and generates a `publish-<pkg>` job that runs `npm run build` inline (scoped to the package
+  directory) before `npm publish` — dropping the separate build job and cross-job artifact staging
+  (`--artifacts-dir`). It also strips npm's pack/publish lifecycle hooks (`prepublish`,
+  `prepublishOnly`, `prepack`, `prepare`) from `package.json` surgically, printing what it removed,
+  so npm can't re-run a build behind the pipeline. Matrix npm packages (native binaries wrapped in
+  npm) keep the build-job + staging path.
+
 ## [0.18.0] - 2026-07-12
 
 - **docs** — Added dedicated command references for `upgrade`, experimental snapshot releases,

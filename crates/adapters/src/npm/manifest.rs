@@ -123,6 +123,102 @@ impl Manifest {
         self.content = next;
         Ok(true)
     }
+
+    /// The `scripts.<name>` command string, if present.
+    pub fn script(&self, name: &str) -> Option<String> {
+        self.get_string(&["scripts", name])
+    }
+
+    /// Remove the object entry at `path` (both its key and value), fixing the adjacent comma and
+    /// preserving all other bytes. Returns `true` if the key existed and was removed. Only object
+    /// keys are navigated — exactly what manifest edits need.
+    pub fn remove_key(&mut self, path: &[&str]) -> Result<bool> {
+        let Some((key, parent)) = path.split_last() else {
+            return Ok(false);
+        };
+        let b = self.content.as_bytes();
+        // Find the opening brace of the object that *contains* `key`.
+        let obj_start = if parent.is_empty() {
+            let mut i = 0;
+            skip_ws(b, &mut i);
+            if b.get(i) != Some(&b'{') {
+                return Ok(false);
+            }
+            i
+        } else {
+            match locate_value(&self.content, parent) {
+                Some(span) if b.get(span.start) == Some(&b'{') => span.start,
+                _ => return Ok(false),
+            }
+        };
+        let entries = object_entries(&self.content, obj_start)?;
+        let Some(idx) = entries.iter().position(|e| e.key == *key) else {
+            return Ok(false);
+        };
+        // Remove the entry plus exactly one adjacent comma, using entry boundaries so the
+        // surviving neighbour keeps its original leading whitespace/indentation.
+        let n = entries.len();
+        let (start, end) = if n == 1 {
+            (entries[0].key_start, entries[0].value_end)
+        } else if idx < n - 1 {
+            (entries[idx].key_start, entries[idx + 1].key_start)
+        } else {
+            (entries[idx - 1].value_end, entries[idx].value_end)
+        };
+        let mut next = String::with_capacity(self.content.len());
+        next.push_str(&self.content[..start]);
+        next.push_str(&self.content[end..]);
+        self.content = next;
+        Ok(true)
+    }
+}
+
+/// One `"key": value` entry located inside an object, with the byte offsets that bound it.
+struct ObjectEntry {
+    key: String,
+    /// Offset of the key's opening quote.
+    key_start: usize,
+    /// Offset just past the entry's value (before any trailing whitespace or comma).
+    value_end: usize,
+}
+
+/// Collect the direct entries of the object whose opening `{` is at `obj_start`.
+fn object_entries(s: &str, obj_start: usize) -> Result<Vec<ObjectEntry>> {
+    let b = s.as_bytes();
+    let mut i = obj_start;
+    if b.get(i) != Some(&b'{') {
+        return Err(anyhow!("expected an object at byte {obj_start}"));
+    }
+    i += 1;
+    let mut entries = Vec::new();
+    loop {
+        skip_ws(b, &mut i);
+        match b.get(i) {
+            Some(b'"') => {}
+            _ => break, // '}' (end) or malformed — stop collecting.
+        }
+        let key_start = i;
+        scan_string(b, &mut i).ok_or_else(|| anyhow!("unterminated key"))?;
+        let key = serde_json::from_str::<String>(&s[key_start..i])?;
+        skip_ws(b, &mut i);
+        if b.get(i) != Some(&b':') {
+            return Err(anyhow!("expected ':' after key"));
+        }
+        i += 1;
+        skip_ws(b, &mut i);
+        scan_value(b, &mut i).ok_or_else(|| anyhow!("bad value for {key}"))?;
+        entries.push(ObjectEntry {
+            key,
+            key_start,
+            value_end: i,
+        });
+        skip_ws(b, &mut i);
+        match b.get(i) {
+            Some(b',') => i += 1,
+            _ => break,
+        }
+    }
+    Ok(entries)
 }
 
 // ---- minimal JSON span locator -------------------------------------------------------------
@@ -347,6 +443,58 @@ mod tests {
     fn set_string_on_missing_path_reports_false() {
         let mut man = m("{\n  \"name\": \"@x/a\"\n}\n");
         assert!(!man.set_string(&["version"], "1.0.0").unwrap());
+    }
+
+    #[test]
+    fn reads_a_build_script() {
+        let src = r#"{
+  "name": "@x/a",
+  "scripts": { "build": "tsc -p .", "test": "vitest" }
+}
+"#;
+        let man = m(src);
+        assert_eq!(man.script("build").unwrap(), "tsc -p .");
+        assert_eq!(man.script("prepack"), None);
+    }
+
+    #[test]
+    fn remove_middle_key_keeps_siblings_and_indent() {
+        let src = "{\n  \"scripts\": {\n    \"build\": \"tsc\",\n    \"prepack\": \"npm run build\",\n    \"test\": \"vitest\"\n  }\n}\n";
+        let mut man = m(src);
+        assert!(man.remove_key(&["scripts", "prepack"]).unwrap());
+        assert_eq!(
+            man.content(),
+            "{\n  \"scripts\": {\n    \"build\": \"tsc\",\n    \"test\": \"vitest\"\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn remove_last_key_drops_preceding_comma() {
+        let src = "{\n  \"scripts\": {\n    \"build\": \"tsc\",\n    \"prepack\": \"npm run build\"\n  }\n}\n";
+        let mut man = m(src);
+        assert!(man.remove_key(&["scripts", "prepack"]).unwrap());
+        assert_eq!(
+            man.content(),
+            "{\n  \"scripts\": {\n    \"build\": \"tsc\"\n  }\n}\n"
+        );
+    }
+
+    #[test]
+    fn remove_only_key_empties_the_object() {
+        let src = "{\n  \"scripts\": {\n    \"prepack\": \"npm run build\"\n  }\n}\n";
+        let mut man = m(src);
+        assert!(man.remove_key(&["scripts", "prepack"]).unwrap());
+        assert_eq!(man.content(), "{\n  \"scripts\": {\n    \n  }\n}\n");
+    }
+
+    #[test]
+    fn remove_missing_key_reports_false_and_leaves_content() {
+        let src = "{\n  \"scripts\": { \"build\": \"tsc\" }\n}\n";
+        let mut man = m(src);
+        assert!(!man.remove_key(&["scripts", "prepack"]).unwrap());
+        assert_eq!(man.content(), src);
+        // Missing parent object is also a no-op, not an error.
+        assert!(!man.remove_key(&["missing", "x"]).unwrap());
     }
 
     #[test]

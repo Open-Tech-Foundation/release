@@ -50,6 +50,29 @@ Flags, all load-bearing:
   `--tag beta`). A normal release publishes under `latest`. This keeps an automated snapshot from
   ever becoming the default install.
 
+## Building before publish (the tool owns the build)
+
+The tool owns *releasing*; npm owns *publishing*. For a plain (non-matrix) npm package, there is no
+cross-job artifact staging — the build runs **inline in the package's own publish job**, on the same
+runner, right before `npm publish` packs it.
+
+At `init`, for each publishable npm package:
+
+- **Auto-detect the build.** If `package.json` declares a `scripts.build`, `init` records an
+  inline-build publish entry (`command = "npm run build"`) — no prompt. The generated
+  `publish-<pkg>` job runs `npm run build` (scoped to the package's directory via
+  `working-directory`) and then `otf-release publish --package <name>` with **no `--artifacts-dir`**.
+  A package without a `build` script is published as-is by the catch-all `publish` job.
+- **Strip pack/publish lifecycle hooks.** Because the pipeline runs the build itself, `init` removes
+  npm's `prepublish`, `prepublishOnly`, `prepack`, and `prepare` scripts from `package.json`
+  (surgically — every other byte is preserved) so npm can't re-run a build behind the pipeline, and
+  prints which hooks were removed. Move any custom pre-publish logic into a `build` script or the
+  `[hooks]` section of `release.toml`.
+
+Matrix npm packages (a native binary wrapped in an npm package) are the exception: their per-platform
+binaries are built on separate runners and **must** stage across jobs, so they keep the build-job +
+artifact path described below.
+
 ### Staging matrix binaries
 
 Before `npm publish`, the contents of `.artifacts/<package>/` are copied into the package. For a

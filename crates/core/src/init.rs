@@ -282,10 +282,17 @@ pub fn orchestrate(
     // Discover publishable packages across every *discoverable* ecosystem (npm/cargo read
     // manifests). The generic adapter has nothing to discover — its packages are entered below.
     let mut publishable: Vec<Pkg> = Vec::new();
+    let mut cargo_publishable: Vec<Pkg> = Vec::new();
+    let mut npm_publishable: Vec<Pkg> = Vec::new();
     for &eco in enabled.iter().filter(|e| **e != Ecosystem::Generic) {
         let adapter = factory.make(eco);
         for pkg in adapter.discover_packages()? {
             if pkg.publishable {
+                match eco {
+                    Ecosystem::Cargo => cargo_publishable.push(pkg.clone()),
+                    Ecosystem::Npm => npm_publishable.push(pkg.clone()),
+                    Ecosystem::Generic => {}
+                }
                 publishable.push(pkg);
             }
         }
@@ -294,18 +301,55 @@ pub fn orchestrate(
         }
     }
 
-    let refs: Vec<&Pkg> = publishable.iter().collect();
-    let build_names = prompt.select_build_packages(&refs)?;
     let mut packages = Vec::new();
+
+    // Cargo packages go through the interactive build-step prompt: they may be build-only, matrix,
+    // or cross-compiled — decisions only the user can make. npm packages are auto-configured below,
+    // so they are deliberately excluded from this prompt (and from the adapter choice).
+    let cargo_refs: Vec<&Pkg> = cargo_publishable.iter().collect();
+    let build_names = prompt.select_build_packages(&cargo_refs)?;
+    let enabled_non_npm: Vec<Ecosystem> = enabled
+        .iter()
+        .copied()
+        .filter(|e| *e != Ecosystem::Npm)
+        .collect();
     for name in &build_names {
-        let mut entry = prompt.build_entry(name, &enabled)?;
-        if entry.adapter == Ecosystem::Npm && entry.manifest.is_none() {
-            entry.manifest = publishable
-                .iter()
-                .find(|pkg| pkg.name == *name)
-                .map(|pkg| rel_path(root, &pkg.manifest_path));
+        packages.push(prompt.build_entry(name, &enabled_non_npm)?);
+    }
+
+    // npm convention: the tool owns the build. For each publishable npm package with a `build`
+    // script, inject an inline-build publish entry (built inside its own publish job, no separate
+    // build job or artifact staging), and strip npm's pack/publish lifecycle hooks so npm can't
+    // silently re-run a build behind the release pipeline.
+    if !npm_publishable.is_empty() {
+        let npm = factory.make(Ecosystem::Npm);
+        for pkg in &npm_publishable {
+            let removed = npm.strip_publish_hooks(pkg)?;
+            if !removed.is_empty() {
+                println!(
+                    "Removed npm lifecycle hook(s) from {}: {}. The release pipeline runs the build \
+                     itself — move any custom steps into a `build` script or [hooks] in release.toml.",
+                    pkg.name,
+                    removed.join(", ")
+                );
+            }
+            if let Some(command) = npm.build_command(pkg)? {
+                packages.push(PackageEntry {
+                    name: pkg.name.clone(),
+                    adapter: Ecosystem::Npm,
+                    mode: Mode::Publish,
+                    matrix: false,
+                    targets: Vec::new(),
+                    command,
+                    artifacts: String::new(),
+                    bin_name: None,
+                    compress: None,
+                    manifest: Some(rel_path(root, &pkg.manifest_path)),
+                    version_field: None,
+                    publish: None,
+                });
+            }
         }
-        packages.push(entry);
     }
 
     // Generic packages have no native adapter discovery — scan the repo for known manifests and
@@ -551,9 +595,14 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
     s.push_str("\njobs:\n");
     render_check_release_job(&mut s, config);
 
-    // Build jobs only for packages that actually declare a build command.
+    // Build jobs only for packages that declare a build command *and* stage artifacts across
+    // jobs. Inline-build npm packages build inside their own publish job, so they get none.
     let has_build = |p: &&PackageEntry| !p.command.trim().is_empty();
-    for entry in config.packages.iter().filter(|p| has_build(p)) {
+    for entry in config
+        .packages
+        .iter()
+        .filter(|p| has_build(p) && !p.builds_inline())
+    {
         render_build_job(&mut s, entry, npm_tool);
     }
 
@@ -885,15 +934,32 @@ fn render_publish_job(
     s.push('\n');
 }
 
+/// The package subdirectory (relative to the repo root) a package's build should run in, derived
+/// from its manifest path. `None` for a root manifest (`package.json`), where no `working-directory`
+/// is needed.
+fn package_workdir(entry: &PackageEntry) -> Option<String> {
+    let manifest = entry.manifest.as_deref()?;
+    manifest
+        .rsplit_once('/')
+        .map(|(dir, _)| dir.to_string())
+        .filter(|dir| !dir.is_empty())
+}
+
 /// Publish one configured build package after, and only after, its own build succeeds.
 fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm_tool: NpmTool) {
     let name = &entry.name;
     let slug = slug(name);
+    let inline = entry.builds_inline();
     s.push_str(&format!("  publish-{slug}:\n"));
-    s.push_str(&format!(
-        "    needs: [check-release, {}]\n",
-        build_job(name)
-    ));
+    if inline {
+        // No separate build job to wait on — the build happens in this job.
+        s.push_str("    needs: [check-release]\n");
+    } else {
+        s.push_str(&format!(
+            "    needs: [check-release, {}]\n",
+            build_job(name)
+        ));
+    }
     s.push_str(&format!(
         "    if: needs.check-release.outputs.{} == 'true'\n",
         release_output(name)
@@ -906,24 +972,42 @@ fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm_tool: Np
         Ecosystem::Cargo => s.push_str("      - uses: dtolnay/rust-toolchain@stable\n"),
         Ecosystem::Generic => {}
     }
-    s.push_str("      - uses: actions/download-artifact@v4\n");
-    s.push_str("        with:\n");
-    if entry.matrix {
-        s.push_str(&format!("          pattern: {slug}-*\n"));
-        s.push_str(&format!("          path: .artifacts/{name}\n"));
-        s.push_str("          merge-multiple: true\n");
-    } else {
-        s.push_str(&format!("          name: {slug}\n"));
-        s.push_str("          path: .artifacts\n");
-    }
-    if entry.adapter == Ecosystem::Npm {
+    if inline {
+        // The tool owns the build: install, run the package's build command in its own directory,
+        // then publish. npm packs the freshly built output from this same runner — no artifact
+        // upload/download, and npm's own pack/publish lifecycle hooks were stripped at init time.
         s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
+        s.push_str(&format!("      - name: Build {name}\n"));
+        s.push_str(&format!("        run: {}\n", entry.command));
+        if let Some(dir) = package_workdir(entry) {
+            s.push_str(&format!("        working-directory: {dir}\n"));
+        }
+    } else {
+        s.push_str("      - uses: actions/download-artifact@v4\n");
+        s.push_str("        with:\n");
+        if entry.matrix {
+            s.push_str(&format!("          pattern: {slug}-*\n"));
+            s.push_str(&format!("          path: .artifacts/{name}\n"));
+            s.push_str("          merge-multiple: true\n");
+        } else {
+            s.push_str(&format!("          name: {slug}\n"));
+            s.push_str("          path: .artifacts\n");
+        }
+        if entry.adapter == Ecosystem::Npm {
+            s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
+        }
     }
     push_install_otf_release(s);
     s.push_str("      - name: Publish\n");
-    s.push_str(&format!(
-        "        run: otf-release publish --package {name} --artifacts-dir .artifacts\n"
-    ));
+    if inline {
+        s.push_str(&format!(
+            "        run: otf-release publish --package {name}\n"
+        ));
+    } else {
+        s.push_str(&format!(
+            "        run: otf-release publish --package {name} --artifacts-dir .artifacts\n"
+        ));
+    }
     s.push_str("        env:\n");
     match entry.adapter {
         Ecosystem::Npm => s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n"),
@@ -1707,6 +1791,11 @@ mod tests {
         fn publish(&self, _: &Pkg, _: Option<&Path>) -> Result<()> {
             unreachable!()
         }
+        // Model an npm package that declares a `build` script, so the npm auto-path injects an
+        // inline build. `strip_publish_hooks` keeps the default (removes nothing).
+        fn build_command(&self, _: &Pkg) -> Result<Option<String>> {
+            Ok(Some("npm run build".to_string()))
+        }
     }
 
     /// A factory returning a fixed package set for every ecosystem.
@@ -2418,17 +2507,20 @@ mod tests {
             packages: vec![cargo_build_only("web-compiler"), npm_publish("docs-site")],
         };
         let out = render_workflow(&config);
+        // cargo build-only still stages per-platform binaries in a build job → GitHub Release.
         assert!(out.contains("  build-web-compiler:\n"));
-        assert!(out.contains("  build-docs-site:\n"));
-        // A single publish job (npm) depending on the npm build.
-        assert!(out.contains("  publish:\n"));
-        assert!(out.contains("    needs: [check-release, build-docs-site]\n"));
-        assert!(out.contains("      - uses: actions/setup-node@v4\n"));
-        assert!(out.contains("      - name: Install otf-release\n"));
-        // cargo side is build-only: a GitHub Release depending on the cargo build.
         assert!(out.contains("  github-release-web-compiler:\n"));
         assert!(out.contains("    needs: [check-release, build-web-compiler]\n"));
         assert!(out.contains("          tag=\"web-compiler@$version\"\n"));
+        // npm publish builds inline in its own publish job — no separate build job, no staging.
+        assert!(!out.contains("  build-docs-site:\n"));
+        assert!(out.contains("  publish-docs-site:\n"));
+        assert!(out.contains("      - name: Build docs-site\n"));
+        assert!(out.contains("        run: npm run build\n"));
+        assert!(out.contains("        run: otf-release publish --package docs-site\n"));
+        assert!(!out.contains("--artifacts-dir"));
+        assert!(out.contains("      - uses: actions/setup-node@v4\n"));
+        assert!(out.contains("      - name: Install otf-release\n"));
     }
 
     #[test]
@@ -2532,10 +2624,10 @@ mod tests {
                 "packages/web-compiler/package.json",
             )],
         };
+        // npm packages are auto-configured (no build prompt); the inline-build entry is created
+        // from the discovered package + its `build` script.
         let prompt = FakePrompt {
             adapters: vec![Ecosystem::Npm],
-            build_names: vec!["@opentf/web-compiler".into()],
-            entries: vec![npm_publish("@opentf/web-compiler")],
             ..FakePrompt::default()
         };
 
@@ -2545,14 +2637,20 @@ mod tests {
         // check`/`publish` read the version from at runtime, so it must be recorded even though the
         // generated workflow no longer inlines a version-read for it.
         let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(cfg.packages.len(), 1);
         assert_eq!(
             cfg.packages[0].manifest.as_deref(),
             Some("packages/web-compiler/package.json")
         );
+        // Auto-detected inline build: no separate build job / artifact staging.
+        assert_eq!(cfg.packages[0].command, "npm run build");
+        assert!(cfg.packages[0].builds_inline());
         let yml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
         assert!(yml.contains(
             "should_release=$(otf-release check --exclude-package @opentf/web-compiler)"
         ));
+        assert!(!yml.contains("  build-opentf-web-compiler:\n"));
+        assert!(!yml.contains("--artifacts-dir"));
         assert!(!yml.contains("workspaces"));
     }
 

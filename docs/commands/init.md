@@ -17,15 +17,20 @@ otf-release init [--force]
 
 1. **Choose adapters** (spacebar multi-select): `npm`, `crates.io`, `generic`. The enabled set is
    recorded in `release.toml`; a polyglot repo can enable several.
-2. **List publishable packages** (discovered across the enabled npm/cargo adapters), then
-   **multi-select**: *"Which packages need built artifacts before publish?"*
-   npm workspace manifests that are not release packages (for example fixture or benchmark
-   folders without a `version`) are skipped and listed with the reason, so the scan does not abort
-   on non-package workspace members.
-3. For each selected package, prompt for:
+2. **Auto-configure npm packages** (the tool owns the build; no prompt). For each publishable npm
+   package, `init` reads its `package.json`: if it declares a `scripts.build`, the package gets an
+   **inline-build publish entry** (`npm run build` runs in the package's own publish job — no
+   separate build job or artifact staging), and npm's pack/publish lifecycle hooks (`prepublish`,
+   `prepublishOnly`, `prepack`, `prepare`) are **stripped** from `package.json` (with a printed
+   notice) so npm can't re-run a build behind the pipeline. See
+   [adapters/npm.md](../adapters/npm.md). npm workspace manifests that are not release packages
+   (for example fixture or benchmark folders without a `version`) are skipped and listed with the
+   reason.
+3. **List publishable cargo packages**, then **multi-select**: *"Which packages need built
+   artifacts before publish?"* (npm packages are handled in step 2, so they are not offered here.)
+   For each selected package, prompt for:
    - **mode** — `publish` (build, then push to the ecosystem's registry) or **`build-only`**
      (build, then attach the artifacts to a **GitHub Release** — no registry push);
-   - **adapter** (only asked if more than one is enabled);
    - **build matrix?** — if yes, the **target triples** (a default set, each marked `# edit me`);
    - the **build command** and the **artifacts** glob to stage.
 4. **For the generic adapter** (if enabled): `init` **scans the repo** for recognized manifests that

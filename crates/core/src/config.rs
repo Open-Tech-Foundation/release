@@ -334,6 +334,16 @@ impl PackageEntry {
     pub fn is_publish(&self) -> bool {
         !self.is_build_only()
     }
+
+    /// An npm publish package whose build runs **inline** in its own publish job (`npm run build`
+    /// on the same runner, right before `npm publish`), instead of a separate build job that
+    /// uploads artifacts for a later download. This is the tool-owned-build convention for plain
+    /// npm libraries: no cross-job staging is needed because npm packs the freshly built output in
+    /// place. Matrix npm packages ship per-platform binaries and still stage across jobs; cargo and
+    /// generic packages build through their own publish path, so neither builds inline.
+    pub fn builds_inline(&self) -> bool {
+        self.adapter == Ecosystem::Npm && !self.matrix && !self.command.trim().is_empty()
+    }
 }
 
 /// Global lifecycle hook scripts.

@@ -165,6 +165,21 @@ pub trait Adapter {
     /// Publish `pkg`. `staged_assets` points at a prebuilt-artifact directory if the workflow
     /// staged binaries for this package, otherwise `None` (registry-only publish).
     fn publish(&self, pkg: &Pkg, staged_assets: Option<&Path>) -> Result<()>;
+
+    /// The command that must run before publishing so the built output is on disk, when the tool
+    /// owns the build. npm returns `Some("npm run build")` iff the package declares a
+    /// `scripts.build`; other ecosystems build through their own publish, so the default is `None`.
+    /// `init` injects this into the package's publish job instead of a separate build+staging job.
+    fn build_command(&self, _pkg: &Pkg) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// Remove native pre-publish lifecycle hooks that would re-run a build or otherwise conflict
+    /// with the tool-owned build step, returning the removed hook names so the caller can notify
+    /// the user. Only npm has such hooks; the default removes nothing.
+    fn strip_publish_hooks(&self, _pkg: &Pkg) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]

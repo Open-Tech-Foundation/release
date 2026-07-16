@@ -261,7 +261,37 @@ impl Adapter for NpmAdapter {
         }
         Ok(())
     }
+
+    /// The tool owns the build: if the package declares a `scripts.build`, it runs `npm run build`
+    /// in the publish job before `npm publish`. A package without a build script publishes as-is.
+    fn build_command(&self, pkg: &Pkg) -> Result<Option<String>> {
+        let manifest = Manifest::read(&pkg.manifest_path)?;
+        Ok(manifest
+            .script("build")
+            .map(|_| "npm run build".to_string()))
+    }
+
+    /// Strip npm's pack/publish lifecycle hooks so npm can't re-run a build behind the tool's back.
+    /// Returns the removed hook names; saves the manifest only when something changed.
+    fn strip_publish_hooks(&self, pkg: &Pkg) -> Result<Vec<String>> {
+        let mut manifest = Manifest::read(&pkg.manifest_path)?;
+        let mut removed = Vec::new();
+        for hook in PUBLISH_LIFECYCLE_HOOKS {
+            if manifest.remove_key(&["scripts", hook])? {
+                removed.push(hook.to_string());
+            }
+        }
+        if !removed.is_empty() {
+            manifest.save()?;
+        }
+        Ok(removed)
+    }
 }
+
+/// npm lifecycle scripts that run a build at pack/publish time. The tool injects `npm run build`
+/// into the publish job itself, so these are removed to prevent a double build (or surprising
+/// publish-time behavior the release pipeline doesn't control).
+const PUBLISH_LIFECYCLE_HOOKS: [&str; 4] = ["prepublish", "prepublishOnly", "prepack", "prepare"];
 
 /// The npm dist-tag for a version: a prerelease's leading identifier (`1.2.3-dev.abc` → `dev`,
 /// `2.0.0-beta.1` → `beta`), or `None` for a normal release (which publishes under `latest`).
@@ -469,6 +499,64 @@ mod tests {
 
         let c = pkgs.iter().find(|p| p.name == "@x/c").unwrap();
         assert!(!c.publishable, "private app is not publishable");
+    }
+
+    #[test]
+    fn build_command_present_only_when_a_build_script_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let with = tmp.path().join("with/package.json");
+        write(
+            with.clone(),
+            r#"{ "name": "@x/a", "version": "1.0.0", "scripts": { "build": "tsc" } }"#,
+        );
+        let without = tmp.path().join("without/package.json");
+        write(
+            without.clone(),
+            r#"{ "name": "@x/b", "version": "1.0.0", "scripts": { "test": "vitest" } }"#,
+        );
+
+        let adapter = NpmAdapter::new(tmp.path());
+        assert_eq!(
+            adapter
+                .build_command(&dummy_pkg("@x/a", with.to_str().unwrap()))
+                .unwrap(),
+            Some("npm run build".to_string())
+        );
+        assert_eq!(
+            adapter
+                .build_command(&dummy_pkg("@x/b", without.to_str().unwrap()))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn strip_publish_hooks_removes_pack_publish_lifecycle_and_keeps_the_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("package.json");
+        write(
+            path.clone(),
+            "{\n  \"name\": \"@x/a\",\n  \"scripts\": {\n    \"build\": \"tsc\",\n    \"prepare\": \"npm run build\",\n    \"prepublishOnly\": \"npm run build\",\n    \"test\": \"vitest\"\n  }\n}\n",
+        );
+
+        let adapter = NpmAdapter::new(tmp.path());
+        let removed = adapter
+            .strip_publish_hooks(&dummy_pkg("@x/a", path.to_str().unwrap()))
+            .unwrap();
+        assert_eq!(removed, vec!["prepublishOnly", "prepare"]);
+
+        let after = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after,
+            "{\n  \"name\": \"@x/a\",\n  \"scripts\": {\n    \"build\": \"tsc\",\n    \"test\": \"vitest\"\n  }\n}\n"
+        );
+
+        // Idempotent: a second pass finds nothing to remove and leaves the file untouched.
+        let removed_again = adapter
+            .strip_publish_hooks(&dummy_pkg("@x/a", path.to_str().unwrap()))
+            .unwrap();
+        assert!(removed_again.is_empty());
+        assert_eq!(fs::read_to_string(&path).unwrap(), after);
     }
 
     #[test]
