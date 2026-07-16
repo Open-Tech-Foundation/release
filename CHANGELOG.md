@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-07-16
+
 - **npm/init** — The tool now owns the build for plain npm packages; npm just publishes. For a
   non-matrix npm publish package, `init` auto-detects its `package.json` `scripts.build` (no prompt)
   and generates a `publish-<pkg>` job that runs `npm run build` inline (scoped to the package
