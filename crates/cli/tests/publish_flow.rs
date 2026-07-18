@@ -320,6 +320,36 @@ fn publishes_in_topo_order_and_is_idempotent() {
 }
 
 #[test]
+fn excluded_package_stays_resolvable_for_its_dependents() {
+    // Regression: `--exclude-package` must mean "don't publish this," not "this doesn't exist."
+    // With the chain core <- sdk <- mid, excluding @x/core previously dropped it from the graph and
+    // made @x/sdk's edge look like an "unknown internal package". The excluded package must stay a
+    // known, resolvable node so its dependents publish with the dependency intact.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_chain(root);
+
+    let runner = PubRunner::new(&[]);
+    let adapter = NpmAdapter::with_runner(root, Box::new(runner.clone()));
+    let git = FakeGit::default();
+    let forge = FakeForge::default();
+
+    let opts = PublishOptions {
+        exclude_packages: vec!["@x/core".to_string()],
+        ..package_tag_options()
+    };
+    let hooks = otf_release_core::config::Hooks::default();
+    let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
+    orchestrate(&adapter, &git, &forge, root, &opts, &hooks, &hook_runner).unwrap();
+
+    // core is excluded (not published), but its dependents resolve normally and publish in order.
+    assert_eq!(
+        *runner.publish_log.lock().unwrap(),
+        vec!["@x/sdk@1.0.0", "@x/mid@1.0.0"]
+    );
+}
+
+#[test]
 fn halts_on_failure_and_resumes_forward() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

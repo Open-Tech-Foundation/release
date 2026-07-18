@@ -123,19 +123,31 @@ pub fn orchestrate_many(
     let mut plans = Vec::with_capacity(adapters.len());
 
     for adapter in adapters {
+        // Build the graph from *every* discovered package so internal dependency edges always
+        // resolve — including edges pointing at a package this run won't publish (`--package` /
+        // `--exclude-package`). Filtering the package set before `Graph::build` would drop that node
+        // and make a dependent's edge look like an "unknown internal package"; instead the excluded
+        // package stays a known, resolvable node and is simply skipped below when choosing what to
+        // publish. An excluded/pinned dependency then resolves normally and its dependent publishes
+        // with the dep intact.
         let mut packages = adapter.discover_packages()?;
-        if let Some(name) = &opts.package {
-            packages.retain(|pkg| &pkg.name == name);
-        }
-        packages.retain(|pkg| !opts.exclude_packages.contains(&pkg.name));
         apply_changelog_scope(root, &opts.changelog_scope, &mut packages);
         let graph = Graph::build(&packages)?;
 
-        // Dependencies before dependents; keep publishable packages that still need any work.
+        // Dependencies before dependents; keep publishable packages that still need any work and
+        // that this run is actually publishing.
         let mut pending = Vec::new();
         for pkg in graph.topo_order()? {
             if !pkg.publishable {
                 continue; // private apps are never published
+            }
+            if let Some(name) = &opts.package {
+                if &pkg.name != name {
+                    continue; // `--package`: this run publishes only the named package
+                }
+            }
+            if opts.exclude_packages.contains(&pkg.name) {
+                continue; // owned by a separate package-local pipeline; in the graph, not published here
             }
             if opts.skip.iter().any(|n| n == &pkg.name) {
                 continue; // build-only: ships via GitHub Release, not a registry

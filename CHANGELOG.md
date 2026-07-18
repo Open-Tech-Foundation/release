@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **publish** — `--exclude-package` (and `--package`) now keep the filtered package in the
+  dependency graph as a known, resolvable node instead of dropping it before the graph is built. A
+  dependent that references an excluded package — e.g. a JS package pinning a compiler published by
+  its own job — no longer fails with `depends on unknown internal package`; the dependency resolves
+  normally and the dependent publishes with it intact. The excluded package is simply skipped when
+  choosing what to publish.
+
 ## [0.21.0] - 2026-07-18
 
 - **workflow/init** — The generated catch-all `publish` job now waits on each dedicated
