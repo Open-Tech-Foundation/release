@@ -89,6 +89,7 @@ mod tests {
 
         let workflow =
             fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
+        assert!(workflow.contains("permissions:\n  contents: write  # create tags and GitHub Releases\n  id-token: write\n"));
         assert!(workflow.contains("      - uses: oven-sh/setup-bun@v2\n"));
         assert!(workflow.contains("      - run: bun install --frozen-lockfile\n"));
         assert!(!workflow.contains("      - run: npm ci\n"));

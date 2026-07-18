@@ -591,6 +591,9 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
     let mut s = String::from("name: Release\n\non:\n  push:\n    branches: [main]\n");
     if any_build_only || needs_publish {
         s.push_str("\npermissions:\n  contents: write  # create tags and GitHub Releases\n");
+        if npm_enabled {
+            s.push_str("  id-token: write\n");
+        }
     }
     s.push_str("\njobs:\n");
     render_check_release_job(&mut s, config);
@@ -1992,6 +1995,7 @@ mod tests {
             packages: vec![],
         };
         let out = render_workflow(&config);
+        assert!(out.contains("permissions:\n  contents: write  # create tags and GitHub Releases\n  id-token: write\n"));
         assert!(out.contains("  publish:\n"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         assert!(out.contains("          node-version: 24\n"));

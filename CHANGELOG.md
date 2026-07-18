@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **init/npm** — Added `id-token: write` permission to the generated main release workflow
+  when the npm adapter is active, allowing npm packages to publish with OIDC provenance.
 - **internal** — Fixed the CI clippy failure (`clippy::too_many_arguments`, denied by `-D warnings`)
   by dropping two always-empty parameters (`needs`, `matrix_pubs`) and their now-dead
   artifact-download code from the workflow publish-job renderer — leftovers from the 0.18.0
