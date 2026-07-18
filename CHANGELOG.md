@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-18
+
 - **init/npm** — Added `id-token: write` permission to the generated main release workflow
   when the npm adapter is active, allowing npm packages to publish with OIDC provenance.
 - **internal** — Fixed the CI clippy failure (`clippy::too_many_arguments`, denied by `-D warnings`)
