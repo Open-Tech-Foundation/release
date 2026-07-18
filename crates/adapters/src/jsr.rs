@@ -1,0 +1,490 @@
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, bail, Context, Result};
+use glob::glob;
+use serde_json::Value;
+
+use otf_release_core::adapter::{Adapter, Bump, DepKind, InternalDep, Pkg};
+use crate::command::{CommandRunner, SystemRunner};
+use crate::npm::manifest::{Manifest, strip_jsonc_comments};
+
+pub struct JsrAdapter {
+    pub root: PathBuf,
+    runner: Box<dyn CommandRunner>,
+}
+
+impl JsrAdapter {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            runner: Box::new(SystemRunner),
+        }
+    }
+
+    pub fn with_runner(root: impl Into<PathBuf>, runner: Box<dyn CommandRunner>) -> Self {
+        Self {
+            root: root.into(),
+            runner,
+        }
+    }
+}
+
+impl Adapter for JsrAdapter {
+    fn discover_packages(&self) -> Result<Vec<Pkg>> {
+        let mut member_dirs = BTreeSet::new();
+        if let Some((_, root_json)) = read_manifest(&self.root)? {
+            if let Some(workspace_val) = root_json.get("workspace") {
+                if let Some(arr) = workspace_val.as_array() {
+                    for pat_val in arr {
+                        if let Some(pat) = pat_val.as_str() {
+                            let joined = self.root.join(pat);
+                            let glob_str = joined.to_str().ok_or_else(|| {
+                                anyhow!("non-UTF-8 path in workspace pattern: {pat}")
+                            })?;
+                            for entry in glob(glob_str).with_context(|| {
+                                format!("invalid workspace glob: {pat}")
+                            })? {
+                                let path = entry?;
+                                if path.is_dir() {
+                                    if read_manifest(&path)?.is_some() {
+                                        member_dirs.insert(path);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if member_dirs.is_empty() {
+            if let Some((_, root_json)) = read_manifest(&self.root)? {
+                if root_json.get("name").is_some() && root_json.get("version").is_some() {
+                    member_dirs.insert(self.root.clone());
+                }
+            }
+        }
+
+        let mut members = Vec::new();
+        for dir in member_dirs {
+            if let Some((manifest_path, json)) = read_manifest(&dir)? {
+                members.push((dir, manifest_path, json));
+            }
+        }
+
+        let internal_names: HashSet<String> = members
+            .iter()
+            .filter_map(|(_, _, json)| json.get("name").and_then(Value::as_str).map(String::from))
+            .collect();
+
+        let mut packages = Vec::with_capacity(members.len());
+        for (dir, manifest_path, json) in &members {
+            let name = json.get("name").and_then(Value::as_str).ok_or_else(|| {
+                anyhow!("{}: missing name field", manifest_path.display())
+            })?;
+            let version = json.get("version").and_then(Value::as_str).ok_or_else(|| {
+                anyhow!("{}: missing version field", manifest_path.display())
+            })?;
+
+            let publishable = match json.get("publish") {
+                Some(Value::Bool(b)) => *b,
+                _ => true,
+            };
+
+            let mut internal_deps = Vec::new();
+            if let Some(imports) = json.get("imports").and_then(Value::as_object) {
+                for (key, val) in imports {
+                    if let Some(val_str) = val.as_str() {
+                        let mut matched_dep = None;
+                        for internal_name in &internal_names {
+                            if val_str.starts_with(&format!("jsr:{}@", internal_name))
+                                || val_str == &format!("jsr:{}", internal_name)
+                                || val_str.starts_with(&format!("npm:{}@", internal_name))
+                                || val_str == &format!("npm:{}", internal_name)
+                                || (val_str.starts_with("workspace:") && key == internal_name)
+                            {
+                                matched_dep = Some((internal_name.clone(), val_str.to_string(), key.clone()));
+                                break;
+                            }
+                        }
+
+                        if let Some((dep_name, specifier, _alias)) = matched_dep {
+                            let range = if specifier.starts_with("workspace:") {
+                                specifier.strip_prefix("workspace:").unwrap().to_string()
+                            } else {
+                                let prefix_jsr = format!("jsr:{}@", dep_name);
+                                let prefix_npm = format!("npm:{}@", dep_name);
+                                if let Some(r) = specifier.strip_prefix(&prefix_jsr) {
+                                    r.to_string()
+                                } else if let Some(r) = specifier.strip_prefix(&prefix_npm) {
+                                    r.to_string()
+                                } else {
+                                    "*".to_string()
+                                }
+                            };
+
+                            internal_deps.push(InternalDep {
+                                name: dep_name,
+                                kind: DepKind::Dep,
+                                range,
+                            });
+                        }
+                    }
+                }
+            }
+
+            packages.push(Pkg {
+                name: name.to_string(),
+                version: version.to_string(),
+                manifest_path: manifest_path.clone(),
+                changelog_path: dir.join("CHANGELOG.md"),
+                publishable,
+                internal_deps,
+            });
+        }
+
+        packages.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(packages)
+    }
+
+    fn write_version(&self, pkg: &Pkg, new: &str) -> Result<()> {
+        let mut manifest = Manifest::read(&pkg.manifest_path)?;
+        manifest.set_string(&["version"], new)?;
+        manifest.save()?;
+        Ok(())
+    }
+
+    fn update_dep_range(&self, pkg: &Pkg, dep: &str, new_dep_version: &str) -> Result<()> {
+        let mut manifest = Manifest::read(&pkg.manifest_path)?;
+        let json = manifest.json()?;
+        let mut changed = false;
+
+        if let Some(imports) = json.get("imports").and_then(Value::as_object) {
+            for (key, val) in imports {
+                if let Some(val_str) = val.as_str() {
+                    let prefix_jsr = format!("jsr:{}@", dep);
+                    let prefix_npm = format!("npm:{}@", dep);
+                    let is_workspace = val_str.starts_with("workspace:") && key == dep;
+
+                    if val_str.starts_with(&prefix_jsr) || val_str.starts_with(&prefix_npm) || is_workspace {
+                        let new_val_str = if is_workspace {
+                            let old_range = val_str.strip_prefix("workspace:").unwrap();
+                            let new_range = reformat_range(old_range, new_dep_version);
+                            format!("workspace:{}", new_range)
+                        } else {
+                            let prefix = if val_str.starts_with(&prefix_jsr) { &prefix_jsr } else { &prefix_npm };
+                            let old_range = val_str.strip_prefix(prefix).unwrap();
+                            let new_range = reformat_range(old_range, new_dep_version);
+                            format!("{}{}", prefix, new_range)
+                        };
+
+                        if val_str != new_val_str {
+                            manifest.set_string(&["imports", key], &new_val_str)?;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if changed {
+            manifest.save()?;
+        }
+        Ok(())
+    }
+
+    fn format_range(&self, version: &str) -> String {
+        format!("^{version}")
+    }
+
+    fn resolve_workspace_links(&self, pkg: &Pkg) -> Result<()> {
+        let versions: HashMap<String, String> = self
+            .discover_packages()?
+            .into_iter()
+            .map(|p| (p.name, p.version))
+            .collect();
+
+        let mut manifest = Manifest::read(&pkg.manifest_path)?;
+        let json = manifest.json()?;
+        let mut changed = false;
+
+        if let Some(imports) = json.get("imports").and_then(Value::as_object) {
+            for (key, val) in imports {
+                if let Some(val_str) = val.as_str() {
+                    let mut matched = None;
+                    for dep_name in versions.keys() {
+                        let prefix_jsr_ws = format!("jsr:{}@workspace:", dep_name);
+                        let prefix_npm_ws = format!("npm:{}@workspace:", dep_name);
+                        if val_str.starts_with(&prefix_jsr_ws) {
+                            matched = Some((
+                                dep_name.clone(),
+                                val_str.strip_prefix(&format!("jsr:{}@", dep_name)).unwrap().to_string(),
+                                true,
+                            ));
+                            break;
+                        } else if val_str.starts_with(&prefix_npm_ws) {
+                            matched = Some((
+                                dep_name.clone(),
+                                val_str.strip_prefix(&format!("npm:{}@", dep_name)).unwrap().to_string(),
+                                false,
+                            ));
+                            break;
+                        } else if val_str.starts_with("workspace:") && key == dep_name {
+                            matched = Some((dep_name.clone(), val_str.to_string(), true));
+                            break;
+                        }
+                    }
+
+                    if let Some((dep_name, ws_spec, is_jsr)) = matched {
+                        let version = versions.get(&dep_name).unwrap();
+                        let resolved_range = resolve_workspace_range(&ws_spec, version);
+                        let scheme = if is_jsr { "jsr" } else { "npm" };
+                        let new_val_str = format!("{}:{}@{}", scheme, dep_name, resolved_range);
+                        if val_str != new_val_str {
+                            manifest.set_string(&["imports", key], &new_val_str)?;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if changed {
+            manifest.save()?;
+        }
+        Ok(())
+    }
+
+    fn update_lockfile(&self, root: &Path) -> Result<()> {
+        if root.join("deno.lock").exists() {
+            let out = self.runner.run("deno", &["install"], root)?;
+            if !out.success {
+                let _ = self.runner.run("deno", &["cache", "deno.json"], root);
+            }
+        } else if root.join("bun.lock").exists() || root.join("bun.lockb").exists() {
+            let out = self.runner.run("bun", &["install", "--lockfile-only"], root)?;
+            if !out.success {
+                bail!("`bun install --lockfile-only` failed:\n{}", out.stderr);
+            }
+        } else if root.join("package-lock.json").exists() {
+            let out = self.runner.run("npm", &["install", "--package-lock-only"], root)?;
+            if !out.success {
+                bail!("`npm install --package-lock-only` failed:\n{}", out.stderr);
+            }
+        }
+        Ok(())
+    }
+
+    fn dependent_bump(&self, _dep_bump: Bump, _kind: &DepKind) -> Bump {
+        Bump::Patch
+    }
+
+    fn is_published(&self, pkg: &Pkg, version: &str) -> Result<bool> {
+        let url = format!("https://jsr.io/{}/meta.json", pkg.name);
+        match ureq::get(&url).call() {
+            Ok(resp) => {
+                let meta: serde_json::Value = resp.into_json()?;
+                if let Some(versions) = meta.get("versions").and_then(|v| v.as_object()) {
+                    Ok(versions.contains_key(version))
+                } else {
+                    Ok(false)
+                }
+            }
+            Err(ureq::Error::Status(404, _)) => Ok(false),
+            Err(e) => bail!("failed to query JSR registry: {}", e),
+        }
+    }
+
+    fn publish(&self, pkg: &Pkg, staged_assets: Option<&Path>) -> Result<()> {
+        let pkg_dir = pkg.manifest_path.parent().ok_or_else(|| {
+            anyhow!("{}: manifest has no parent dir", pkg.manifest_path.display())
+        })?;
+
+        if let Some(assets) = staged_assets {
+            copy_dir_contents(assets, pkg_dir)
+                .with_context(|| format!("staging assets for {}", pkg.name))?;
+        }
+
+        let mut program = "deno";
+        let mut args = vec!["publish"];
+
+        if pkg_dir.join("jsr.json").exists() {
+            program = "bunx";
+            args = vec!["jsr", "publish"];
+        } else if !pkg_dir.join("deno.json").exists() && !pkg_dir.join("deno.jsonc").exists() {
+            program = "deno";
+            args = vec!["publish"];
+        }
+
+        let out = self.runner.run(program, &args, pkg_dir)?;
+        if !out.success {
+            bail!(
+                "`{} {}` for {} failed:\n{}",
+                program,
+                args.join(" "),
+                pkg.name,
+                out.stderr
+            );
+        }
+        Ok(())
+    }
+
+    fn build_command(&self, pkg: &Pkg) -> Result<Option<String>> {
+        let manifest = Manifest::read(&pkg.manifest_path)?;
+        let json = manifest.json()?;
+        if json.get("tasks").and_then(Value::as_object).and_then(|t| t.get("build")).is_some() {
+            Ok(Some("deno task build".to_string()))
+        } else if json.get("scripts").and_then(Value::as_object).and_then(|t| t.get("build")).is_some() {
+            Ok(Some("deno task build".to_string()))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+fn read_manifest(dir: &Path) -> Result<Option<(PathBuf, Value)>> {
+    let names = ["deno.json", "deno.jsonc", "jsr.json"];
+    for name in names {
+        let path = dir.join(name);
+        if path.exists() {
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading manifest {}", path.display()))?;
+            let cleaned = if name.ends_with(".jsonc") {
+                strip_jsonc_comments(&content)
+            } else {
+                content
+            };
+            let json: Value = serde_json::from_str(&cleaned)
+                .with_context(|| format!("parsing manifest {}", path.display()))?;
+            return Ok(Some((path, json)));
+        }
+    }
+    Ok(None)
+}
+
+fn reformat_range(old: &str, new_version: &str) -> String {
+    let trimmed = old.trim();
+    if trimmed.starts_with("workspace:") {
+        return old.to_string();
+    }
+    match trimmed.find(|c: char| c.is_ascii_digit()) {
+        None => old.to_string(),
+        Some(prefix_len) => format!("{}{new_version}", &trimmed[..prefix_len]),
+    }
+}
+
+fn resolve_workspace_range(range: &str, version: &str) -> String {
+    let spec = range.strip_prefix("workspace:").unwrap_or(range);
+    match spec {
+        "*" | "" => version.to_string(),
+        "^" => format!("^{version}"),
+        "~" => format!("~{version}"),
+        explicit => explicit.to_string(),
+    }
+}
+
+fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
+    for entry in fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            fs::create_dir_all(&to)?;
+            copy_dir_contents(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)
+                .with_context(|| format!("copying {} -> {}", from.display(), to.display()))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::CommandOutput;
+    use std::sync::{Arc, Mutex};
+
+    type Calls = Arc<Mutex<Vec<(String, Vec<String>, PathBuf)>>>;
+
+    #[derive(Clone)]
+    struct FakeRunner {
+        success: bool,
+        stdout: String,
+        stderr: String,
+        calls: Calls,
+    }
+
+    impl FakeRunner {
+        fn new(success: bool, stdout: &str, stderr: &str) -> Self {
+            Self {
+                success,
+                stdout: stdout.to_string(),
+                stderr: stderr.to_string(),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl CommandRunner for FakeRunner {
+        fn run(&self, program: &str, args: &[&str], cwd: &Path) -> Result<CommandOutput> {
+            self.calls.lock().unwrap().push((
+                program.to_string(),
+                args.iter().map(|s| s.to_string()).collect(),
+                cwd.to_path_buf(),
+            ));
+            Ok(CommandOutput {
+                success: self.success,
+                stdout: self.stdout.clone(),
+                stderr: self.stderr.clone(),
+            })
+        }
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn test_discover_packages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        write_file(&root.join("deno.json"), r#"{
+            "workspace": ["packages/*"]
+        }"#);
+
+        write_file(&root.join("packages/a/deno.json"), r#"{
+            "name": "@scope/a",
+            "version": "1.0.0",
+            "imports": {
+                "@scope/b": "jsr:@scope/b@^2.0.0"
+            }
+        }"#);
+
+        write_file(&root.join("packages/b/deno.jsonc"), r#"{
+            // Comment test
+            "name": "@scope/b",
+            "version": "2.0.0",
+            "publish": false
+        }"#);
+
+        let adapter = JsrAdapter::new(root);
+        let pkgs = adapter.discover_packages().unwrap();
+
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0].name, "@scope/a");
+        assert_eq!(pkgs[0].version, "1.0.0");
+        assert!(pkgs[0].publishable);
+        assert_eq!(pkgs[0].internal_deps.len(), 1);
+        assert_eq!(pkgs[0].internal_deps[0].name, "@scope/b");
+        assert_eq!(pkgs[0].internal_deps[0].range, "^2.0.0");
+
+        assert_eq!(pkgs[1].name, "@scope/b");
+        assert_eq!(pkgs[1].version, "2.0.0");
+        assert!(!pkgs[1].publishable);
+    }
+}

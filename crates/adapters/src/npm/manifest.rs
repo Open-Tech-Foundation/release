@@ -61,8 +61,9 @@ impl Manifest {
             .with_context(|| format!("writing manifest {}", self.path.display()))
     }
 
-    fn json(&self) -> Result<Value> {
-        serde_json::from_str(&self.content)
+    pub(crate) fn json(&self) -> Result<Value> {
+        let cleaned = strip_jsonc_comments(&self.content);
+        serde_json::from_str(&cleaned)
             .with_context(|| format!("parsing {}", self.path.display()))
     }
 
@@ -385,6 +386,67 @@ fn scan_array(b: &[u8], i: &mut usize) -> Option<()> {
     }
 }
 
+pub(crate) fn strip_jsonc_comments(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut in_string = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut chars = input.char_indices().peekable();
+
+    while let Some((i, c)) = chars.next() {
+        if in_line_comment {
+            if c == '\n' || c == '\r' {
+                in_line_comment = false;
+                output.push(c);
+            }
+            continue;
+        }
+        if in_block_comment {
+            if c == '*' {
+                if let Some((_, '/')) = chars.peek() {
+                    chars.next();
+                    in_block_comment = false;
+                }
+            }
+            continue;
+        }
+        if in_string {
+            output.push(c);
+            if c == '"' {
+                let mut backslashes = 0;
+                let mut j = i;
+                let bytes = input.as_bytes();
+                while j > 0 && bytes[j - 1] == b'\\' {
+                    backslashes += 1;
+                    j -= 1;
+                }
+                if backslashes % 2 == 0 {
+                    in_string = false;
+                }
+            }
+            continue;
+        }
+
+        if c == '"' {
+            in_string = true;
+            output.push(c);
+        } else if c == '/' {
+            if let Some((_, '/')) = chars.peek() {
+                chars.next();
+                in_line_comment = true;
+            } else if let Some((_, '*')) = chars.peek() {
+                chars.next();
+                in_block_comment = true;
+            } else {
+                output.push(c);
+            }
+        } else {
+            output.push(c);
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,4 +572,24 @@ mod tests {
             .iter()
             .any(|r| r.section == "peerDependencies" && r.name == "@x/sdk"));
     }
+
+    #[test]
+    fn test_strip_jsonc_comments() {
+        let jsonc = r#"{
+            // line comment
+            "name": "foo", /* block comment */
+            "url": "https://foo.bar", // containing slash
+            "escaped": "foo \" // bar"
+        }"#;
+        let cleaned = strip_jsonc_comments(jsonc);
+        assert!(!cleaned.contains("// line comment"));
+        assert!(!cleaned.contains("/* block comment */"));
+        assert!(cleaned.contains("https://foo.bar"));
+        assert!(cleaned.contains(r#"foo \" // bar"#));
+        let parsed: serde_json::Value = serde_json::from_str(&cleaned).unwrap();
+        assert_eq!(parsed["name"], "foo");
+        assert_eq!(parsed["url"], "https://foo.bar");
+    }
 }
+
+

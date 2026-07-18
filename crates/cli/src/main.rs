@@ -34,6 +34,9 @@ impl AdapterFactory for CliAdapterFactory {
             Ecosystem::Cargo => Box::new(otf_release_adapters::cargo::CargoAdapter::new(
                 self.root.clone(),
             )),
+            Ecosystem::Jsr => Box::new(otf_release_adapters::jsr::JsrAdapter::new(
+                self.root.clone(),
+            )),
             Ecosystem::Generic => {
                 Box::new(GenericAdapter::new(self.root.clone(), self.generic.clone()))
             }

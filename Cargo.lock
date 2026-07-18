@@ -1195,6 +1195,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml_edit",
+ "ureq",
 ]
 
 [[package]]
@@ -1207,6 +1208,7 @@ dependencies = [
  "inquire",
  "ratatui",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
 ]

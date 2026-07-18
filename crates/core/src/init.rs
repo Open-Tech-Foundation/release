@@ -121,6 +121,8 @@ pub trait AdapterFactory {
 pub trait InitPrompt {
     /// Which ecosystems to enable (multi-select: `npm`, `crates.io`).
     fn select_adapters(&self) -> Result<Vec<Ecosystem>>;
+    /// Prompt JSR scaffold values.
+    fn prompt_jsr_scaffold(&self, default_name: &str, default_version: &str, default_exports: &str) -> Result<(String, String)>;
     /// Which publishable packages need built artifacts before publish/release?
     fn select_build_packages(&self, publishable: &[&Pkg]) -> Result<Vec<String>>;
     /// The full build config for one selected package (`enabled` is the chosen adapter set).
@@ -267,6 +269,27 @@ fn parse_tag_version(version: &str) -> Option<()> {
     Some(())
 }
 
+fn detect_jsr_exports_default(dir: &Path) -> &'static str {
+    let files = [
+        "src/index.ts",
+        "mod.ts",
+        "index.ts",
+        "src/mod.ts",
+    ];
+    for f in files {
+        if dir.join(f).exists() {
+            return match f {
+                "src/index.ts" => "./src/index.ts",
+                "mod.ts" => "./mod.ts",
+                "index.ts" => "./index.ts",
+                "src/mod.ts" => "./src/mod.ts",
+                _ => "./src/index.ts",
+            };
+        }
+    }
+    "./src/index.ts"
+}
+
 /// The testable core of `init`.
 pub fn orchestrate(
     factory: &dyn AdapterFactory,
@@ -284,6 +307,7 @@ pub fn orchestrate(
     let mut publishable: Vec<Pkg> = Vec::new();
     let mut cargo_publishable: Vec<Pkg> = Vec::new();
     let mut npm_publishable: Vec<Pkg> = Vec::new();
+    let mut jsr_publishable: Vec<Pkg> = Vec::new();
     for &eco in enabled.iter().filter(|e| **e != Ecosystem::Generic) {
         let adapter = factory.make(eco);
         for pkg in adapter.discover_packages()? {
@@ -291,6 +315,7 @@ pub fn orchestrate(
                 match eco {
                     Ecosystem::Cargo => cargo_publishable.push(pkg.clone()),
                     Ecosystem::Npm => npm_publishable.push(pkg.clone()),
+                    Ecosystem::Jsr => jsr_publishable.push(pkg.clone()),
                     Ecosystem::Generic => {}
                 }
                 publishable.push(pkg);
@@ -298,6 +323,65 @@ pub fn orchestrate(
         }
         for note in factory.discovery_notes(eco)? {
             println!("{note}");
+        }
+    }
+
+    if enabled.contains(&Ecosystem::Jsr) && jsr_publishable.is_empty() {
+        let jsr_adapter = factory.make(Ecosystem::Jsr);
+        let jsr_pkgs = if !npm_publishable.is_empty() {
+            let mut created_any = false;
+            for npm_pkg in &npm_publishable {
+                let pkg_dir = npm_pkg.manifest_path.parent().unwrap();
+                let jsr_path = pkg_dir.join("jsr.json");
+
+                let suggested_name = if npm_pkg.name.starts_with('@') {
+                    npm_pkg.name.clone()
+                } else {
+                    format!("@scope/{}", npm_pkg.name)
+                };
+
+                let suggested_exports = detect_jsr_exports_default(pkg_dir);
+
+                println!("\nScaffolding jsr.json for package: {}", npm_pkg.name);
+                let (name, exports) = prompt.prompt_jsr_scaffold(&suggested_name, &npm_pkg.version, suggested_exports)?;
+
+                let jsr_json = serde_json::json!({
+                    "name": name,
+                    "version": npm_pkg.version,
+                    "exports": exports
+                });
+
+                let content = serde_json::to_string_pretty(&jsr_json)?;
+                std::fs::write(&jsr_path, content)?;
+                println!("Created default jsr.json at {}", jsr_path.display());
+                created_any = true;
+            }
+            if created_any {
+                jsr_adapter.discover_packages()?
+            } else {
+                Vec::new()
+            }
+        } else {
+            let suggested_exports = detect_jsr_exports_default(root);
+            println!("\nScaffolding a new JSR package at the repository root");
+            let (name, exports) = prompt.prompt_jsr_scaffold("@scope/my-package", "0.1.0", suggested_exports)?;
+            let jsr_path = root.join("jsr.json");
+            let jsr_json = serde_json::json!({
+                "name": name,
+                "version": "0.1.0",
+                "exports": exports
+            });
+            let content = serde_json::to_string_pretty(&jsr_json)?;
+            std::fs::write(&jsr_path, content)?;
+            println!("Created default jsr.json at {}", jsr_path.display());
+            jsr_adapter.discover_packages()?
+        };
+
+        for pkg in jsr_pkgs {
+            if pkg.publishable {
+                jsr_publishable.push(pkg.clone());
+                publishable.push(pkg);
+            }
         }
     }
 
@@ -311,7 +395,7 @@ pub fn orchestrate(
     let enabled_non_npm: Vec<Ecosystem> = enabled
         .iter()
         .copied()
-        .filter(|e| *e != Ecosystem::Npm)
+        .filter(|e| *e != Ecosystem::Npm && *e != Ecosystem::Jsr)
         .collect();
     for name in &build_names {
         packages.push(prompt.build_entry(name, &enabled_non_npm)?);
@@ -349,6 +433,27 @@ pub fn orchestrate(
                     publish: None,
                 });
             }
+        }
+    }
+
+    if !jsr_publishable.is_empty() {
+        let jsr = factory.make(Ecosystem::Jsr);
+        for pkg in &jsr_publishable {
+            let command = jsr.build_command(pkg)?.unwrap_or_default();
+            packages.push(PackageEntry {
+                name: pkg.name.clone(),
+                adapter: Ecosystem::Jsr,
+                mode: Mode::Publish,
+                matrix: false,
+                targets: Vec::new(),
+                command,
+                artifacts: String::new(),
+                bin_name: None,
+                compress: None,
+                manifest: Some(rel_path(root, &pkg.manifest_path)),
+                version_field: None,
+                publish: None,
+            });
         }
     }
 
@@ -578,6 +683,10 @@ pub(crate) fn render_workflow_for_root(config: &ReleaseConfig, root: &Path) -> S
 fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> String {
     let any_build_only = config.packages.iter().any(|p| p.is_build_only());
     let npm_enabled = config.adapters.contains(&Ecosystem::Npm);
+    let jsr_publishes = config
+        .packages
+        .iter()
+        .any(|p| p.adapter == Ecosystem::Jsr && p.is_publish());
     let cargo_publishes = config
         .packages
         .iter()
@@ -586,12 +695,12 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
         .packages
         .iter()
         .any(|p| p.adapter == Ecosystem::Generic && p.is_publish());
-    let needs_publish = npm_enabled || cargo_publishes || generic_publishes;
+    let needs_publish = npm_enabled || jsr_publishes || cargo_publishes || generic_publishes;
 
     let mut s = String::from("name: Release\n\non:\n  push:\n    branches: [main]\n");
     if any_build_only || needs_publish {
         s.push_str("\npermissions:\n  contents: write  # create tags and GitHub Releases\n");
-        if npm_enabled {
+        if npm_enabled || jsr_publishes {
             s.push_str("  id-token: write\n");
         }
     }
@@ -623,6 +732,7 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
             npm_enabled,
             npm_tool,
             cargo_publishes,
+            jsr_publishes,
             generic_publishes,
             &config
                 .packages
@@ -689,6 +799,13 @@ fn version_read_cmd_for(entry: &PackageEntry) -> (String, bool) {
         }
         Ecosystem::Npm => (npm_version_read_cmd(entry), true),
         Ecosystem::Cargo => (cargo_version_read_cmd(entry), true),
+        Ecosystem::Jsr => {
+            let manifest = entry.manifest.as_deref().unwrap_or("deno.json");
+            (
+                format!("deno eval \"import pkg from './{manifest}' with {{ type: 'json' }}; console.log(pkg.version)\""),
+                true,
+            )
+        }
     }
 }
 
@@ -826,6 +943,9 @@ fn render_single_build_job(s: &mut String, entry: &PackageEntry, npm_tool: NpmTo
             npm_tool.setup_node(s, false);
             s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
         }
+        Ecosystem::Jsr => {
+            s.push_str("      - uses: denoland/setup-deno@v1\n");
+        }
         // Generic is language-agnostic: no toolchain is assumed — the command sets up its own.
         Ecosystem::Generic => {}
     }
@@ -869,6 +989,7 @@ fn render_publish_job(
     npm: bool,
     npm_tool: NpmTool,
     cargo: bool,
+    jsr: bool,
     generic: bool,
     excluded_packages: &[&str],
 ) {
@@ -883,6 +1004,9 @@ fn render_publish_job(
     }
     if cargo {
         s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
+    }
+    if jsr {
+        s.push_str("      - uses: denoland/setup-deno@v1\n");
     }
     if generic {
         s.push_str("      # edit me: set up the toolchain your generic publish command needs\n");
@@ -903,6 +1027,9 @@ fn render_publish_job(
     }
     if cargo {
         s.push_str("          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n");
+    }
+    if jsr {
+        s.push_str("          JSR_TOKEN: ${{ secrets.JSR_TOKEN }}\n");
     }
     if generic {
         s.push_str("          # edit me: any secret your generic publish command needs\n");
@@ -947,6 +1074,7 @@ fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm_tool: Np
     match entry.adapter {
         Ecosystem::Npm => npm_tool.setup_node(s, true),
         Ecosystem::Cargo => s.push_str("      - uses: dtolnay/rust-toolchain@stable\n"),
+        Ecosystem::Jsr => s.push_str("      - uses: denoland/setup-deno@v1\n"),
         Ecosystem::Generic => {}
     }
     if inline {
@@ -991,6 +1119,7 @@ fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm_tool: Np
         Ecosystem::Cargo => {
             s.push_str("          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n")
         }
+        Ecosystem::Jsr => s.push_str("          JSR_TOKEN: ${{ secrets.JSR_TOKEN }}\n"),
         Ecosystem::Generic => {}
     }
     s.push_str("          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n\n");
@@ -1175,7 +1304,7 @@ fn render_changelog_file_collection(
             s.push_str("            changelog_files=()\n");
             for entry in packages {
                 match entry.adapter {
-                    Ecosystem::Generic => {
+                    Ecosystem::Generic | Ecosystem::Jsr => {
                         let manifest = entry.manifest.as_deref().unwrap_or("");
                         let changelog = if manifest.is_empty() {
                             ""
@@ -1434,6 +1563,17 @@ impl InitPrompt for StdinInitPrompt {
         Ok(chosen.iter().map(|o| Ecosystem::ALL[o.index]).collect())
     }
 
+    fn prompt_jsr_scaffold(&self, default_name: &str, _default_version: &str, default_exports: &str) -> Result<(String, String)> {
+        use inquire::Text;
+        let name = Text::new("JSR package name (e.g. @scope/name):")
+            .with_default(default_name)
+            .prompt()?;
+        let exports = Text::new("JSR exports entrypoint (e.g. ./src/index.ts):")
+            .with_default(default_exports)
+            .prompt()?;
+        Ok((name, exports))
+    }
+
     fn select_build_packages(&self, publishable: &[&Pkg]) -> Result<Vec<String>> {
         if publishable.is_empty() {
             return Ok(Vec::new());
@@ -1524,6 +1664,7 @@ impl InitPrompt for StdinInitPrompt {
             let cmd = match adapter {
                 Ecosystem::Cargo => "cargo build --release",
                 Ecosystem::Npm => "npm run build",
+                Ecosystem::Jsr => "deno task build",
                 Ecosystem::Generic => "",
             };
             (None, None, cmd.to_string(), String::new())
@@ -1800,6 +1941,9 @@ mod tests {
         fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
             Ok(self.adapters.clone())
         }
+        fn prompt_jsr_scaffold(&self, default_name: &str, _default_version: &str, default_exports: &str) -> Result<(String, String)> {
+            Ok((default_name.to_string(), default_exports.to_string()))
+        }
         fn select_build_packages(&self, _: &[&Pkg]) -> Result<Vec<String>> {
             Ok(self.build_names.clone())
         }
@@ -2008,6 +2152,65 @@ mod tests {
         // No build steps, so no needs and no artifact download.
         assert!(out.contains("needs: [check-release]"));
         assert!(!out.contains("github-release"));
+    }
+
+    #[test]
+    fn jsr_only_renders_publish_job_no_release() {
+        let config = ReleaseConfig {
+            snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
+            provider: "github".to_string(),
+            default_branch: "main".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
+            hooks: crate::config::Hooks::default(),
+            publish: crate::config::PublishConfig::default(),
+            adapters: vec![Ecosystem::Jsr],
+            skip_publish: Vec::new(),
+            packages: vec![
+                PackageEntry {
+                    name: "jsr-with-build".to_string(),
+                    adapter: Ecosystem::Jsr,
+                    mode: Mode::Publish,
+                    matrix: false,
+                    targets: Vec::new(),
+                    command: "deno task build".to_string(),
+                    artifacts: String::new(),
+                    bin_name: None,
+                    compress: None,
+                    manifest: Some("packages/b/deno.json".to_string()),
+                    version_field: None,
+                    publish: None,
+                },
+                PackageEntry {
+                    name: "jsr-no-build".to_string(),
+                    adapter: Ecosystem::Jsr,
+                    mode: Mode::Publish,
+                    matrix: false,
+                    targets: Vec::new(),
+                    command: String::new(),
+                    artifacts: String::new(),
+                    bin_name: None,
+                    compress: None,
+                    manifest: Some("packages/a/deno.json".to_string()),
+                    version_field: None,
+                    publish: None,
+                },
+            ],
+        };
+        let out = render_workflow(&config);
+        assert!(out.contains("permissions:\n  contents: write  # create tags and GitHub Releases\n  id-token: write\n"));
+        // Check package-specific publish job for jsr-with-build
+        assert!(out.contains("  publish-jsr-with-build:\n"));
+        assert!(out.contains("      - uses: denoland/setup-deno@v1\n"));
+        assert!(out.contains("        run: otf-release publish --package jsr-with-build\n"));
+        // Check catch-all publish job for jsr-no-build
+        assert!(out.contains("  publish:\n"));
+        assert!(out.contains("      - uses: denoland/setup-deno@v1\n"));
+        assert!(out.contains("        run: otf-release publish --exclude-package jsr-with-build\n"));
+        assert!(out.contains("          JSR_TOKEN: ${{ secrets.JSR_TOKEN }}\n"));
     }
 
     #[test]

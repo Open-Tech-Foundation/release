@@ -13,4 +13,5 @@
 pub mod cargo;
 pub mod command;
 pub mod generic;
+pub mod jsr;
 pub mod npm;

@@ -45,19 +45,27 @@ pub enum Ecosystem {
     Npm,
     #[serde(rename = "crates.io")]
     Cargo,
+    #[serde(rename = "jsr")]
+    Jsr,
     #[serde(rename = "generic")]
     Generic,
 }
 
 impl Ecosystem {
     /// All ecosystems offered by `init`, in menu order.
-    pub const ALL: [Ecosystem; 3] = [Ecosystem::Npm, Ecosystem::Cargo, Ecosystem::Generic];
+    pub const ALL: [Ecosystem; 4] = [
+        Ecosystem::Npm,
+        Ecosystem::Cargo,
+        Ecosystem::Jsr,
+        Ecosystem::Generic,
+    ];
 
     /// The human/registry label shown in prompts and written to the file.
     pub fn label(self) -> &'static str {
         match self {
             Ecosystem::Npm => "npm",
             Ecosystem::Cargo => "crates.io",
+            Ecosystem::Jsr => "jsr",
             Ecosystem::Generic => "generic (any registry, via your own commands)",
         }
     }
@@ -342,7 +350,7 @@ impl PackageEntry {
     /// place. Matrix npm packages ship per-platform binaries and still stage across jobs; cargo and
     /// generic packages build through their own publish path, so neither builds inline.
     pub fn builds_inline(&self) -> bool {
-        self.adapter == Ecosystem::Npm && !self.matrix && !self.command.trim().is_empty()
+        (self.adapter == Ecosystem::Npm || self.adapter == Ecosystem::Jsr) && !self.matrix && !self.command.trim().is_empty()
     }
 }
 

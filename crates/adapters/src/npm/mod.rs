@@ -12,7 +12,7 @@
 //!   published version before publish (npm does not do this automatically).
 //! - No `private:true` guard hack — asset packages are normal publishable packages.
 
-mod manifest;
+pub(crate) mod manifest;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
