@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-18
+
 - **workflow/init** — The generated catch-all `publish` job now waits on each dedicated
   `publish-<pkg>` job and gates on their results (`always() && … result != 'failure' && result != 'cancelled'`),
   so a dependent that exact-pins a package built by its own job (e.g. a JS package pinning a
