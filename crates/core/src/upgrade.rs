@@ -139,6 +139,8 @@ mod tests {
             .contains("  publish:\n    needs: [check-release, publish-opentf-web-compiler]\n"));
         assert!(workflow.contains("    if: >-\n      always() &&"));
         assert!(workflow.contains("      needs.publish-opentf-web-compiler.result != 'failure'"));
-        assert!(workflow.contains("\nconcurrency:\n  group: release\n  cancel-in-progress: false\n"));
+        assert!(
+            workflow.contains("\nconcurrency:\n  group: release\n  cancel-in-progress: false\n")
+        );
     }
 }

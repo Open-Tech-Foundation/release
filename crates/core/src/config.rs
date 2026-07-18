@@ -350,7 +350,9 @@ impl PackageEntry {
     /// place. Matrix npm packages ship per-platform binaries and still stage across jobs; cargo and
     /// generic packages build through their own publish path, so neither builds inline.
     pub fn builds_inline(&self) -> bool {
-        (self.adapter == Ecosystem::Npm || self.adapter == Ecosystem::Jsr) && !self.matrix && !self.command.trim().is_empty()
+        (self.adapter == Ecosystem::Npm || self.adapter == Ecosystem::Jsr)
+            && !self.matrix
+            && !self.command.trim().is_empty()
     }
 }
 

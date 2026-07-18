@@ -122,7 +122,12 @@ pub trait InitPrompt {
     /// Which ecosystems to enable (multi-select: `npm`, `crates.io`).
     fn select_adapters(&self) -> Result<Vec<Ecosystem>>;
     /// Prompt JSR scaffold values.
-    fn prompt_jsr_scaffold(&self, default_name: &str, default_version: &str, default_exports: &str) -> Result<(String, String)>;
+    fn prompt_jsr_scaffold(
+        &self,
+        default_name: &str,
+        default_version: &str,
+        default_exports: &str,
+    ) -> Result<(String, String)>;
     /// Which publishable packages need built artifacts before publish/release?
     fn select_build_packages(&self, publishable: &[&Pkg]) -> Result<Vec<String>>;
     /// The full build config for one selected package (`enabled` is the chosen adapter set).
@@ -270,12 +275,7 @@ fn parse_tag_version(version: &str) -> Option<()> {
 }
 
 fn detect_jsr_exports_default(dir: &Path) -> &'static str {
-    let files = [
-        "src/index.ts",
-        "mod.ts",
-        "index.ts",
-        "src/mod.ts",
-    ];
+    let files = ["src/index.ts", "mod.ts", "index.ts", "src/mod.ts"];
     for f in files {
         if dir.join(f).exists() {
             return match f {
@@ -343,7 +343,11 @@ pub fn orchestrate(
                 let suggested_exports = detect_jsr_exports_default(pkg_dir);
 
                 println!("\nScaffolding jsr.json for package: {}", npm_pkg.name);
-                let (name, exports) = prompt.prompt_jsr_scaffold(&suggested_name, &npm_pkg.version, suggested_exports)?;
+                let (name, exports) = prompt.prompt_jsr_scaffold(
+                    &suggested_name,
+                    &npm_pkg.version,
+                    suggested_exports,
+                )?;
 
                 let jsr_json = serde_json::json!({
                     "name": name,
@@ -364,7 +368,8 @@ pub fn orchestrate(
         } else {
             let suggested_exports = detect_jsr_exports_default(root);
             println!("\nScaffolding a new JSR package at the repository root");
-            let (name, exports) = prompt.prompt_jsr_scaffold("@scope/my-package", "0.1.0", suggested_exports)?;
+            let (name, exports) =
+                prompt.prompt_jsr_scaffold("@scope/my-package", "0.1.0", suggested_exports)?;
             let jsr_path = root.join("jsr.json");
             let jsr_json = serde_json::json!({
                 "name": name,
@@ -665,7 +670,9 @@ fn render_snapshot_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmT
 fn push_install_otf_release(s: &mut String) {
     s.push_str("      - name: Install otf-release\n");
     s.push_str("        shell: bash\n");
-    s.push_str(&format!("        run: curl -fsSL {INSTALL_SH_URL} | bash\n"));
+    s.push_str(&format!(
+        "        run: curl -fsSL {INSTALL_SH_URL} | bash\n"
+    ));
 }
 
 /// Install `otf-release` on a job that may run on Windows (the build matrix fan-out, whose runner is
@@ -1607,7 +1614,12 @@ impl InitPrompt for StdinInitPrompt {
         Ok(chosen.iter().map(|o| Ecosystem::ALL[o.index]).collect())
     }
 
-    fn prompt_jsr_scaffold(&self, default_name: &str, _default_version: &str, default_exports: &str) -> Result<(String, String)> {
+    fn prompt_jsr_scaffold(
+        &self,
+        default_name: &str,
+        _default_version: &str,
+        default_exports: &str,
+    ) -> Result<(String, String)> {
         use inquire::Text;
         let name = Text::new("JSR package name (e.g. @scope/name):")
             .with_default(default_name)
@@ -1985,7 +1997,12 @@ mod tests {
         fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
             Ok(self.adapters.clone())
         }
-        fn prompt_jsr_scaffold(&self, default_name: &str, _default_version: &str, default_exports: &str) -> Result<(String, String)> {
+        fn prompt_jsr_scaffold(
+            &self,
+            default_name: &str,
+            _default_version: &str,
+            default_exports: &str,
+        ) -> Result<(String, String)> {
             Ok((default_name.to_string(), default_exports.to_string()))
         }
         fn select_build_packages(&self, _: &[&Pkg]) -> Result<Vec<String>> {
@@ -2259,7 +2276,9 @@ mod tests {
         };
         let out = render_workflow(&config);
         // The catch-all publish depends on the compiler's dedicated publish job…
-        assert!(out.contains("  publish:\n    needs: [check-release, publish-opentf-web-compiler]\n"));
+        assert!(
+            out.contains("  publish:\n    needs: [check-release, publish-opentf-web-compiler]\n")
+        );
         // …and gates on it: `always()` so a skipped compiler (JS-only release) still lets JS publish,
         // with result guards that abort only on a real failure/cancellation.
         assert!(out.contains(

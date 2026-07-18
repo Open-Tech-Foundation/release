@@ -63,8 +63,7 @@ impl Manifest {
 
     pub(crate) fn json(&self) -> Result<Value> {
         let cleaned = strip_jsonc_comments(&self.content);
-        serde_json::from_str(&cleaned)
-            .with_context(|| format!("parsing {}", self.path.display()))
+        serde_json::from_str(&cleaned).with_context(|| format!("parsing {}", self.path.display()))
     }
 
     pub fn name(&self) -> Result<String> {
@@ -591,5 +590,3 @@ mod tests {
         assert_eq!(parsed["url"], "https://foo.bar");
     }
 }
-
-

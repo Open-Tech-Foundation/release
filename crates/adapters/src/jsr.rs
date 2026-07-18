@@ -6,9 +6,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use glob::glob;
 use serde_json::Value;
 
-use otf_release_core::adapter::{Adapter, Bump, DepKind, InternalDep, Pkg};
 use crate::command::{CommandRunner, SystemRunner};
-use crate::npm::manifest::{Manifest, strip_jsonc_comments};
+use crate::npm::manifest::{strip_jsonc_comments, Manifest};
+use otf_release_core::adapter::{Adapter, Bump, DepKind, InternalDep, Pkg};
 
 pub struct JsrAdapter {
     pub root: PathBuf,
@@ -43,14 +43,12 @@ impl Adapter for JsrAdapter {
                             let glob_str = joined.to_str().ok_or_else(|| {
                                 anyhow!("non-UTF-8 path in workspace pattern: {pat}")
                             })?;
-                            for entry in glob(glob_str).with_context(|| {
-                                format!("invalid workspace glob: {pat}")
-                            })? {
+                            for entry in glob(glob_str)
+                                .with_context(|| format!("invalid workspace glob: {pat}"))?
+                            {
                                 let path = entry?;
-                                if path.is_dir() {
-                                    if read_manifest(&path)?.is_some() {
-                                        member_dirs.insert(path);
-                                    }
+                                if path.is_dir() && read_manifest(&path)?.is_some() {
+                                    member_dirs.insert(path);
                                 }
                             }
                         }
@@ -81,12 +79,14 @@ impl Adapter for JsrAdapter {
 
         let mut packages = Vec::with_capacity(members.len());
         for (dir, manifest_path, json) in &members {
-            let name = json.get("name").and_then(Value::as_str).ok_or_else(|| {
-                anyhow!("{}: missing name field", manifest_path.display())
-            })?;
-            let version = json.get("version").and_then(Value::as_str).ok_or_else(|| {
-                anyhow!("{}: missing version field", manifest_path.display())
-            })?;
+            let name = json
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("{}: missing name field", manifest_path.display()))?;
+            let version = json
+                .get("version")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("{}: missing version field", manifest_path.display()))?;
 
             let publishable = match json.get("publish") {
                 Some(Value::Bool(b)) => *b,
@@ -100,12 +100,13 @@ impl Adapter for JsrAdapter {
                         let mut matched_dep = None;
                         for internal_name in &internal_names {
                             if val_str.starts_with(&format!("jsr:{}@", internal_name))
-                                || val_str == &format!("jsr:{}", internal_name)
+                                || val_str == format!("jsr:{}", internal_name)
                                 || val_str.starts_with(&format!("npm:{}@", internal_name))
-                                || val_str == &format!("npm:{}", internal_name)
+                                || val_str == format!("npm:{}", internal_name)
                                 || (val_str.starts_with("workspace:") && key == internal_name)
                             {
-                                matched_dep = Some((internal_name.clone(), val_str.to_string(), key.clone()));
+                                matched_dep =
+                                    Some((internal_name.clone(), val_str.to_string(), key.clone()));
                                 break;
                             }
                         }
@@ -168,13 +169,20 @@ impl Adapter for JsrAdapter {
                     let prefix_npm = format!("npm:{}@", dep);
                     let is_workspace = val_str.starts_with("workspace:") && key == dep;
 
-                    if val_str.starts_with(&prefix_jsr) || val_str.starts_with(&prefix_npm) || is_workspace {
+                    if val_str.starts_with(&prefix_jsr)
+                        || val_str.starts_with(&prefix_npm)
+                        || is_workspace
+                    {
                         let new_val_str = if is_workspace {
                             let old_range = val_str.strip_prefix("workspace:").unwrap();
                             let new_range = reformat_range(old_range, new_dep_version);
                             format!("workspace:{}", new_range)
                         } else {
-                            let prefix = if val_str.starts_with(&prefix_jsr) { &prefix_jsr } else { &prefix_npm };
+                            let prefix = if val_str.starts_with(&prefix_jsr) {
+                                &prefix_jsr
+                            } else {
+                                &prefix_npm
+                            };
                             let old_range = val_str.strip_prefix(prefix).unwrap();
                             let new_range = reformat_range(old_range, new_dep_version);
                             format!("{}{}", prefix, new_range)
@@ -220,14 +228,20 @@ impl Adapter for JsrAdapter {
                         if val_str.starts_with(&prefix_jsr_ws) {
                             matched = Some((
                                 dep_name.clone(),
-                                val_str.strip_prefix(&format!("jsr:{}@", dep_name)).unwrap().to_string(),
+                                val_str
+                                    .strip_prefix(&format!("jsr:{}@", dep_name))
+                                    .unwrap()
+                                    .to_string(),
                                 true,
                             ));
                             break;
                         } else if val_str.starts_with(&prefix_npm_ws) {
                             matched = Some((
                                 dep_name.clone(),
-                                val_str.strip_prefix(&format!("npm:{}@", dep_name)).unwrap().to_string(),
+                                val_str
+                                    .strip_prefix(&format!("npm:{}@", dep_name))
+                                    .unwrap()
+                                    .to_string(),
                                 false,
                             ));
                             break;
@@ -264,12 +278,16 @@ impl Adapter for JsrAdapter {
                 let _ = self.runner.run("deno", &["cache", "deno.json"], root);
             }
         } else if root.join("bun.lock").exists() || root.join("bun.lockb").exists() {
-            let out = self.runner.run("bun", &["install", "--lockfile-only"], root)?;
+            let out = self
+                .runner
+                .run("bun", &["install", "--lockfile-only"], root)?;
             if !out.success {
                 bail!("`bun install --lockfile-only` failed:\n{}", out.stderr);
             }
         } else if root.join("package-lock.json").exists() {
-            let out = self.runner.run("npm", &["install", "--package-lock-only"], root)?;
+            let out = self
+                .runner
+                .run("npm", &["install", "--package-lock-only"], root)?;
             if !out.success {
                 bail!("`npm install --package-lock-only` failed:\n{}", out.stderr);
             }
@@ -299,7 +317,10 @@ impl Adapter for JsrAdapter {
 
     fn publish(&self, pkg: &Pkg, staged_assets: Option<&Path>) -> Result<()> {
         let pkg_dir = pkg.manifest_path.parent().ok_or_else(|| {
-            anyhow!("{}: manifest has no parent dir", pkg.manifest_path.display())
+            anyhow!(
+                "{}: manifest has no parent dir",
+                pkg.manifest_path.display()
+            )
         })?;
 
         if let Some(assets) = staged_assets {
@@ -334,9 +355,17 @@ impl Adapter for JsrAdapter {
     fn build_command(&self, pkg: &Pkg) -> Result<Option<String>> {
         let manifest = Manifest::read(&pkg.manifest_path)?;
         let json = manifest.json()?;
-        if json.get("tasks").and_then(Value::as_object).and_then(|t| t.get("build")).is_some() {
-            Ok(Some("deno task build".to_string()))
-        } else if json.get("scripts").and_then(Value::as_object).and_then(|t| t.get("build")).is_some() {
+        let has_build_task = json
+            .get("tasks")
+            .and_then(Value::as_object)
+            .and_then(|t| t.get("build"))
+            .is_some();
+        let has_build_script = json
+            .get("scripts")
+            .and_then(Value::as_object)
+            .and_then(|t| t.get("build"))
+            .is_some();
+        if has_build_task || has_build_script {
             Ok(Some("deno task build".to_string()))
         } else {
             Ok(None)
@@ -453,24 +482,33 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
 
-        write_file(&root.join("deno.json"), r#"{
+        write_file(
+            &root.join("deno.json"),
+            r#"{
             "workspace": ["packages/*"]
-        }"#);
+        }"#,
+        );
 
-        write_file(&root.join("packages/a/deno.json"), r#"{
+        write_file(
+            &root.join("packages/a/deno.json"),
+            r#"{
             "name": "@scope/a",
             "version": "1.0.0",
             "imports": {
                 "@scope/b": "jsr:@scope/b@^2.0.0"
             }
-        }"#);
+        }"#,
+        );
 
-        write_file(&root.join("packages/b/deno.jsonc"), r#"{
+        write_file(
+            &root.join("packages/b/deno.jsonc"),
+            r#"{
             // Comment test
             "name": "@scope/b",
             "version": "2.0.0",
             "publish": false
-        }"#);
+        }"#,
+        );
 
         let adapter = JsrAdapter::new(root);
         let pkgs = adapter.discover_packages().unwrap();
@@ -486,5 +524,37 @@ mod tests {
         assert_eq!(pkgs[1].name, "@scope/b");
         assert_eq!(pkgs[1].version, "2.0.0");
         assert!(!pkgs[1].publishable);
+    }
+
+    #[test]
+    fn test_publish() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        write_file(
+            &root.join("deno.json"),
+            r#"{
+            "name": "@scope/pkg",
+            "version": "1.0.0"
+        }"#,
+        );
+
+        let runner = FakeRunner::new(true, "published successfully", "");
+        let adapter = JsrAdapter::with_runner(root, Box::new(runner.clone()));
+        let pkg = Pkg {
+            name: "@scope/pkg".to_string(),
+            version: "1.0.0".to_string(),
+            publishable: true,
+            manifest_path: root.join("deno.json"),
+            changelog_path: std::path::PathBuf::new(),
+            internal_deps: Vec::new(),
+        };
+
+        adapter.publish(&pkg, None).unwrap();
+
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "deno");
+        assert_eq!(calls[0].1, vec!["publish".to_string()]);
     }
 }

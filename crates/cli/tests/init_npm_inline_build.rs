@@ -41,7 +41,12 @@ impl InitPrompt for NpmOnlyPrompt {
     fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
         Ok(vec![Ecosystem::Npm])
     }
-    fn prompt_jsr_scaffold(&self, default_name: &str, _default_version: &str, default_exports: &str) -> Result<(String, String)> {
+    fn prompt_jsr_scaffold(
+        &self,
+        default_name: &str,
+        _default_version: &str,
+        default_exports: &str,
+    ) -> Result<(String, String)> {
         Ok((default_name.to_string(), default_exports.to_string()))
     }
     fn select_build_packages(
