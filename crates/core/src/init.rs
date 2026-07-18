@@ -659,7 +659,19 @@ fn render_snapshot_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmT
     s
 }
 
+/// Install `otf-release` on an ubuntu-only job: a single bash step, no `runner.os` guard. Every
+/// generated job runs on `ubuntu-latest` except the build matrix fan-out, so this is the common case
+/// — the Windows branch would never fire here and is left out as dead YAML.
 fn push_install_otf_release(s: &mut String) {
+    s.push_str("      - name: Install otf-release\n");
+    s.push_str("        shell: bash\n");
+    s.push_str(&format!("        run: curl -fsSL {INSTALL_SH_URL} | bash\n"));
+}
+
+/// Install `otf-release` on a job that may run on Windows (the build matrix fan-out, whose runner is
+/// `${{ matrix.runner }}`): both the bash and PowerShell variants, each guarded by `runner.os` so
+/// exactly the right one fires per runner.
+fn push_install_otf_release_cross_platform(s: &mut String) {
     s.push_str("      - name: Install otf-release\n");
     s.push_str("        if: runner.os != 'Windows'\n");
     s.push_str("        shell: bash\n");
@@ -704,6 +716,10 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
             s.push_str("  id-token: write\n");
         }
     }
+    // Serialize release runs: two quick pushes to main must not run two `otf-release publish`
+    // pipelines at once. `cancel-in-progress: false` lets an in-flight release finish rather than
+    // being interrupted mid-publish.
+    s.push_str("\nconcurrency:\n  group: release\n  cancel-in-progress: false\n");
     s.push_str("\njobs:\n");
     render_check_release_job(&mut s, config);
 
@@ -908,7 +924,7 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmT
         npm_tool.setup_node(s, false);
         s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
     }
-    push_install_otf_release(s);
+    push_install_otf_release_cross_platform(s);
     s.push_str(&format!("      - name: Build {name}\n"));
     s.push_str(&format!(
         "        run: otf-release build --package {name} --target ${{{{ matrix.name }}}}/${{{{ matrix.arch }}}}\n"
@@ -994,8 +1010,36 @@ fn render_publish_job(
     excluded_packages: &[&str],
 ) {
     s.push_str("  publish:\n");
-    needs_line(s, &["check-release".to_string()]);
-    s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
+    // Each excluded package has its own `publish-<pkg>` job (it needs a build). The catch-all
+    // publishes everything else — including dependents that pin an *exact* version of one of those
+    // packages (e.g. a JS package pinning a compiler). So this job must wait for those dedicated
+    // publish jobs: otherwise a dependent can land on the registry before the package it pins exists,
+    // or — worse — stay published pointing at a version whose publish failed.
+    let dep_jobs: Vec<String> = excluded_packages
+        .iter()
+        .map(|name| format!("publish-{}", slug(name)))
+        .collect();
+    let mut needs = vec!["check-release".to_string()];
+    needs.extend(dep_jobs.iter().cloned());
+    needs_line(s, &needs);
+    if dep_jobs.is_empty() {
+        s.push_str("    if: needs.check-release.outputs.should_release == 'true'\n");
+    } else {
+        // `always()` keeps this job evaluating when the dep jobs were *skipped* (a release that
+        // touches none of them) — without it GitHub auto-skips any job whose `needs` was skipped.
+        // The result guards then abort only on a genuine failure/cancellation of a dep publish, so a
+        // skipped dep still lets the catch-all run.
+        let mut conditions = vec![
+            "always()".to_string(),
+            "needs.check-release.outputs.should_release == 'true'".to_string(),
+        ];
+        for job in &dep_jobs {
+            conditions.push(format!("needs.{job}.result != 'failure'"));
+            conditions.push(format!("needs.{job}.result != 'cancelled'"));
+        }
+        s.push_str("    if: >-\n");
+        s.push_str(&format!("      {}\n", conditions.join(" &&\n      ")));
+    }
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
@@ -2152,6 +2196,75 @@ mod tests {
         // No build steps, so no needs and no artifact download.
         assert!(out.contains("needs: [check-release]"));
         assert!(!out.contains("github-release"));
+    }
+
+    #[test]
+    fn ubuntu_only_workflow_has_no_dead_windows_install_step_and_serializes_releases() {
+        let config = ReleaseConfig {
+            snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
+            provider: "github".to_string(),
+            default_branch: "main".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
+            hooks: crate::config::Hooks::default(),
+            publish: crate::config::PublishConfig::default(),
+            adapters: vec![Ecosystem::Npm],
+            skip_publish: Vec::new(),
+            packages: vec![],
+        };
+        let out = render_workflow(&config);
+        // Release runs are serialized so two quick pushes don't publish concurrently.
+        assert!(out.contains("\nconcurrency:\n  group: release\n  cancel-in-progress: false\n"));
+        // No job here runs on Windows, so the PowerShell install branch is not emitted at all.
+        assert!(out.contains("      - name: Install otf-release\n        shell: bash\n"));
+        assert!(!out.contains("if: runner.os == 'Windows'"));
+        assert!(!out.contains("install.ps1"));
+    }
+
+    #[test]
+    fn catch_all_publish_waits_for_dedicated_publish_jobs() {
+        // A dependent (web-cli) that exact-pins a package built + published by its own job
+        // (web-compiler) must not publish until that job succeeds — or the pin dangles on the
+        // registry pointing at a version that does not exist yet (or never will).
+        let config = ReleaseConfig {
+            snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
+            provider: "github".to_string(),
+            default_branch: "main".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
+            hooks: crate::config::Hooks::default(),
+            publish: crate::config::PublishConfig::default(),
+            adapters: vec![Ecosystem::Npm],
+            skip_publish: Vec::new(),
+            packages: vec![PackageEntry {
+                name: "@opentf/web-compiler".into(),
+                adapter: Ecosystem::Npm,
+                mode: Mode::Publish,
+                matrix: true,
+                targets: vec![Target::resolved("linux", "aarch64")],
+                command: "cargo build --release --target {triple}".into(),
+                artifacts: "target/{triple}/release/otfwc{ext}".into(),
+                bin_name: Some("otfwc".into()),
+                compress: Some("brotli".into()),
+                manifest: None,
+                version_field: None,
+                publish: None,
+            }],
+        };
+        let out = render_workflow(&config);
+        // The catch-all publish depends on the compiler's dedicated publish job…
+        assert!(out.contains("  publish:\n    needs: [check-release, publish-opentf-web-compiler]\n"));
+        // …and gates on it: `always()` so a skipped compiler (JS-only release) still lets JS publish,
+        // with result guards that abort only on a real failure/cancellation.
+        assert!(out.contains(
+            "    if: >-\n      always() &&\n      needs.check-release.outputs.should_release == 'true' &&\n      needs.publish-opentf-web-compiler.result != 'failure' &&\n      needs.publish-opentf-web-compiler.result != 'cancelled'\n"
+        ));
     }
 
     #[test]

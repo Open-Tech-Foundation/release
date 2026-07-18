@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **workflow/init** — The generated catch-all `publish` job now waits on each dedicated
+  `publish-<pkg>` job and gates on their results (`always() && … result != 'failure' && result != 'cancelled'`),
+  so a dependent that exact-pins a package built by its own job (e.g. a JS package pinning a
+  compiler) can no longer publish before — or despite a failed publish of — the package it pins.
+  Added a top-level `concurrency: { group: release, cancel-in-progress: false }` so two quick pushes
+  to `main` can't run two publish pipelines at once, and dropped the never-firing Windows install
+  steps from every `ubuntu-latest` job (only the build matrix, which can run on Windows, keeps the
+  PowerShell branch). `otf-release upgrade` regenerates these fixes into an existing workflow.
 - **jsr** — Added native JSR ecosystem support. The tool can now auto-configure JSR/Deno packages, surgically update versions in `deno.json`/`deno.jsonc`/`jsr.json` and in internal workspace dependency ranges within the `"imports"` object, rewrite `workspace:*` specifiers before publication, query package publication state via registry API, and run JSR publishers. During `init`, if the JSR adapter is enabled but no JSR manifest exists, it prompts the user to scaffold a new `jsr.json` with smart default TypeScript entrypoint suggestions (`./src/index.ts`, `./mod.ts`, etc.) based on existing workspace files.
 
 ## [0.20.0] - 2026-07-18

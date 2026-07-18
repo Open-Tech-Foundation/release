@@ -46,7 +46,7 @@ mod tests {
 
     use crate::config::{
         ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Hooks, Mode,
-        PackageEntry, ReleaseConfig,
+        PackageEntry, ReleaseConfig, Target,
     };
 
     use super::*;
@@ -93,5 +93,52 @@ mod tests {
         assert!(workflow.contains("      - uses: oven-sh/setup-bun@v2\n"));
         assert!(workflow.contains("      - run: bun install --frozen-lockfile\n"));
         assert!(!workflow.contains("      - run: npm ci\n"));
+    }
+
+    #[test]
+    fn upgrade_regenerates_publish_gating_and_concurrency() {
+        // `upgrade` reads release.toml and regenerates the workflow through the same renderer as
+        // `init`, so an existing repo picks up the ordering fix, the concurrency group, and the
+        // dropped Windows install steps just by running `otf-release upgrade`.
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            skip_publish: Vec::new(),
+            hooks: Hooks::default(),
+            publish: crate::config::PublishConfig::default(),
+            packages: vec![PackageEntry {
+                name: "@opentf/web-compiler".to_string(),
+                adapter: Ecosystem::Npm,
+                mode: Mode::Publish,
+                matrix: true,
+                targets: vec![Target::resolved("linux", "aarch64")],
+                command: "cargo build --release --target {triple}".to_string(),
+                artifacts: "target/{triple}/release/otfwc{ext}".to_string(),
+                bin_name: Some("otfwc".to_string()),
+                compress: Some("brotli".to_string()),
+                manifest: None,
+                version_field: None,
+                publish: None,
+            }],
+            snapshot_tag: None,
+            tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
+            provider: "github".to_string(),
+            default_branch: "main".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Package,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
+        };
+        config.save(tmp.path()).unwrap();
+
+        orchestrate(tmp.path(), &UpgradeOptions { force: true }).unwrap();
+
+        let workflow =
+            fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
+        assert!(workflow
+            .contains("  publish:\n    needs: [check-release, publish-opentf-web-compiler]\n"));
+        assert!(workflow.contains("    if: >-\n      always() &&"));
+        assert!(workflow.contains("      needs.publish-opentf-web-compiler.result != 'failure'"));
+        assert!(workflow.contains("\nconcurrency:\n  group: release\n  cancel-in-progress: false\n"));
     }
 }
