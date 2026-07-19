@@ -121,6 +121,7 @@ Commands are grouped by where they run. Each links to reference docs where avail
 | [`matrix`](docs/commands/matrix-build.md) | Prints the GitHub Actions build matrix (JSON) for a matrix package from `release.toml` — no hand-maintained target list in YAML. |
 | [`build`](docs/commands/matrix-build.md) | Builds one matrix target (`--package` / `--target`), cross-compiling as needed, and stages the binary at `bin/<platform>-<arch>/<bin>[.br]` for publish. |
 | [`publish`](docs/commands/publish.md) | Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. Refuses to publish a matrix package whose per-platform binaries weren't staged. |
+| [`github-release`](docs/commands/github-release.md) | Build-only twin of `publish`: reads a package's version, renames its staged binaries into OS/arch assets, and creates its GitHub Release (idempotently). Keeps the workflow's release job a thin call — no inline `gh`/`awk`/`jq`. |
 | [`snapshot`](docs/commands/snapshot.md) | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |
 
 ### Maintenance

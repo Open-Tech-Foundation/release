@@ -159,6 +159,20 @@ enum Command {
         #[arg(long)]
         target: String,
     },
+    /// CI: create a GitHub Release for a `build-only` package — read its version, build the notes,
+    /// rename the staged binaries into OS/arch assets, and attach them. The build-only twin of
+    /// `publish`; idempotent (skips a release that already exists).
+    GithubRelease {
+        /// The build-only package to release (required when more than one exists).
+        #[arg(long)]
+        package: Option<String>,
+        /// Directory of staged binary artifacts (`.artifacts/`). Omit for a release with no assets.
+        #[arg(long)]
+        artifacts_dir: Option<PathBuf>,
+        /// Resolve the plan and print it, but create no release.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Non-interactive, CI: automated ephemeral release via short git hashes.
     Snapshot,
     /// Update otf-release to the latest version.
@@ -219,6 +233,35 @@ fn run() -> Result<()> {
         Command::Build { package, target } => {
             let config = ReleaseConfig::load(&root)?;
             otf_release_core::build::run(&config, &root, &package, &target)?;
+            Ok(())
+        }
+        Command::GithubRelease {
+            package,
+            artifacts_dir,
+            dry_run,
+        } => {
+            let config = ReleaseConfig::load(&root)?;
+            let factory = CliAdapterFactory {
+                root: root.clone(),
+                generic: generic_pkgs(&config),
+            };
+            let adapters: Vec<Box<dyn Adapter>> = config
+                .adapters
+                .iter()
+                .map(|eco| factory.make(*eco))
+                .collect();
+            let adapter_refs: Vec<&dyn Adapter> =
+                adapters.iter().map(|adapter| adapter.as_ref()).collect();
+            otf_release_core::github_release::run_many(
+                &adapter_refs,
+                &root,
+                &otf_release_core::github_release::GithubReleaseOptions {
+                    package,
+                    artifacts_dir,
+                    dry_run,
+                },
+                &config,
+            )?;
             Ok(())
         }
         Command::Snapshot => {

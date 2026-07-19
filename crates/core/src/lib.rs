@@ -27,6 +27,7 @@ pub mod date;
 pub mod discover;
 pub mod forge;
 pub mod git;
+pub mod github_release;
 pub mod graph;
 pub mod hooks;
 pub mod init;

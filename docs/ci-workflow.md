@@ -64,12 +64,16 @@ build-<pkg>  (cross-compile each target on its runner)  ──needs──▶  gi
 
 - **`build-<pkg>`** — the matrix fan-out described above; each leg runs on its `matrix.runner` and
   `otf-release build` cross-compiles + stages the target's binary.
-- **`github-release`** — `needs:` the build job(s); downloads the artifacts and runs `gh release
-  create <tag>` using `tag_format` for each build-only package. The version line carries an
-  `# edit me` marker when the generator cannot infer a source. The step is **idempotent**
-  (`gh release view` skips an existing release). The release body is generated from the global
-  `github_release_notes` setting.
-  **No crates.io, no `cargo publish`** — the artifacts are how users install the binary per OS.
+- **`github-release-<pkg>`** — `needs:` the build job(s); downloads the artifacts and hands off to
+  [`otf-release github-release --package <pkg> --artifacts-dir .artifacts`](./commands/github-release.md).
+  The **binary** reads the package's version (the same manifest read `check`/`publish` use — never a
+  `cargo metadata | jq '.packages[0]'` guess), renders the tag from `tag_format`, builds the release
+  body from the global `github_release_notes` setting, renames the staged `bin/<stage_as>/<bin>`
+  binaries into OS/arch assets (`<bin>-<os>-<arch>[.ext]`), and creates the Release. It is
+  **idempotent** (an existing release for the tag is skipped). The generated YAML is a thin, stable
+  call — **no inline `gh`/`awk`/`jq` and no `# edit me`** version line, exactly like the registry
+  `publish` job. **No crates.io, no `cargo publish`** — the artifacts are how users install the
+  binary per OS.
 
 Auth: the default `GITHUB_TOKEN` with `contents: write` (to create the tag and Release). The git
 tag rendered from `tag_format` is created by the Release step, on the merge commit.

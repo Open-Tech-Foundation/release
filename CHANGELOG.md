@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **github-release** — New first-class CI command `otf-release github-release` that owns the
+  build-only release path end-to-end, so the generated `release.yml` no longer embeds inline
+  `gh`/`awk`/`jq`/`sed` bash. It reads the package's version through its adapter (the same read
+  `check`/`publish` use — never `cargo metadata | jq '.packages[0].version'`, which read whichever
+  crate was first rather than the package's own), renders the tag from `tag_format`, builds the
+  release body from `github_release_notes` (curated changelog / semantic commits / GitHub-generated,
+  falling back to generated notes when a source is empty), renames the staged
+  `bin/<stage_as>/<bin>` binaries into OS/arch assets (`<bin>-<os>-<arch>[.ext]`), and creates the
+  Release idempotently. The generated `github-release-<pkg>` job is now a thin, stable call like the
+  registry `publish` job — no `# edit me` version line. `otf-release upgrade` regenerates it into an
+  existing workflow.
+- **init/discover** — Fixed package-name detection for a virtual Cargo workspace scanned from its
+  own root: `init` passes `root = "."`, so the root `./Cargo.toml` had a parent of `.` with no
+  `file_name()` and an unnamed workspace collapsed to the literal `package`. Discovery now
+  canonicalizes to recover the real project directory name.
+
 ## [0.22.0] - 2026-07-18
 
 - **publish** — `--exclude-package` (and `--package`) now keep the filtered package in the

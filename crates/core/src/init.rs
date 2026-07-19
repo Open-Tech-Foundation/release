@@ -778,67 +778,11 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
             } else {
                 vec![build_job(&entry.name)]
             };
-            render_github_release(
-                &mut s,
-                &needs,
-                &config.packages,
-                &[entry],
-                &config.tag_format,
-                &config.changelog_scope,
-                &config.github_release_notes,
-            );
+            render_github_release(&mut s, &needs, entry);
         }
     }
 
     s
-}
-
-/// Packages whose own version + tag drive `check-release`: everything CI actually ships this run —
-/// each publish or build-only package — minus any `skip_publish` package (released by hand, so its
-/// tag must not gate CI). Each is checked against *its own* manifest version, not a shared sentinel.
-/// The shell command that reads a single package's version, plus whether it is a confident,
-/// ready-to-run command. `false` ⇒ the tool couldn't pin the source down and the workflow carries
-/// an `# edit me` hint; a generated npm/cargo/generic-manifest read is confident and left clean.
-const CARGO_VERSION_CMD: &str =
-    "cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'";
-
-fn version_read_cmd_for(entry: &PackageEntry) -> (String, bool) {
-    match entry.adapter {
-        Ecosystem::Generic => {
-            let manifest = entry.manifest.as_deref().unwrap_or("deno.json");
-            let field = entry.version_field.as_deref().unwrap_or("version");
-            if manifest.ends_with(".json") {
-                (format!("node -p \"require('./{manifest}').{field}\""), true)
-            } else if manifest == "Cargo.toml" && field == "version" {
-                (CARGO_VERSION_CMD.to_string(), true)
-            } else if manifest.ends_with(".toml") {
-                (
-                    format!("grep -m1 '^{field}' {manifest} | cut -d '\"' -f2 | tr -d '\"'"),
-                    true,
-                )
-            } else {
-                (format!("cat {manifest}"), false)
-            }
-        }
-        Ecosystem::Npm => (npm_version_read_cmd(entry), true),
-        Ecosystem::Cargo => (cargo_version_read_cmd(entry), true),
-        Ecosystem::Jsr => {
-            let manifest = entry.manifest.as_deref().unwrap_or("deno.json");
-            (
-                format!("deno eval \"import pkg from './{manifest}' with {{ type: 'json' }}; console.log(pkg.version)\""),
-                true,
-            )
-        }
-    }
-}
-
-/// Per-package cargo version read: filters `cargo metadata` by crate name so a workspace member's
-/// own version drives its release check — not whichever crate happens to be `packages[0]`.
-fn cargo_version_read_cmd(entry: &PackageEntry) -> String {
-    format!(
-        "cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name==\"{}\") | .version'",
-        entry.name
-    )
 }
 
 fn rel_path(root: &Path, path: &Path) -> String {
@@ -846,11 +790,6 @@ fn rel_path(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
-}
-
-fn npm_version_read_cmd(entry: &PackageEntry) -> String {
-    let manifest = entry.manifest.as_deref().unwrap_or("package.json");
-    format!("jq -r '.version' {}", shell_single_quote(manifest))
 }
 
 /// One build job: matrix or single runner, runs the package's command, uploads its artifacts.
@@ -1176,292 +1115,39 @@ fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm_tool: Np
     s.push_str("          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n\n");
 }
 
-/// The GitHub Release job for `build-only` packages: attach each package's staged artifacts to a
-/// configured release tag, idempotently (skip an existing release). No registry push.
-fn render_github_release(
-    s: &mut String,
-    needs: &[String],
-    packages: &[PackageEntry],
-    build_only: &[&PackageEntry],
-    tag_format: &str,
-    changelog_scope: &ChangelogScope,
-    github_release_notes: &GithubReleaseNotes,
-) {
-    let owner = build_only
-        .first()
-        .expect("a GitHub Release job must own a package");
-    s.push_str(&format!("  github-release-{}:\n", slug(&owner.name)));
+/// The GitHub Release job for a `build-only` package: install `otf-release` and hand off to
+/// `otf-release github-release`, which reads the version, builds the notes, renames the staged
+/// binaries into OS/arch assets, and creates the Release — all in the binary, idempotently. The
+/// YAML stays a thin, stable call (no inline `gh`/`awk`/`jq`), exactly like the registry
+/// `publish` job. No registry push.
+fn render_github_release(s: &mut String, needs: &[String], entry: &PackageEntry) {
+    s.push_str(&format!("  github-release-{}:\n", slug(&entry.name)));
     let mut actual_needs = vec!["check-release".to_string()];
     actual_needs.extend_from_slice(needs);
     needs_line(s, &actual_needs);
     s.push_str(&format!(
         "    if: needs.check-release.outputs.{} == 'true'\n",
-        release_output(&owner.name)
+        release_output(&entry.name)
     ));
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    steps:\n");
+    // `fetch-depth: 0` so the previous release tags are present for semantic-commit notes.
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
     let staged = download_artifacts(s, needs);
+    push_install_otf_release(s);
     s.push_str("      - name: Create GitHub Release\n");
     s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
-    s.push_str("        run: |\n");
-    for entry in build_only {
-        let art_slug = slug(&entry.name);
-        let tag_regex = workflow_tag_regex(tag_format, &entry.name);
-        // Each build-only package reads *its own* version so its tag is correct even when packages
-        // are versioned independently — `check-release` no longer exports a single shared version.
-        let (version_cmd, _) = version_read_cmd_for(entry);
-        s.push_str(&format!("          version=\"$({version_cmd})\"\n"));
+    if staged {
         s.push_str(&format!(
-            "          tag=\"{}\"\n",
-            workflow_tag_expr(tag_format, &entry.name)
+            "        run: otf-release github-release --package {} --artifacts-dir .artifacts\n\n",
+            entry.name
         ));
-        s.push_str("          if gh release view \"$tag\" >/dev/null 2>&1; then\n");
-        s.push_str("            echo \"Release $tag already exists; nothing to do.\"\n");
-        s.push_str("          else\n");
-        render_github_release_notes(
-            s,
-            github_release_notes,
-            changelog_scope,
-            packages,
-            &tag_regex,
-        );
-        if staged {
-            let asset_base = entry.bin_name.as_deref().unwrap_or(&art_slug);
-            s.push_str(&format!(
-                "            rm -rf \".flat-artifacts-{art_slug}\"\n"
-            ));
-            s.push_str(&format!(
-                "            mkdir -p \".flat-artifacts-{art_slug}\"\n"
-            ));
-            s.push_str("            shopt -s nullglob globstar\n");
-            s.push_str(&format!(
-                "            for file in .artifacts/{art_slug}*/**/*; do\n"
-            ));
-            s.push_str("              if [ -f \"$file\" ]; then\n");
-            s.push_str("                dir_name=$(basename \"$(dirname \"$file\")\")\n");
-            s.push_str("                file_name=$(basename \"$file\")\n");
-            s.push_str("                ext=\"${file_name##*.}\"\n");
-            s.push_str("                os_part=\"${dir_name%-*}\"\n");
-            s.push_str("                arch_part=\"${dir_name##*-}\"\n");
-            s.push_str("                case \"$os_part\" in\n");
-            s.push_str("                  darwin) os_part=\"macos\" ;;\n");
-            s.push_str("                  win32) os_part=\"windows\" ;;\n");
-            s.push_str("                esac\n");
-            s.push_str("                case \"$arch_part\" in\n");
-            s.push_str("                  x64) arch_part=\"x86-64\" ;;\n");
-            s.push_str("                esac\n");
-            s.push_str(&format!(
-                "                asset_name=\"{asset_base}-${{os_part}}-${{arch_part}}\"\n"
-            ));
-            s.push_str("                if [ \"$ext\" = \"$file_name\" ]; then\n");
-            s.push_str(&format!(
-                "                  cp \"$file\" \".flat-artifacts-{art_slug}/${{asset_name}}\"\n"
-            ));
-            s.push_str("                else\n");
-            s.push_str(&format!(
-                "                  cp \"$file\" \".flat-artifacts-{art_slug}/${{asset_name}}.${{ext}}\"\n"
-            ));
-            s.push_str("                fi\n");
-            s.push_str("              fi\n");
-            s.push_str("            done\n");
-            s.push_str(&format!(
-                "            gh release create \"$tag\" --target main --title \"$tag\" \"${{notes_arg[@]}}\" .flat-artifacts-{art_slug}/*\n"
-            ));
-        } else {
-            s.push_str(
-                "            gh release create \"$tag\" --target main --title \"$tag\" \"${notes_arg[@]}\"\n",
-            );
-        }
-        s.push_str("          fi\n");
+    } else {
+        s.push_str(&format!(
+            "        run: otf-release github-release --package {}\n\n",
+            entry.name
+        ));
     }
-}
-
-fn render_github_release_notes(
-    s: &mut String,
-    github_release_notes: &GithubReleaseNotes,
-    changelog_scope: &ChangelogScope,
-    packages: &[PackageEntry],
-    tag_regex: &str,
-) {
-    match github_release_notes {
-        GithubReleaseNotes::AutoGenerate => {
-            s.push_str("            notes_arg=(--generate-notes)\n");
-        }
-        GithubReleaseNotes::CuratedChangelog => {
-            s.push_str("            notes_file=\"$(mktemp)\"\n");
-            render_changelog_file_collection(s, changelog_scope, packages);
-            s.push_str("            for i in \"${!changelog_files[@]}\"; do\n");
-            s.push_str("              changelog_file=\"${changelog_files[$i]}\"\n");
-            s.push_str("              changelog_name=\"${changelog_names[$i]}\"\n");
-            s.push_str("              if [ -z \"$changelog_file\" ] || [ ! -f \"$changelog_file\" ]; then\n");
-            s.push_str("                continue\n");
-            s.push_str("              fi\n");
-            s.push_str("              section=\"$(awk -v version=\"$version\" '\n");
-            s.push_str(
-                "                $0 ~ \"^## \\\\[?\" version \"\\\\]?\" { in_section=1; next }\n",
-            );
-            s.push_str("                in_section && /^## / { exit }\n");
-            s.push_str("                in_section { print }\n");
-            s.push_str("              ' \"$changelog_file\" | sed '/./,$!d')\"\n");
-            s.push_str("              if [ -n \"$section\" ]; then\n");
-            s.push_str("                if [ -n \"$changelog_name\" ]; then\n");
-            s.push_str("                  printf '### %s\\n\\n%s\\n\\n' \"$changelog_name\" \"$section\" >> \"$notes_file\"\n");
-            s.push_str("                else\n");
-            s.push_str("                  printf '%s\\n' \"$section\" >> \"$notes_file\"\n");
-            s.push_str("                fi\n");
-            s.push_str("              fi\n");
-            s.push_str("            done\n");
-            s.push_str("            if [ -s \"$notes_file\" ]; then\n");
-            s.push_str("              notes_arg=(--notes-file \"$notes_file\")\n");
-            s.push_str("            else\n");
-            s.push_str("              echo \"No configured changelog notes found for $version; using GitHub generated notes.\"\n");
-            s.push_str("              notes_arg=(--generate-notes)\n");
-            s.push_str("            fi\n");
-        }
-        GithubReleaseNotes::SemanticCommits => {
-            s.push_str("            notes_file=\"$(mktemp)\"\n");
-            s.push_str(&format!(
-                "            previous_tag=\"$(git tag --merged HEAD --sort=-creatordate | grep -E '{}' | grep -vxF \"$tag\" | head -n 1 || true)\"\n",
-                shell_single_quote(tag_regex)
-            ));
-            s.push_str("            if [ -n \"$previous_tag\" ]; then\n");
-            s.push_str("              range=\"$previous_tag..HEAD\"\n");
-            s.push_str("            else\n");
-            s.push_str("              range=\"HEAD\"\n");
-            s.push_str("            fi\n");
-            s.push_str("            git log --no-merges --pretty=format:'- %s (%h)' \"$range\" > \"$notes_file\"\n");
-            s.push_str("            if [ -s \"$notes_file\" ]; then\n");
-            s.push_str("              notes_arg=(--notes-file \"$notes_file\")\n");
-            s.push_str("            else\n");
-            s.push_str("              notes_arg=(--generate-notes)\n");
-            s.push_str("            fi\n");
-        }
-    }
-}
-
-fn render_changelog_file_collection(
-    s: &mut String,
-    changelog_scope: &ChangelogScope,
-    packages: &[PackageEntry],
-) {
-    match changelog_scope {
-        ChangelogScope::Root => {
-            s.push_str("            changelog_names=(\"\")\n");
-            s.push_str("            changelog_files=(\"CHANGELOG.md\")\n");
-        }
-        ChangelogScope::Package => {
-            s.push_str("            changelog_names=()\n");
-            s.push_str("            changelog_files=()\n");
-            for entry in packages {
-                match entry.adapter {
-                    Ecosystem::Generic | Ecosystem::Jsr => {
-                        let manifest = entry.manifest.as_deref().unwrap_or("");
-                        let changelog = if manifest.is_empty() {
-                            ""
-                        } else if let Some((dir, _)) = manifest.rsplit_once('/') {
-                            dir
-                        } else {
-                            "."
-                        };
-                        if changelog.is_empty() {
-                            continue;
-                        }
-                        let file = if changelog == "." {
-                            "CHANGELOG.md".to_string()
-                        } else {
-                            format!("{changelog}/CHANGELOG.md")
-                        };
-                        s.push_str(&format!(
-                            "            changelog_names+=(\"{}\")\n",
-                            shell_double_quote(&entry.name)
-                        ));
-                        s.push_str(&format!(
-                            "            changelog_files+=(\"{}\")\n",
-                            shell_double_quote(&file)
-                        ));
-                    }
-                    Ecosystem::Npm => {
-                        s.push_str(&format!(
-                            "            changelog_file=\"$(node - <<'NODE'\nconst fs = require(\"fs\");\nconst path = require(\"path\");\nconst want = \"{}\";\nconst skip = new Set(['.git','node_modules','target','dist','build']);\nfunction walk(dir) {{\n  for (const ent of fs.readdirSync(dir, {{ withFileTypes: true }})) {{\n    if (ent.isDirectory()) {{\n      if (!skip.has(ent.name)) walk(path.join(dir, ent.name));\n    }} else if (ent.name === 'package.json') {{\n      const file = path.join(dir, ent.name);\n      try {{\n        if (JSON.parse(fs.readFileSync(file, 'utf8')).name === want) {{\n          console.log(path.join(dir, 'CHANGELOG.md'));\n          process.exit(0);\n        }}\n      }} catch {{}}\n    }}\n  }}\n}}\nwalk('.');\nNODE\n            )\"\n",
-                            js_double_quote(&entry.name)
-                        ));
-                        s.push_str("            if [ -n \"$changelog_file\" ]; then\n");
-                        s.push_str(&format!(
-                            "              changelog_names+=(\"{}\")\n",
-                            shell_double_quote(&entry.name)
-                        ));
-                        s.push_str("              changelog_files+=(\"$changelog_file\")\n");
-                        s.push_str("            fi\n");
-                    }
-                    Ecosystem::Cargo => {
-                        s.push_str(&format!(
-                            "            changelog_file=\"$(cargo metadata --no-deps --format-version 1 | node -e '\nconst fs = require(\"fs\");\nconst path = require(\"path\");\nconst want = \"{}\";\nconst meta = JSON.parse(fs.readFileSync(0, \"utf8\"));\nconst pkg = meta.packages.find((p) => p.name === want);\nif (pkg) console.log(path.join(path.dirname(pkg.manifest_path), \"CHANGELOG.md\"));\n')\"\n",
-                            js_double_quote(&entry.name)
-                        ));
-                        s.push_str("            if [ -n \"$changelog_file\" ]; then\n");
-                        s.push_str(&format!(
-                            "              changelog_names+=(\"{}\")\n",
-                            shell_double_quote(&entry.name)
-                        ));
-                        s.push_str("              changelog_files+=(\"$changelog_file\")\n");
-                        s.push_str("            fi\n");
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn shell_double_quote(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn js_double_quote(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn workflow_tag_expr(tag_format: &str, name: &str) -> String {
-    tag_format
-        .replace("{name}", name)
-        .replace("{version}", "$version")
-}
-
-fn workflow_tag_regex(tag_format: &str, name: &str) -> String {
-    let mut regex = String::from("^");
-    let mut rest = tag_format;
-    while let Some(start) = rest.find('{') {
-        regex.push_str(&ere_escape(&rest[..start]));
-        rest = &rest[start..];
-        if let Some(stripped) = rest.strip_prefix("{name}") {
-            regex.push_str(&ere_escape(name));
-            rest = stripped;
-        } else if let Some(stripped) = rest.strip_prefix("{version}") {
-            regex.push_str("[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?");
-            rest = stripped;
-        } else {
-            regex.push_str("\\{");
-            rest = &rest[1..];
-        }
-    }
-    regex.push_str(&ere_escape(rest));
-    regex.push('$');
-    regex
-}
-
-fn ere_escape(text: &str) -> String {
-    let mut escaped = String::new();
-    for ch in text.chars() {
-        if ".^$*+?()[]{}|\\".contains(ch) {
-            escaped.push('\\');
-        }
-        escaped.push(ch);
-    }
-    escaped
-}
-
-fn shell_single_quote(text: &str) -> String {
-    text.replace('\'', "'\"'\"'")
 }
 
 /// Prompt for a generic package's build/publish commands and assemble its [`PackageEntry`].
@@ -2458,9 +2144,14 @@ mod tests {
         assert!(out.contains("permissions:\n  contents: write"));
         assert!(out.contains("  github-release-opentf-release:\n"));
         assert!(out.contains("    needs: [check-release, build-opentf-release]\n"));
-        assert!(out.contains("          tag=\"opentf-release@$version\"\n"));
-        assert!(out.contains("            rm -rf \".flat-artifacts-opentf-release\"\n"));
-        assert!(out.contains("          if gh release view \"$tag\" >/dev/null 2>&1; then\n"));
+        // The release job is a thin call into the binary — the tool reads the version, builds the
+        // notes, renames the staged binaries, and creates the release. No inline gh/awk/jq/flatten.
+        assert!(out.contains("        run: otf-release github-release --package opentf-release --artifacts-dir .artifacts\n"));
+        assert!(!out.contains("gh release create"));
+        assert!(!out.contains("gh release view"));
+        assert!(!out.contains("flat-artifacts"));
+        assert!(!out.contains("asset_name="));
+        assert!(!out.contains("cargo metadata --no-deps"));
         assert!(!out.contains("tag=\"v${{ needs.check-release.outputs.version }}\""));
         // check-release delegates the "is anything to release?" decision to the binary, and needs
         // full tag history (`fetch-depth: 0`) to compare against.
@@ -2471,10 +2162,6 @@ mod tests {
             out.contains("should_release=$(otf-release check --exclude-package opentf-release)")
         );
         assert!(!out.contains("git ls-remote"));
-        assert!(out.contains("darwin) os_part=\"macos\" ;;\n"));
-        assert!(out.contains("win32) os_part=\"windows\" ;;\n"));
-        assert!(out.contains("x64) arch_part=\"x86-64\" ;;\n"));
-        assert!(out.contains("asset_name=\"otf-release-${os_part}-${arch_part}\"\n"));
         assert!(!out.contains("cargo publish"));
         assert!(!out.contains("crates.io"));
         // build-only cargo: no publish job at all.
@@ -2600,118 +2287,42 @@ mod tests {
     }
 
     #[test]
-    fn github_release_can_copy_curated_changelog_notes() {
-        let config = ReleaseConfig {
-            snapshot_tag: None,
-            tag_format: "v{version}".to_string(),
-            legacy_tag_formats: Vec::new(),
-            provider: "github".to_string(),
-            default_branch: "main".to_string(),
-            changelog_strategy: ChangelogStrategy::Curated,
-            changelog_scope: ChangelogScope::Root,
-            github_release_notes: GithubReleaseNotes::CuratedChangelog,
-            hooks: crate::config::Hooks::default(),
-            publish: crate::config::PublishConfig::default(),
-            adapters: vec![Ecosystem::Cargo],
-            skip_publish: Vec::new(),
-            packages: vec![cargo_build_only("otf-release")],
-        };
-        let out = render_workflow(&config);
+    fn github_release_job_is_a_thin_call_for_every_notes_mode() {
+        // The release body source (curated changelog / configured package changelogs / semantic
+        // commits) is resolved inside `otf-release github-release`, so the *generated YAML* is the
+        // same thin call for every mode — no inline awk/jq/gh/grep. The notes behavior itself is
+        // covered by the `github_release` module's orchestrate tests.
+        for notes in [
+            GithubReleaseNotes::CuratedChangelog,
+            GithubReleaseNotes::SemanticCommits,
+            GithubReleaseNotes::AutoGenerate,
+        ] {
+            let config = ReleaseConfig {
+                snapshot_tag: None,
+                tag_format: "{name}@{version}".to_string(),
+                legacy_tag_formats: Vec::new(),
+                provider: "github".to_string(),
+                default_branch: "main".to_string(),
+                changelog_strategy: ChangelogStrategy::Curated,
+                changelog_scope: ChangelogScope::Root,
+                github_release_notes: notes,
+                hooks: crate::config::Hooks::default(),
+                publish: crate::config::PublishConfig::default(),
+                adapters: vec![Ecosystem::Cargo],
+                skip_publish: Vec::new(),
+                packages: vec![cargo_build_only("otf-release")],
+            };
+            let out = render_workflow(&config);
 
-        assert!(out.contains("awk -v version=\"$version\""));
-        assert!(out.contains("changelog_names=(\"\")"));
-        assert!(out.contains("changelog_files=(\"CHANGELOG.md\")"));
-        assert!(out.contains("' \"$changelog_file\" | sed '/./,$!d')"));
-        assert!(out.contains("notes_arg=(--notes-file \"$notes_file\")"));
-        assert!(out.contains("notes_arg=(--generate-notes)"));
-        assert!(out.contains(
-            "gh release create \"$tag\" --target main --title \"$tag\" \"${notes_arg[@]}\""
-        ));
-    }
-
-    #[test]
-    fn github_release_can_copy_configured_package_changelog_notes() {
-        let config = ReleaseConfig {
-            snapshot_tag: None,
-            tag_format: "{name}@{version}".to_string(),
-            legacy_tag_formats: Vec::new(),
-            provider: "github".to_string(),
-            default_branch: "main".to_string(),
-            changelog_strategy: ChangelogStrategy::Curated,
-            changelog_scope: ChangelogScope::Package,
-            github_release_notes: GithubReleaseNotes::CuratedChangelog,
-            hooks: crate::config::Hooks::default(),
-            publish: crate::config::PublishConfig::default(),
-            adapters: vec![Ecosystem::Generic],
-            skip_publish: Vec::new(),
-            packages: vec![
-                PackageEntry {
-                    name: "pkg".to_string(),
-                    adapter: Ecosystem::Generic,
-                    mode: Mode::BuildOnly,
-                    matrix: false,
-                    targets: vec![],
-                    command: "build".to_string(),
-                    artifacts: "dist/*".to_string(),
-                    bin_name: None,
-                    compress: None,
-                    manifest: Some("packages/pkg/deno.json".to_string()),
-                    version_field: Some("version".to_string()),
-                    publish: None,
-                },
-                PackageEntry {
-                    name: "utils".to_string(),
-                    adapter: Ecosystem::Generic,
-                    mode: Mode::Publish,
-                    matrix: false,
-                    targets: vec![],
-                    command: String::new(),
-                    artifacts: String::new(),
-                    bin_name: None,
-                    compress: None,
-                    manifest: Some("packages/utils/deno.json".to_string()),
-                    version_field: Some("version".to_string()),
-                    publish: Some("deno publish".to_string()),
-                },
-            ],
-        };
-        let out = render_workflow(&config);
-
-        assert!(out.contains("changelog_names+=(\"pkg\")"));
-        assert!(out.contains("changelog_files+=(\"packages/pkg/CHANGELOG.md\")"));
-        assert!(out.contains("changelog_names+=(\"utils\")"));
-        assert!(out.contains("changelog_files+=(\"packages/utils/CHANGELOG.md\")"));
-        assert!(out.contains("printf '### %s\\n\\n%s\\n\\n'"));
-        assert!(out.contains("section=\"$(awk -v version=\"$version\""));
-        assert!(out.contains(">> \"$notes_file\""));
-    }
-
-    #[test]
-    fn github_release_can_use_semantic_commit_notes_since_matching_tag() {
-        let config = ReleaseConfig {
-            snapshot_tag: None,
-            tag_format: "{name}@{version}".to_string(),
-            legacy_tag_formats: Vec::new(),
-            provider: "github".to_string(),
-            default_branch: "main".to_string(),
-            changelog_strategy: ChangelogStrategy::Curated,
-            changelog_scope: ChangelogScope::Package,
-            github_release_notes: GithubReleaseNotes::SemanticCommits,
-            hooks: crate::config::Hooks::default(),
-            publish: crate::config::PublishConfig::default(),
-            adapters: vec![Ecosystem::Cargo],
-            skip_publish: Vec::new(),
-            packages: vec![cargo_build_only("otf-release")],
-        };
-        let out = render_workflow(&config);
-
-        assert!(
-            out.contains("grep -E '^otf-release@[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$'")
-        );
-        assert!(out.contains(
-            "git log --no-merges --pretty=format:'- %s (%h)' \"$range\" > \"$notes_file\""
-        ));
-        assert!(out.contains("notes_arg=(--notes-file \"$notes_file\")"));
+            assert!(out.contains("        run: otf-release github-release --package otf-release --artifacts-dir .artifacts\n"));
+            // None of the old inline notes/flatten bash survives in any mode.
+            assert!(!out.contains("awk -v version"));
+            assert!(!out.contains("changelog_files"));
+            assert!(!out.contains("git log --no-merges"));
+            assert!(!out.contains("grep -E"));
+            assert!(!out.contains("gh release create"));
+            assert!(!out.contains("notes_arg"));
+        }
     }
 
     #[test]
@@ -2736,10 +2347,12 @@ mod tests {
         // Language-agnostic: no rust/node toolchain step is injected.
         assert!(!out.contains("dtolnay/rust-toolchain"));
         assert!(!out.contains("setup-node"));
-        // Version comes from the configured manifest (deno.json), shipped via a GitHub Release.
-        assert!(out.contains("          version=\"$(node -p \"require('./deno.json').version\")\""));
+        // Version, tag, notes, and asset renaming all happen inside the binary — the job is a thin
+        // call, with no inline version read (`node -p`) or tag templating in the YAML.
         assert!(out.contains("  github-release-release:\n"));
-        assert!(out.contains("          tag=\"release@$version\"\n"));
+        assert!(out.contains("        run: otf-release github-release --package release --artifacts-dir .artifacts\n"));
+        assert!(!out.contains("node -p"));
+        assert!(!out.contains("tag=\"release@$version\""));
         assert!(!out.contains("  publish:\n"));
         assert!(!out.contains("crates.io"));
     }
@@ -2762,12 +2375,16 @@ mod tests {
             packages: vec![cargo_build_only("cli-a"), cargo_build_only("cli-b")],
         };
         let out = render_workflow(&config);
-        assert!(out.contains("          tag=\"cli-a@$version\"\n"));
-        assert!(out.contains("          tag=\"cli-b@$version\"\n"));
-        assert!(out.contains("            for file in .artifacts/cli-a*/**/*; do\n"));
-        assert!(out.contains("            for file in .artifacts/cli-b*/**/*; do\n"));
-        assert!(out.contains("            rm -rf \".flat-artifacts-cli-a\"\n"));
-        assert!(out.contains("            rm -rf \".flat-artifacts-cli-b\"\n"));
+        // Each build-only package gets its own release job, each a thin per-package call.
+        assert!(out.contains("  github-release-cli-a:\n"));
+        assert!(out.contains("  github-release-cli-b:\n"));
+        assert!(out.contains(
+            "        run: otf-release github-release --package cli-a --artifacts-dir .artifacts\n"
+        ));
+        assert!(out.contains(
+            "        run: otf-release github-release --package cli-b --artifacts-dir .artifacts\n"
+        ));
+        assert!(!out.contains("flat-artifacts"));
         assert!(!out.contains("tag=\"v${{ needs.check-release.outputs.version }}\""));
     }
 
@@ -2824,14 +2441,14 @@ mod tests {
         assert!(out.contains("  build-web-compiler:\n"));
         assert!(out.contains("  github-release-web-compiler:\n"));
         assert!(out.contains("    needs: [check-release, build-web-compiler]\n"));
-        assert!(out.contains("          tag=\"web-compiler@$version\"\n"));
+        assert!(out.contains("        run: otf-release github-release --package web-compiler --artifacts-dir .artifacts\n"));
         // npm publish builds inline in its own publish job — no separate build job, no staging.
         assert!(!out.contains("  build-docs-site:\n"));
         assert!(out.contains("  publish-docs-site:\n"));
         assert!(out.contains("      - name: Build docs-site\n"));
         assert!(out.contains("        run: npm run build\n"));
+        // The inline npm publish reads no staged artifacts (no `--artifacts-dir`).
         assert!(out.contains("        run: otf-release publish --package docs-site\n"));
-        assert!(!out.contains("--artifacts-dir"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         assert!(out.contains("      - name: Install otf-release\n"));
     }

@@ -135,11 +135,23 @@ fn candidate_from(root: &Path, file: &Path) -> Option<GenericCandidate> {
     })
 }
 
-/// The name of the directory containing `file` (fallback package name).
+/// The name of the directory containing `file` (fallback package name when a manifest carries no
+/// `name` — e.g. a virtual Cargo workspace whose version lives in `[workspace.package]`).
 fn dir_name(file: &Path) -> String {
     file.parent()
         .and_then(Path::file_name)
         .map(|n| n.to_string_lossy().into_owned())
+        // A relative manifest such as `./Cargo.toml` has a parent of `.` with no `file_name()`.
+        // Canonicalize to recover the real project/repo directory name rather than the literal
+        // `"package"` — otherwise a repo scanned from its own root imports as `package`.
+        .or_else(|| {
+            file.canonicalize()
+                .ok()
+                .as_deref()
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+                .map(|n| n.to_string_lossy().into_owned())
+        })
         .unwrap_or_else(|| "package".to_string())
 }
 
@@ -277,6 +289,22 @@ mod tests {
         .unwrap();
         let found = scan_generic_candidates(tmp.path());
         assert_eq!(found[0].name, "widget");
+    }
+
+    #[test]
+    fn dir_name_recovers_directory_for_a_rootless_relative_manifest() {
+        // The bug: `otf-release init` run from a repo root passes root = ".", so the root manifest is
+        // `./Cargo.toml` — parent `.`, no `file_name()` — and an unnamed virtual workspace collapsed
+        // to the literal "package". The canonicalize fallback recovers the real directory name.
+        // `cargo test` runs with cwd at this crate's dir, which has a `Cargo.toml`.
+        let expected = std::env::current_dir()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(dir_name(Path::new("Cargo.toml")), expected);
+        assert_ne!(dir_name(Path::new("Cargo.toml")), "package");
     }
 
     #[test]
