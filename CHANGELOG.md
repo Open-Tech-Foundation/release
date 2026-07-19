@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **targets** — Added musl (statically linked Linux) build targets to the registry: `linux-musl` /
+  `x86_64` (`x86_64-unknown-linux-musl`) and `linux-musl` / `aarch64` (`aarch64-unknown-linux-musl`).
+  Keyed under a distinct `linux-musl` OS name so they ship alongside the glibc `linux` targets with
+  their own assets (`<bin>-linux-musl-<arch>`); `x86_64` builds self-contained, `aarch64` cross-links
+  on the x64 runner. Both are opt-in (off by default) — select them in `init` or add a
+  `name = "linux-musl"` target to `release.toml`.
 - **github-release** — New first-class CI command `otf-release github-release` that owns the
   build-only release path end-to-end, so the generated `release.yml` no longer embeds inline
   `gh`/`awk`/`jq`/`sed` bash. It reads the package's version through its adapter (the same read

@@ -191,6 +191,15 @@ mod tests {
             cross_linker("aarch64-unknown-linux-gnu"),
             "aarch64-linux-gnu-gcc"
         );
+        // musl aarch64 cross-links with the same GNU linker (Rust supplies the musl crt).
+        assert_eq!(
+            linker_env_var("aarch64-unknown-linux-musl"),
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"
+        );
+        assert_eq!(
+            cross_linker("aarch64-unknown-linux-musl"),
+            "aarch64-linux-gnu-gcc"
+        );
     }
 
     #[test]

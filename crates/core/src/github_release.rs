@@ -984,6 +984,15 @@ mod tests {
             asset_file_name("esrun", "linux-arm64", "esrun"),
             "esrun-linux-arm64"
         );
+        // musl stage dirs carry the libc in the OS part, so their assets stay distinct from glibc.
+        assert_eq!(
+            asset_file_name("esrun", "linux-musl-x64", "esrun"),
+            "esrun-linux-musl-x86-64"
+        );
+        assert_eq!(
+            asset_file_name("esrun", "linux-musl-arm64", "esrun"),
+            "esrun-linux-musl-arm64"
+        );
     }
 
     #[test]

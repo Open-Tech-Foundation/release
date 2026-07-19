@@ -226,6 +226,12 @@ pub const TARGET_REGISTRY: &[TargetInfo] = &[
     TargetInfo { label: "Linux x64",          name: "linux",   arch: "x86_64",  triple: "x86_64-unknown-linux-gnu",  runner: "ubuntu-latest",  stage_as: "linux-x64",   ext: "",     cross: false, default_on: true },
     TargetInfo { label: "Linux ARM64",        name: "linux",   arch: "aarch64", triple: "aarch64-unknown-linux-gnu", runner: "ubuntu-latest",  stage_as: "linux-arm64", ext: "",     cross: true,  default_on: true },
     TargetInfo { label: "Linux x86 (32-bit)", name: "linux",   arch: "x86",     triple: "i686-unknown-linux-gnu",    runner: "ubuntu-latest",  stage_as: "linux-ia32",  ext: "",     cross: true,  default_on: false },
+    // musl (statically linked, portable across distros). Keyed under a distinct `linux-musl` name so
+    // it doesn't collide with the glibc `(linux, <arch>)` rows; a separate `stage_as` keeps its assets
+    // distinct (e.g. `esrun-linux-musl-x86-64`). x86_64 links self-contained via `rustup target add`;
+    // aarch64 cross-links with the GNU linker like the glibc ARM64 target. Off by default (opt-in).
+    TargetInfo { label: "Linux x64 (musl, static)",   name: "linux-musl", arch: "x86_64",  triple: "x86_64-unknown-linux-musl",  runner: "ubuntu-latest", stage_as: "linux-musl-x64",   ext: "", cross: false, default_on: false },
+    TargetInfo { label: "Linux ARM64 (musl, static)", name: "linux-musl", arch: "aarch64", triple: "aarch64-unknown-linux-musl", runner: "ubuntu-latest", stage_as: "linux-musl-arm64", ext: "", cross: true,  default_on: false },
     TargetInfo { label: "macOS ARM64",        name: "macos",   arch: "aarch64", triple: "aarch64-apple-darwin",      runner: "macos-latest",   stage_as: "darwin-arm64",ext: "",     cross: false, default_on: true },
     TargetInfo { label: "macOS x64",          name: "macos",   arch: "x86_64",  triple: "x86_64-apple-darwin",       runner: "macos-latest",   stage_as: "darwin-x64",  ext: "",     cross: false, default_on: true },
     TargetInfo { label: "Windows x64",        name: "windows", arch: "x86_64",  triple: "x86_64-pc-windows-msvc",    runner: "windows-latest", stage_as: "win32-x64",   ext: ".exe", cross: false, default_on: true },
@@ -627,6 +633,32 @@ impl ReleaseConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn musl_targets_resolve_distinctly_from_glibc() {
+        // musl is keyed under its own OS name so it never collides with the glibc linux rows.
+        let musl = Target::resolved("linux-musl", "x86_64");
+        assert_eq!(musl.triple(), "x86_64-unknown-linux-musl");
+        assert_eq!(musl.runner(), "ubuntu-latest");
+        assert_eq!(musl.stage_as(), "linux-musl-x64");
+        assert!(!musl.is_cross());
+
+        let musl_arm = Target::resolved("linux-musl", "aarch64");
+        assert_eq!(musl_arm.triple(), "aarch64-unknown-linux-musl");
+        assert_eq!(musl_arm.stage_as(), "linux-musl-arm64");
+        assert!(musl_arm.is_cross()); // cross-linked on the x64 runner
+
+        // The glibc row for the same (os-ish, arch) is untouched.
+        assert_eq!(
+            Target::resolved("linux", "x86_64").triple(),
+            "x86_64-unknown-linux-gnu"
+        );
+
+        // Neither musl target is selected by `init` unless explicitly opted in.
+        for info in TARGET_REGISTRY.iter().filter(|t| t.name == "linux-musl") {
+            assert!(!info.default_on, "{} should be opt-in", info.label);
+        }
+    }
 
     #[test]
     fn round_trips_through_toml() {

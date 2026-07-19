@@ -120,6 +120,21 @@ no install can use, so the tool owns this mapping.
 `init` writes every field; a hand-edited file may give just `name`/`arch` and let the built-in
 registry (`crates/core/src/config.rs`) fill the rest.
 
+**musl (static Linux):** use `name = "linux-musl"` with `arch = "x86_64"` or `"aarch64"` for a
+statically linked binary that runs on any distro (Alpine included). It is keyed separately from the
+glibc `linux` rows so both can ship side by side, with distinct assets
+(`<bin>-linux-musl-x86-64` vs `<bin>-linux-x86-64`). `x86_64` links self-contained via
+`rustup target add`; `aarch64` cross-links on the x64 runner. Both are opt-in (off by default), e.g.:
+
+```toml
+[[package.targets]]
+name = "linux-musl"
+arch = "x86_64"
+```
+
+A crate with C dependencies also needs a musl C toolchain on the runner (e.g. `apt-get install
+musl-tools`); add it as a build step or in the package `command`.
+
 ## The `generic` adapter
 
 For an ecosystem the tool doesn't natively support (e.g. Deno's JSR), enable `"generic"` and
