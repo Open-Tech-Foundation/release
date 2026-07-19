@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **cargo** — Internal crates pinned in the root `[workspace.dependencies]` table (a `path` dep with
+  an explicit `version`, referenced by members via `{ workspace = true }`) now have their version
+  pins bumped in lockstep with the workspace version — previously only member `[dependencies]`
+  sections were updated, so a workspace using the `[workspace.dependencies]` layout stranded stale
+  pins that `cargo update`/publish could not resolve. Inherited `{ workspace = true }` member entries
+  are also no longer given a conflicting `version` key. External pins (e.g. `serde`) are untouched.
 - **targets** — Added musl (statically linked Linux) build targets to the registry: `linux-musl` /
   `x86_64` (`x86_64-unknown-linux-musl`) and `linux-musl` / `aarch64` (`aarch64-unknown-linux-musl`).
   Keyed under a distinct `linux-musl` OS name so they ship alongside the glibc `linux` targets with

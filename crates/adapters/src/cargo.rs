@@ -9,6 +9,10 @@
 //!   version in the root manifest, so every inheriting crate moves together. Such crates also
 //!   share a single root `CHANGELOG.md`. Crates with a concrete `[package] version` are still
 //!   versioned independently.
+//! - **`[workspace.dependencies]` internal pins** — an internal crate pinned there (with a `path`
+//!   and a `version`, referenced by members via `{ workspace = true }`) has its pin bumped in
+//!   lockstep with the workspace version, and a member's inherited `{ workspace = true }` entry is
+//!   never given a conflicting `version` key.
 //! - **`cargo publish` needs a concrete `version` on path dependencies** → `resolve_workspace_links`
 //!   injects them before publishing.
 //! - **crates.io is source-only** → `publish` ignores any staged binary `staged_assets`
@@ -170,20 +174,72 @@ impl CargoManifest {
     }
 
     /// Set the version requirement for `name` in `section`. Works for both string-form
-    /// (`dep = "1.2"`) and table-form (`dep = { path = "..", version = ".." }`) entries.
+    /// (`dep = "1.2"`) and table-form (`dep = { path = "..", version = ".." }`) entries. A
+    /// workspace-inherited entry (`dep = { workspace = true }`) is left untouched: its version lives
+    /// in the root `[workspace.dependencies]` pin (bumped separately), and adding a `version` key
+    /// beside `workspace = true` is invalid.
     fn set_dep_version(&mut self, section: &str, name: &str, new: &str) -> bool {
         let Some(item) = self.doc.get_mut(section).and_then(|s| s.get_mut(name)) else {
             return false;
         };
-        if item.is_str() {
-            *item = value(new);
-            true
-        } else if let Some(table) = item.as_table_like_mut() {
-            table.insert("version", value(new));
-            true
-        } else {
-            false
+        set_item_version(item, new)
+    }
+
+    /// The `[workspace.dependencies]` table, if present.
+    fn workspace_deps_mut(&mut self) -> Option<&mut dyn toml_edit::TableLike> {
+        self.doc
+            .get_mut("workspace")
+            .and_then(|w| w.get_mut("dependencies"))
+            .and_then(Item::as_table_like_mut)
+    }
+
+    /// Set the version pin for one internal crate `name` in `[workspace.dependencies]`. Members that
+    /// reference it via `{ workspace = true }` inherit this pin, so bumping it here is what keeps a
+    /// dependent buildable/publishable after the dependency bumps.
+    fn set_workspace_dep_version(&mut self, name: &str, new: &str) -> bool {
+        let Some(table) = self.workspace_deps_mut() else {
+            return false;
+        };
+        let Some(item) = table.get_mut(name) else {
+            return false;
+        };
+        set_item_version(item, new)
+    }
+
+    /// Bump every internal (path) dependency pinned in `[workspace.dependencies]` to `new` — the
+    /// lockstep counterpart to `set_workspace_version`. Only path-carrying entries are touched, so
+    /// external pins (`serde = { version = "1" }`) are left alone. Returns whether anything changed.
+    fn bump_internal_workspace_dep_pins(&mut self, new: &str) -> bool {
+        let Some(table) = self.workspace_deps_mut() else {
+            return false;
+        };
+        let mut changed = false;
+        for (_name, item) in table.iter_mut() {
+            if let Some(dep) = item.as_table_like_mut() {
+                if dep.contains_key("path") && dep.contains_key("version") {
+                    dep.insert("version", value(new));
+                    changed = true;
+                }
+            }
         }
+        changed
+    }
+}
+
+/// Set a dependency item's version, string- or table-form, skipping a `{ workspace = true }` entry
+/// (its version is inherited from `[workspace.dependencies]`). Returns whether it changed.
+fn set_item_version(item: &mut Item, new: &str) -> bool {
+    if item.is_str() {
+        *item = value(new);
+        true
+    } else if let Some(table) = item.as_table_like_mut() {
+        if table.get("workspace").and_then(|w| w.as_bool()) == Some(true) {
+            return false;
+        }
+        table.insert("version", value(new));
+        true
+    } else {
+        false
     }
 }
 
@@ -292,8 +348,12 @@ impl Adapter for CargoAdapter {
         if manifest.version_is_inherited() {
             // Lockstep: the crate inherits `version.workspace = true`, so bump the shared
             // `[workspace.package] version` in the root manifest. Every inheriting crate follows.
+            // Internal path deps pinned in `[workspace.dependencies]` share that version, so bump
+            // their pins in lockstep too — otherwise `cargo update`/publish can't resolve a
+            // dependent whose pin still points at the previous version.
             let mut root = CargoManifest::read(&self.root.join("Cargo.toml"))?;
             root.set_workspace_version(new)?;
+            root.bump_internal_workspace_dep_pins(new);
             root.save()
         } else {
             let mut manifest = manifest;
@@ -312,6 +372,14 @@ impl Adapter for CargoAdapter {
         }
         if changed {
             manifest.save()?;
+        }
+        // The dependent may inherit `dep` from the root `[workspace.dependencies]` pin
+        // (`dep = { workspace = true }`); update that shared pin too. Read the root fresh (so a
+        // just-saved member edit isn't clobbered), and no-op when there is no such pin. Idempotent,
+        // and it covers the independent-version case the lockstep `write_version` bump does not.
+        let mut root = CargoManifest::read(&self.root.join("Cargo.toml"))?;
+        if root.set_workspace_dep_version(dep, new_dep_version) {
+            root.save()?;
         }
         Ok(())
     }
@@ -588,6 +656,68 @@ mod tests {
         assert!(
             crate_toml.contains("version.workspace = true"),
             "crate manifest must stay inherited: {crate_toml}"
+        );
+    }
+
+    #[test]
+    fn lockstep_bumps_internal_workspace_dependency_pins() {
+        // The esrun layout: a virtual workspace whose members inherit both the version and their
+        // internal deps from the root, which pins those internal path deps in
+        // `[workspace.dependencies]`. A bump must move the pins in lockstep with the version.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n\
+             [workspace.package]\nversion = \"0.9.0\"\n\n\
+             [workspace.dependencies]\n\
+             es-runtime-core = { path = \"crates/core\", version = \"0.9.0\" }\n\
+             serde = \"1\"\n",
+        );
+        write(
+            root.join("crates/core/Cargo.toml"),
+            "[package]\nname = \"es-runtime-core\"\nversion.workspace = true\n",
+        );
+        write(
+            root.join("crates/cli/Cargo.toml"),
+            "[package]\nname = \"es-runtime-cli\"\nversion.workspace = true\n\n\
+             [dependencies]\nes-runtime-core = { workspace = true }\nserde = { workspace = true }\n",
+        );
+        let adapter = CargoAdapter::new(root);
+
+        // The internal edge is discovered even though the member inherits the dep.
+        let pkgs = adapter.discover_packages().unwrap();
+        let cli = pkgs.iter().find(|p| p.name == "es-runtime-cli").unwrap();
+        assert!(cli
+            .internal_deps
+            .iter()
+            .any(|d| d.name == "es-runtime-core"));
+
+        // A lockstep write bumps the workspace version AND the internal pin (but not `serde`).
+        adapter.write_version(cli, "0.10.0").unwrap();
+        let root_toml = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+        assert!(
+            root_toml
+                .contains("es-runtime-core = { path = \"crates/core\", version = \"0.10.0\" }"),
+            "internal pin must track the workspace version: {root_toml}"
+        );
+        assert!(
+            root_toml.contains("serde = \"1\""),
+            "external pins must be left alone: {root_toml}"
+        );
+
+        // The inheriting member is never given a conflicting `version` beside `workspace = true`.
+        adapter
+            .update_dep_range(cli, "es-runtime-core", "0.10.0")
+            .unwrap();
+        let cli_toml = fs::read_to_string(root.join("crates/cli/Cargo.toml")).unwrap();
+        assert!(
+            cli_toml.contains("es-runtime-core = { workspace = true }"),
+            "member dep must stay inherited, uncorrupted: {cli_toml}"
+        );
+        assert!(
+            !cli_toml.contains("version ="),
+            "no version injected: {cli_toml}"
         );
     }
 
