@@ -40,6 +40,33 @@ For each selected build-only package, in order:
    `x64`→`x86-64` (e.g. `esrun-linux-x86-64`, `esrun-windows-x86-64.exe`, `esrun-macos-arm64`).
 6. **Creates the Release** on `main` with those assets attached.
 
+## Packaging (archives & checksums)
+
+By default each staged binary is attached as a raw, renamed file. A build-only package can instead
+ship archives and a checksums file — the features the hand-written release scripts used — via
+[`release.toml`](../configuration.md):
+
+```toml
+[[package]]
+name      = "esrun"
+mode      = "build-only"
+matrix    = true
+bin_name  = "esrun"
+archive   = "auto"                    # tar.gz for Unix targets, zip for Windows
+checksums = true                      # attach a combined checksums.txt (SHA-256)
+include   = ["README.md", "LICENSE", "types/*.d.ts"]   # bundled inside each archive
+```
+
+- **`archive`** — `"tar.gz"`, `"zip"`, or `"auto"`. Each target becomes `<bin>-<os>-<arch>.tar.gz`
+  (or `.zip`); the binary keeps its own name inside the archive, with its executable bit preserved.
+- **`include`** — extra files bundled beside the binary inside every archive, each keeping its
+  repo-relative path (so `types/*.d.ts` stays under `types/`). Globs are expanded from the repo root.
+- **`checksums`** — writes a `sha256sum`-style `checksums.txt` (`<hex>  <asset>`) covering every
+  attached asset and adds it to the release.
+
+The generated workflow does not change when you enable these — the binary reads them from
+`release.toml`, so the release job stays the same thin call.
+
 ## In the workflow
 
 ```yaml

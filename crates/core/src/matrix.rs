@@ -71,6 +71,9 @@ mod tests {
             manifest: None,
             version_field: None,
             publish: None,
+            archive: None,
+            checksums: false,
+            include: Vec::new(),
         }
     }
 

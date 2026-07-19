@@ -19,6 +19,13 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   Release idempotently. The generated `github-release-<pkg>` job is now a thin, stable call like the
   registry `publish` job — no `# edit me` version line. `otf-release upgrade` regenerates it into an
   existing workflow.
+- **github-release/config** — Build-only packages can now ship the archives + checksums the old
+  hand-written release scripts produced, via new `release.toml` fields: `archive` (`"tar.gz"` /
+  `"zip"` / `"auto"` — `.zip` for Windows targets, `.tar.gz` elsewhere) packages each staged binary
+  (preserving the executable bit), `include` bundles extra files (repo-relative paths or globs, e.g.
+  `README.md`, `LICENSE`, `types/*.d.ts`) inside each archive, and `checksums = true` attaches a
+  combined `sha256sum`-style `checksums.txt`. `init` prompts for these when configuring a build-only
+  package. The generated workflow is unchanged — the binary reads them from `release.toml`.
 - **init/discover** — Fixed package-name detection for a virtual Cargo workspace scanned from its
   own root: `init` passes `root = "."`, so the root `./Cargo.toml` had a parent of `.` with no
   `file_name()` and an unnamed workspace collapsed to the literal `package`. Discovery now

@@ -121,6 +121,48 @@ impl Mode {
     }
 }
 
+/// How `github-release` packages each staged binary before attaching it to the release. Omitting it
+/// (the default) attaches the raw, OS/arch-renamed binary — the historical behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArchiveFormat {
+    /// `.tar.gz` for every target.
+    #[serde(rename = "tar.gz")]
+    TarGz,
+    /// `.zip` for every target.
+    #[serde(rename = "zip")]
+    Zip,
+    /// `.zip` for Windows targets, `.tar.gz` for everything else — the convention the old
+    /// hand-written release scripts used.
+    #[serde(rename = "auto")]
+    Auto,
+}
+
+impl ArchiveFormat {
+    /// The concrete extension for a target whose OS is `os` (as named in a stage dir, e.g.
+    /// `windows`/`win32`, `linux`, `macos`/`darwin`).
+    pub fn extension_for(self, os: &str) -> &'static str {
+        match self {
+            ArchiveFormat::TarGz => "tar.gz",
+            ArchiveFormat::Zip => "zip",
+            ArchiveFormat::Auto => {
+                if os == "windows" || os == "win32" {
+                    "zip"
+                } else {
+                    "tar.gz"
+                }
+            }
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ArchiveFormat::TarGz => "tar.gz",
+            ArchiveFormat::Zip => "zip",
+            ArchiveFormat::Auto => "auto",
+        }
+    }
+}
+
 /// A build target, reconciling the three naming systems that describe one physical binary. The
 /// same artifact is known by a **Rust target triple** (to cargo), a **CI runner OS** (to GitHub
 /// Actions), and a **`process.platform-process.arch` directory** (to the Node `extract.js`
@@ -324,6 +366,19 @@ pub struct PackageEntry {
     /// `npx jsr publish`. Omitted ⇒ the package is build-only (artifacts -> GitHub Release).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish: Option<String>,
+
+    // --- build-only release packaging (used by `github-release`) ---
+    /// Package each staged binary into an archive before attaching it: `tar.gz`, `zip`, or `auto`.
+    /// Omit to attach the raw OS/arch-renamed binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<ArchiveFormat>,
+    /// Also attach a combined `checksums.txt` (SHA-256 of every asset) to the GitHub Release.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub checksums: bool,
+    /// Extra files to bundle **inside each archive** alongside the binary — repo-relative paths or
+    /// globs, e.g. `["README.md", "LICENSE", "types/*.d.ts"]`. Ignored when `archive` is unset.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
 }
 
 impl PackageEntry {
@@ -607,6 +662,9 @@ mod tests {
                     manifest: None,
                     version_field: None,
                     publish: None,
+                    archive: Some(ArchiveFormat::Auto),
+                    checksums: true,
+                    include: vec!["README.md".into(), "LICENSE".into()],
                 },
                 PackageEntry {
                     name: "docs-site".into(),
@@ -621,6 +679,9 @@ mod tests {
                     manifest: None,
                     version_field: None,
                     publish: None,
+                    archive: None,
+                    checksums: false,
+                    include: Vec::new(),
                 },
             ],
         };
@@ -634,8 +695,30 @@ mod tests {
         assert!(text.contains("github_release_notes = \"auto-generate\""));
         assert!(text.contains("skip_publish = [\"private-tool\"]"));
         assert!(text.contains("[publish.ignore_paths]"));
+        // Build-only packaging fields serialize with their documented spellings.
+        assert!(text.contains("archive = \"auto\""));
+        assert!(text.contains("checksums = true"));
+        assert!(text.contains("include = ["));
+        assert!(text.contains("\"README.md\""));
 
         let back: ReleaseConfig = toml::from_str(&text).unwrap();
+        let web = back
+            .packages
+            .iter()
+            .find(|p| p.name == "web-compiler")
+            .unwrap();
+        assert_eq!(web.archive, Some(ArchiveFormat::Auto));
+        assert!(web.checksums);
+        assert_eq!(web.include, vec!["README.md", "LICENSE"]);
+        // A package that sets none of them omits them entirely (defaults, not written).
+        let docs = back
+            .packages
+            .iter()
+            .find(|p| p.name == "docs-site")
+            .unwrap();
+        assert_eq!(docs.archive, None);
+        assert!(!docs.checksums);
+        assert!(docs.include.is_empty());
         assert_eq!(back.adapters, cfg.adapters);
         assert_eq!(back.github_release_notes, GithubReleaseNotes::AutoGenerate);
         assert_eq!(back.skip_publish, vec!["private-tool"]);

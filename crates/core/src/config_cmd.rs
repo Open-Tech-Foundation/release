@@ -551,6 +551,9 @@ fn publish_ignore_path_packages(config: &ReleaseConfig) -> Vec<PackageEntry> {
             manifest: None,
             version_field: None,
             publish: None,
+            archive: None,
+            checksums: false,
+            include: Vec::new(),
         })
         .collect()
 }
@@ -668,6 +671,9 @@ mod tests {
                 manifest: Some("deno.json".to_string()),
                 version_field: Some("version".to_string()),
                 publish: None,
+                archive: None,
+                checksums: false,
+                include: Vec::new(),
             }],
             ..Default::default()
         }

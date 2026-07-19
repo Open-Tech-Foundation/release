@@ -20,9 +20,9 @@ use inquire::{MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{
-    ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode, PackageEntry,
-    ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD,
-    TARGET_REGISTRY,
+    ArchiveFormat, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode,
+    PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_TAG_FORMAT,
+    DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
 };
 use crate::discover::{scan_generic_candidates, GenericCandidate};
 
@@ -436,6 +436,9 @@ pub fn orchestrate(
                     manifest: Some(rel_path(root, &pkg.manifest_path)),
                     version_field: None,
                     publish: None,
+                    archive: None,
+                    checksums: false,
+                    include: Vec::new(),
                 });
             }
         }
@@ -458,6 +461,9 @@ pub fn orchestrate(
                 manifest: Some(rel_path(root, &pkg.manifest_path)),
                 version_field: None,
                 publish: None,
+                archive: None,
+                checksums: false,
+                include: Vec::new(),
             });
         }
     }
@@ -1246,6 +1252,55 @@ fn configure_generic(
         None
     };
 
+    // Build-only packaging: archive the staged binaries and/or emit a checksums file, like the
+    // hand-written release scripts this replaces. `github-release` reads these; the workflow YAML is
+    // unchanged (a thin call).
+    let (archive, checksums, include) = if mode == Mode::BuildOnly {
+        let archive = match Select::new(
+            &format!("  {name} — package binaries as archives?"),
+            vec![
+                "No — attach the raw binaries",
+                "auto (.tar.gz on Unix, .zip on Windows)",
+                "tar.gz for every target",
+                "zip for every target",
+            ],
+        )
+        .with_help_message("an archive bundles the binary (and any extra files) per platform")
+        .raw_prompt()?
+        .index
+        {
+            1 => Some(ArchiveFormat::Auto),
+            2 => Some(ArchiveFormat::TarGz),
+            3 => Some(ArchiveFormat::Zip),
+            _ => None,
+        };
+        let include = if archive.is_some() {
+            let raw = Text::new(&format!(
+                "  {name} — extra files to bundle in each archive (optional):"
+            ))
+            .with_default("")
+            .with_placeholder("e.g. README.md LICENSE types/*.d.ts")
+            .with_help_message(
+                "space-separated repo-relative paths or globs, added beside the binary",
+            )
+            .prompt()?;
+            raw.split_whitespace().map(str::to_string).collect()
+        } else {
+            Vec::new()
+        };
+        let checksums = Select::new(
+            &format!("  {name} — also attach a checksums.txt (SHA-256)?"),
+            vec!["Yes", "No"],
+        )
+        .with_help_message("one combined checksums.txt covering every asset on the release")
+        .raw_prompt()?
+        .index
+            == 0;
+        (archive, checksums, include)
+    } else {
+        (None, false, Vec::new())
+    };
+
     Ok(PackageEntry {
         name: name.to_string(),
         adapter: Ecosystem::Generic,
@@ -1259,6 +1314,9 @@ fn configure_generic(
         manifest: Some(manifest.to_string()),
         version_field: Some(version_field.to_string()),
         publish,
+        archive,
+        checksums,
+        include,
     })
 }
 
@@ -1441,6 +1499,9 @@ impl InitPrompt for StdinInitPrompt {
             manifest: None,
             version_field: None,
             publish: None,
+            archive: None,
+            checksums: false,
+            include: Vec::new(),
         })
     }
 
@@ -1820,6 +1881,9 @@ mod tests {
             manifest: None,
             version_field: None,
             publish: None,
+            archive: None,
+            checksums: false,
+            include: Vec::new(),
         }
     }
 
@@ -1837,6 +1901,9 @@ mod tests {
             manifest: None,
             version_field: None,
             publish: None,
+            archive: None,
+            checksums: false,
+            include: Vec::new(),
         }
     }
 
@@ -1858,6 +1925,9 @@ mod tests {
             manifest: Some("deno.json".into()),
             version_field: Some("version".into()),
             publish: publish.map(|s| s.into()),
+            archive: None,
+            checksums: false,
+            include: Vec::new(),
         }
     }
 
@@ -1958,6 +2028,9 @@ mod tests {
                 manifest: None,
                 version_field: None,
                 publish: None,
+                archive: None,
+                checksums: false,
+                include: Vec::new(),
             }],
         };
         let out = render_workflow(&config);
@@ -2001,6 +2074,9 @@ mod tests {
                     manifest: Some("packages/b/deno.json".to_string()),
                     version_field: None,
                     publish: None,
+                    archive: None,
+                    checksums: false,
+                    include: Vec::new(),
                 },
                 PackageEntry {
                     name: "jsr-no-build".to_string(),
@@ -2015,6 +2091,9 @@ mod tests {
                     manifest: Some("packages/a/deno.json".to_string()),
                     version_field: None,
                     publish: None,
+                    archive: None,
+                    checksums: false,
+                    include: Vec::new(),
                 },
             ],
         };
@@ -2198,6 +2277,9 @@ mod tests {
                 manifest: None,
                 version_field: None,
                 publish: None,
+                archive: None,
+                checksums: false,
+                include: Vec::new(),
             }],
         };
         let out = render_workflow(&config);
@@ -2247,6 +2329,9 @@ mod tests {
                 manifest: None,
                 version_field: None,
                 publish: None,
+                archive: None,
+                checksums: false,
+                include: Vec::new(),
             }],
         };
         let out = render_workflow(&config);

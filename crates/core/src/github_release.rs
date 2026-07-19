@@ -14,8 +14,9 @@
 //!   3. skips idempotently if that release already exists (forward-resumable),
 //!   4. builds the release body from `github_release_notes` (curated changelog / commit list /
 //!      GitHub-generated),
-//!   5. flattens the staged `bin/<stage_as>/<bin>` tree into OS/arch-named assets
-//!      (`<bin>-<os>-<arch>[.ext]`), and
+//!   5. turns the staged `bin/<stage_as>/<bin>` tree into assets — raw OS/arch-named binaries
+//!      (`<bin>-<os>-<arch>[.ext]`), or, when the package configures `archive`, `.tar.gz`/`.zip`
+//!      bundles (with any `include` files) plus an optional `checksums.txt`, and
 //!   6. creates the Release on `main` with those assets attached.
 
 use std::fs;
@@ -122,11 +123,6 @@ pub fn orchestrate(
 
         let tag = format_tag(&config.tag_format, &pkg.name, &pkg.version)?;
 
-        if forge.release_exists(&tag)? {
-            println!("Release {tag} already exists; nothing to do.");
-            continue;
-        }
-
         let notes = release_notes(
             &config.github_release_notes,
             &config.changelog_scope,
@@ -137,10 +133,11 @@ pub fn orchestrate(
         )?;
 
         let assets = match &opts.artifacts_dir {
-            Some(dir) => stage_assets(dir, entry)?,
+            Some(dir) => stage_assets(dir, entry, root)?,
             None => Vec::new(),
         };
 
+        // A dry run previews the plan and never touches the forge, so it works without `gh`.
         if opts.dry_run {
             println!("Would create release {tag}:");
             match &notes {
@@ -150,6 +147,12 @@ pub fn orchestrate(
             for asset in &assets {
                 println!("  asset: {}", asset.display());
             }
+            continue;
+        }
+
+        // Idempotent: a re-run after a partial failure skips a release that already shipped.
+        if forge.release_exists(&tag)? {
+            println!("Release {tag} already exists; nothing to do.");
             continue;
         }
 
@@ -196,10 +199,12 @@ fn release_notes(
     }
 }
 
-/// Flatten the staged `bin/<stage_as>/<bin>[.ext]` tree the build matrix uploaded into a directory
-/// of OS/arch-named release assets, returning their paths. Mirrors the naming the install scripts
-/// expect: `<bin>-<os>-<arch>[.ext]`, with `darwin`→`macos`, `win32`→`windows`, `x64`→`x86-64`.
-fn stage_assets(artifacts_dir: &Path, entry: &PackageEntry) -> Result<Vec<PathBuf>> {
+/// Turn the staged `bin/<stage_as>/<bin>[.ext]` tree the build matrix uploaded into the release
+/// assets, returning their paths. Each staged binary becomes either a raw, OS/arch-renamed file
+/// (`<bin>-<os>-<arch>[.ext]`) or — when the package configures `archive` — a `.tar.gz`/`.zip` that
+/// bundles the binary with any `include` files. When `checksums` is set, a combined `checksums.txt`
+/// (SHA-256 of every asset) is added last. `darwin`→`macos`, `win32`→`windows`, `x64`→`x86-64`.
+fn stage_assets(artifacts_dir: &Path, entry: &PackageEntry, root: &Path) -> Result<Vec<PathBuf>> {
     if !artifacts_dir.exists() {
         return Ok(Vec::new());
     }
@@ -230,45 +235,130 @@ fn stage_assets(artifacts_dir: &Path, entry: &PackageEntry) -> Result<Vec<PathBu
         }
     }
 
-    let mut assets = Vec::new();
+    // Every staged binary, paired with its `<stage_as>` directory.
+    let mut staged = Vec::new();
     for dir in source_dirs {
-        collect_binaries(&dir, &bin, &flat, &mut assets)?;
+        collect_binaries(&dir, &mut staged)?;
     }
+
+    // Extra files that go *inside* each archive (only meaningful when archiving).
+    let includes = if entry.archive.is_some() {
+        resolve_includes(root, &entry.include)?
+    } else {
+        Vec::new()
+    };
+
+    let mut assets = Vec::new();
+    for (stage, src) in &staged {
+        let file_name = src.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let (os, arch) = map_os_arch(stage);
+        match entry.archive {
+            Some(format) => {
+                let stem = asset_stem(&bin, &os, &arch);
+                let ext = format.extension_for(&os);
+                let dest = flat.join(format!("{stem}.{ext}"));
+                // The binary keeps its own name inside the archive; includes keep their repo path.
+                let mut members = vec![(file_name.to_string(), src.clone())];
+                members.extend(includes.iter().cloned());
+                write_archive(ext, &dest, &members)?;
+                assets.push(dest);
+            }
+            None => {
+                let dest = flat.join(asset_file_name(&bin, stage, file_name));
+                fs::copy(src, &dest)
+                    .with_context(|| format!("copying {} -> {}", src.display(), dest.display()))?;
+                assets.push(dest);
+            }
+        }
+    }
+
     assets.sort();
+
+    if entry.checksums && !assets.is_empty() {
+        let checksums = flat.join("checksums.txt");
+        write_checksums(&assets, &checksums)?;
+        assets.push(checksums);
+    }
+
     Ok(assets)
 }
 
-/// Recursively copy every file under `dir` into `flat`, renaming each from its `<stage_as>` parent
-/// directory to a `<bin>-<os>-<arch>[.ext]` asset.
-fn collect_binaries(dir: &Path, bin: &str, flat: &Path, assets: &mut Vec<PathBuf>) -> Result<()> {
+/// Recursively collect every file under `dir`, paired with its immediate `<stage_as>` parent
+/// directory name (the Node `process.platform-process.arch` dir `otf-release build` staged into,
+/// e.g. `linux-x64`, `darwin-arm64`, `win32-x64`).
+fn collect_binaries(dir: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let path = entry?.path();
         if path.is_dir() {
-            collect_binaries(&path, bin, flat, assets)?;
+            collect_binaries(&path, out)?;
             continue;
         }
-        // The immediate parent directory is the Node `process.platform-process.arch` stage dir
-        // (e.g. `linux-x64`, `darwin-arm64`, `win32-x64`) that `otf-release build` staged into.
         let stage = path
             .parent()
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        let asset = asset_file_name(bin, stage, file_name);
-        let dest = flat.join(&asset);
-        fs::copy(&path, &dest)
-            .with_context(|| format!("copying {} -> {}", path.display(), dest.display()))?;
-        assets.push(dest);
+            .unwrap_or_default()
+            .to_string();
+        out.push((stage, path));
     }
     Ok(())
 }
 
+/// Resolve `include` globs (repo-relative) into `(archive_entry_name, source_path)` pairs, where the
+/// entry name is the file's path relative to the repo root so bundled files keep their layout
+/// (`types/x.d.ts` stays under `types/`). Missing patterns are simply skipped.
+fn resolve_includes(root: &Path, patterns: &[String]) -> Result<Vec<(String, PathBuf)>> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for pattern in patterns {
+        let joined = root.join(pattern);
+        let full = joined
+            .to_str()
+            .with_context(|| format!("non-UTF-8 include pattern: {}", joined.display()))?;
+        for entry in glob::glob(full).with_context(|| format!("bad include glob: {pattern}"))? {
+            let path = match entry {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if seen.insert(name.clone()) {
+                out.push((name, path));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `linux`/`x86-64` → `esrun-linux-x86-64`; a bare OS (no arch) → `esrun-<os>`.
+fn asset_stem(bin: &str, os: &str, arch: &str) -> String {
+    if arch.is_empty() {
+        format!("{bin}-{os}")
+    } else {
+        format!("{bin}-{os}-{arch}")
+    }
+}
+
 /// `linux-x64` + `esrun` → `esrun-linux-x86-64`; `win32-x64` + `esrun.exe` → `esrun-windows-x86-64.exe`.
 fn asset_file_name(bin: &str, stage: &str, file_name: &str) -> String {
+    let (os, arch) = map_os_arch(stage);
+    let base = asset_stem(bin, &os, &arch);
+    // Preserve a file extension (`.exe`) if the staged binary had one; a bare name keeps a bare name.
+    match file_name.rsplit_once('.') {
+        Some((_, ext)) if !ext.is_empty() => format!("{base}.{ext}"),
+        _ => base,
+    }
+}
+
+/// Map a `<stage_as>` dir to friendly `(os, arch)`: `darwin`→`macos`, `win32`→`windows`,
+/// `x64`→`x86-64`; everything else passes through (`arm64`, `aarch64`, …).
+fn map_os_arch(stage: &str) -> (String, String) {
     let (os_raw, arch_raw) = match stage.rsplit_once('-') {
         Some((os, arch)) => (os, arch),
         None => (stage, ""),
@@ -282,16 +372,75 @@ fn asset_file_name(bin: &str, stage: &str, file_name: &str) -> String {
         "x64" => "x86-64",
         other => other,
     };
-    let base = if arch.is_empty() {
-        format!("{bin}-{os}")
+    (os.to_string(), arch.to_string())
+}
+
+/// Write `members` (each `(name_inside_archive, source_file)`) into `dest` as a `.tar.gz` or `.zip`
+/// (chosen by `ext`). Executable bits are preserved from the source files.
+fn write_archive(ext: &str, dest: &Path, members: &[(String, PathBuf)]) -> Result<()> {
+    let file =
+        fs::File::create(dest).with_context(|| format!("creating archive {}", dest.display()))?;
+    if ext == "zip" {
+        use zip::write::SimpleFileOptions;
+        let mut zip = zip::ZipWriter::new(file);
+        for (name, src) in members {
+            let mut options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            if let Some(mode) = unix_mode(src) {
+                options = options.unix_permissions(mode);
+            }
+            zip.start_file(name, options)
+                .with_context(|| format!("zip entry {name}"))?;
+            let mut reader =
+                fs::File::open(src).with_context(|| format!("reading {}", src.display()))?;
+            std::io::copy(&mut reader, &mut zip)
+                .with_context(|| format!("writing {name} into {}", dest.display()))?;
+        }
+        zip.finish().context("finalizing zip")?;
     } else {
-        format!("{bin}-{os}-{arch}")
-    };
-    // Preserve a file extension (`.exe`) if the staged binary had one; a bare name keeps a bare name.
-    match file_name.rsplit_once('.') {
-        Some((_, ext)) if !ext.is_empty() => format!("{base}.{ext}"),
-        _ => base,
+        let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut tar = tar::Builder::new(gz);
+        for (name, src) in members {
+            tar.append_path_with_name(src, name)
+                .with_context(|| format!("tar entry {name}"))?;
+        }
+        tar.into_inner()
+            .context("finalizing tar")?
+            .finish()
+            .context("finalizing gzip")?;
     }
+    Ok(())
+}
+
+/// The Unix permission bits of `path`, or `None` on non-Unix hosts.
+fn unix_mode(path: &Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).ok().map(|m| m.permissions().mode())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Write a `sha256sum`-style `checksums.txt` (`<hex>  <filename>`), one line per asset.
+fn write_checksums(assets: &[PathBuf], dest: &Path) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let mut body = String::new();
+    for asset in assets {
+        let bytes = fs::read(asset).with_context(|| format!("reading {}", asset.display()))?;
+        let digest = Sha256::digest(&bytes);
+        let name = asset
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        body.push_str(&format!("{digest:x}  {name}\n"));
+    }
+    fs::write(dest, body).with_context(|| format!("writing {}", dest.display()))?;
+    Ok(())
 }
 
 /// Lowercase a package name into a job/artifact-safe slug (`@x/cli` → `x-cli`), matching the slug
@@ -315,7 +464,7 @@ mod tests {
     use std::cell::RefCell;
 
     use crate::adapter::{Bump, DepKind};
-    use crate::config::{Ecosystem, Mode, PackageEntry};
+    use crate::config::{ArchiveFormat, Ecosystem, Mode, PackageEntry};
     use crate::forge::ReleaseNotes;
 
     /// One recorded `create_release_with_assets` call.
@@ -460,6 +609,9 @@ mod tests {
             manifest: Some("Cargo.toml".to_string()),
             version_field: Some("version".to_string()),
             publish: None,
+            archive: None,
+            checksums: false,
+            include: Vec::new(),
         }
     }
 
@@ -663,6 +815,92 @@ mod tests {
             names.contains(&"esrun-windows-x86-64.exe".to_string()),
             "{names:?}"
         );
+    }
+
+    #[test]
+    fn archives_and_checksums_are_produced() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("README.md"), b"readme").unwrap();
+        let artifacts = tmp.path().join(".artifacts");
+        for (dir, stage, file) in [
+            ("esrun-linux-x86_64", "linux-x64", "esrun"),
+            ("esrun-windows-x86_64", "win32-x64", "esrun.exe"),
+        ] {
+            let staged = artifacts.join(dir).join("bin").join(stage);
+            std::fs::create_dir_all(&staged).unwrap();
+            std::fs::write(staged.join(file), b"binary").unwrap();
+        }
+
+        let mut entry = build_only_entry("esrun", "esrun");
+        entry.archive = Some(ArchiveFormat::Auto); // tar.gz on Unix, zip on Windows
+        entry.checksums = true;
+        entry.include = vec!["README.md".to_string()];
+
+        let adapter = FakeAdapter {
+            packages: vec![pkg("esrun", "1.2.3", tmp.path().join("CHANGELOG.md"))],
+        };
+        let forge = FakeForge::new();
+        let config = config_with(entry, GithubReleaseNotes::AutoGenerate);
+
+        orchestrate(
+            &[&adapter],
+            &FakeHistory {
+                last: None,
+                commits: String::new(),
+            },
+            &forge,
+            tmp.path(),
+            &GithubReleaseOptions {
+                package: Some("esrun".to_string()),
+                artifacts_dir: Some(artifacts),
+                dry_run: false,
+            },
+            &config,
+        )
+        .unwrap();
+
+        let created = forge.created.borrow();
+        let names: Vec<String> = created[0]
+            .assets
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.contains(&"esrun-linux-x86-64.tar.gz".to_string()),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&"esrun-windows-x86-64.zip".to_string()),
+            "{names:?}"
+        );
+        assert!(names.contains(&"checksums.txt".to_string()), "{names:?}");
+
+        // checksums.txt lists the archives but never itself.
+        let checksums = created[0]
+            .assets
+            .iter()
+            .find(|p| p.file_name().unwrap() == "checksums.txt")
+            .unwrap();
+        let text = std::fs::read_to_string(checksums).unwrap();
+        assert!(text.contains("esrun-linux-x86-64.tar.gz"), "{text}");
+        assert!(text.contains("esrun-windows-x86-64.zip"), "{text}");
+        assert!(!text.contains("checksums.txt"), "{text}");
+
+        // The tar.gz really bundles the binary and the included README at their expected names.
+        let tgz = created[0]
+            .assets
+            .iter()
+            .find(|p| p.to_string_lossy().ends_with(".tar.gz"))
+            .unwrap();
+        let gz = flate2::read::GzDecoder::new(std::fs::File::open(tgz).unwrap());
+        let mut archive = tar::Archive::new(gz);
+        let entries: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(entries.contains(&"esrun".to_string()), "{entries:?}");
+        assert!(entries.contains(&"README.md".to_string()), "{entries:?}");
     }
 
     #[test]

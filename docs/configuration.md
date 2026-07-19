@@ -48,6 +48,11 @@ artifacts = "target/{triple}/release/otfwc{ext}"        # the binary this target
 bin_name  = "otfwc"                 # staged as bin/<stage_as>/otfwc<ext>[.br]  (matrix only)
 compress  = "brotli"                # decompressed at install time            (matrix only)
 
+# build-only release packaging (read by `github-release`):
+archive   = "auto"                  # "tar.gz" | "zip" | "auto" — package each binary (build-only)
+checksums = true                    # also attach a combined checksums.txt (SHA-256)
+include   = ["README.md", "LICENSE"]  # extra files bundled inside each archive
+
 # One [[package.targets]] table per platform. init fills every field from the built-in
 # registry; a hand-written file may list just name/arch and the rest is looked up.
 [[package.targets]]
@@ -91,6 +96,9 @@ artifacts = "dist/**"
 | `artifacts` | The built binary to stage (matrix: templated like `command`) / a glob to attach to the release. |
 | `bin_name` | _(matrix only)_ the compiled binary's base name; staged as `bin/<stage_as>/<bin_name><ext>`. |
 | `compress` | _(matrix only)_ `"brotli"` compresses each staged binary to `…<ext>.br` (decompressed at install time); omit to stage raw. |
+| `archive` | _(build-only)_ package each staged binary before attaching it: `"tar.gz"`, `"zip"`, or `"auto"` (`.zip` for Windows targets, `.tar.gz` elsewhere). Omit to attach the raw OS/arch-renamed binary. Read by [`github-release`](./commands/github-release.md). |
+| `checksums` | _(build-only)_ `true` also attaches a combined `checksums.txt` (SHA-256 of every asset) to the GitHub Release. |
+| `include` | _(build-only, requires `archive`)_ extra files to bundle **inside each archive** beside the binary — repo-relative paths or globs, e.g. `["README.md", "LICENSE", "types/*.d.ts"]`. Each keeps its path within the archive. |
 
 ### Build targets (`[[package.targets]]`)
 
