@@ -1,0 +1,134 @@
+name: Installer smoke test
+
+# Exercises install.sh / install.ps1 end to end against the current published release.
+#
+# Two real breakages motivated this, both shipped because the installers were only ever
+# reasoned about rather than run:
+#   * archives became the default asset shape, and the installers still asked for bare
+#     names — every `curl install.sh | bash` 404'd, including this repo's own CI;
+#   * install.ps1 installed correctly, then failed its step on a stale $LASTEXITCODE left
+#     by a `gh` probe whose failure is explicitly non-fatal.
+#
+# The scripts under test come from the checkout, not from `main`, so a pull request tests
+# its own changes. The schedule matters as much as the push trigger: a new release can
+# break these scripts with no code change at all, which is exactly how the first one shipped.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - install.sh
+      - install.ps1
+      - .github/workflows/installer-smoke.yml
+  pull_request:
+    paths:
+      - install.sh
+      - install.ps1
+      - .github/workflows/installer-smoke.yml
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  unix:
+    name: install.sh (${{ matrix.os }}, ${{ matrix.shell }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # The README pipes into bash; the shebang says sh. Both must work, so both run.
+        shell: [sh, bash]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install from the working tree
+        run: |
+          set +e
+          ${{ matrix.shell }} ./install.sh
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            echo "::error::install.sh exited $code"
+            exit 1
+          fi
+
+      - name: Installed binary runs
+        run: |
+          command -v otf-release
+          otf-release --version
+
+  windows:
+    name: install.ps1 (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A successful install must leave $LASTEXITCODE at 0. GitHub appends
+      # `exit $LASTEXITCODE` to every pwsh step, so a non-zero value left behind by any
+      # native call fails the step even though the install worked.
+      - name: Install from the working tree
+        shell: pwsh
+        run: |
+          ./install.ps1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::install.ps1 left exit code $LASTEXITCODE after a successful install"
+            exit 1
+          }
+
+      - name: Installed binary runs
+        shell: pwsh
+        run: |
+          $bin = Join-Path $env:USERPROFILE ".cargo\bin\otf-release.exe"
+          if (-not (Test-Path $bin)) { throw "binary not found at $bin" }
+          & $bin --version
+          if ($LASTEXITCODE -ne 0) { throw "installed binary failed to run" }
+
+  tamper:
+    name: install.sh refuses a tampered asset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Guards the security property rather than the happy path: a download whose checksum
+      # does not match what the release published must not be installed. Serves the asset
+      # from a local fixture so nothing depends on the network or on a real release.
+      - name: Build a tampered fixture and expect a refusal
+        run: |
+          set -euo pipefail
+          fixture="$(mktemp -d)"
+          mkdir -p "$fixture/bin"
+          printf 'int main(){return 0;}' > "$fixture/m.c"
+          cc -o "$fixture/otf-release" "$fixture/m.c"
+          ( cd "$fixture" && tar -czf otf-release-linux-x86-64.tar.gz otf-release )
+          # Checksum the good archive, *then* corrupt it — the mismatch is the point.
+          ( cd "$fixture" && sha256sum otf-release-linux-x86-64.tar.gz | awk '{print $1"  "$2}' > checksums.txt )
+          printf 'TAMPER' >> "$fixture/otf-release-linux-x86-64.tar.gz"
+
+          sed \
+            -e "s|https://github.com/\$REPO/releases/latest/download/\$candidate|file://$fixture/\$candidate|" \
+            -e "s|https://github.com/\$REPO/releases/latest/download/checksums.txt|file://$fixture/checksums.txt|" \
+            -e "s|INSTALL_DIR=\"/usr/local/bin\"|INSTALL_DIR=\"$fixture/bin\"|" \
+            install.sh > "$fixture/install-test.sh"
+
+          # The rewrites must have applied, or this would silently test the real release.
+          grep -q "file://$fixture" "$fixture/install-test.sh" \
+            || { echo "::error::fixture URL rewrite did not apply; test is not exercising the local asset"; exit 1; }
+
+          set +e
+          sh "$fixture/install-test.sh" > out.log 2>&1
+          code=$?
+          set -e
+          cat out.log
+
+          if [ "$code" -eq 0 ]; then
+            echo "::error::installer accepted a tampered asset"
+            exit 1
+          fi
+          if [ -f "$fixture/bin/otf-release" ]; then
+            echo "::error::installer wrote a binary despite refusing"
+            exit 1
+          fi
+          grep -q "checksum mismatch" out.log \
+            || { echo "::error::refused, but not because of the checksum"; exit 1; }
+          echo "Refused a tampered asset, as intended."

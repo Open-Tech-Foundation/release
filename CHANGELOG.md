@@ -8,6 +8,19 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **ci** — Added an installer smoke test (`.github/workflows/installer-smoke.yml`). It runs
+  `install.sh` on Ubuntu and macOS under both `sh` and `bash`, runs `install.ps1` on Windows, and
+  asserts in each case that the installer exits 0 *and* that the installed binary actually runs. A
+  third job serves a deliberately corrupted asset from a local fixture and asserts the installer
+  refuses it, writes no binary, and refuses specifically because of the checksum — so the security
+  behavior is guarded, not just the happy path.
+
+  The scripts under test come from the checkout rather than `main`, so a pull request tests its own
+  changes. It also runs on a daily schedule, because a new release can break the installers with no
+  code change at all — which is precisely how the archive-rename breakage shipped. Both installer
+  bugs in 0.26.0 (the release deadlock and the Windows `$LASTEXITCODE` leak) would have been caught
+  here rather than in a release job.
+
 - **install (Windows)** — `install.ps1` failed its GitHub Actions step *after installing
   successfully*. GitHub appends `exit $LASTEXITCODE` to every `pwsh` step, and the `gh auth status`
   probe added for provenance verification leaves a non-zero exit code behind on a runner where `gh`
