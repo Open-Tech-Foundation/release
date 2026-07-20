@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-07-20
+
 - **install — required for 0.24.0 → next.** `install.sh` and `install.ps1` now unpack archive
   assets. Since 0.24.0 made archives the default, the next release publishes
   `otf-release-<os>-<arch>.tar.gz` / `.zip`, which the old installers could not fetch (they
