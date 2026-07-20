@@ -51,6 +51,7 @@ compress  = "brotli"                # decompressed at install time            (m
 # build-only release packaging (read by `github-release`):
 archive   = "auto"                  # "tar.gz" | "zip" | "auto" — package each binary (build-only)
 checksums = true                    # also attach a combined checksums.txt (SHA-256)
+attest    = true                    # sign build provenance for every asset (authenticity)
 include   = ["README.md", "LICENSE"]  # extra files bundled inside each archive
 
 # One [[package.targets]] table per platform. init fills every field from the built-in
@@ -97,7 +98,8 @@ artifacts = "dist/**"
 | `bin_name` | _(matrix only)_ the compiled binary's base name; staged as `bin/<stage_as>/<bin_name><ext>`. |
 | `compress` | _(matrix only)_ `"brotli"` compresses each staged binary to `…<ext>.br` (decompressed at install time); omit to stage raw. |
 | `archive` | _(build-only)_ how to package each staged binary: `"tar.gz"`, `"zip"`, or `"auto"`. **Defaults to `"auto"`** (`.zip` for Windows targets, `.tar.gz` elsewhere) — build-only binaries always ship as archives, so every asset carries an extension and the binary extracts ready to run (stored mode `755`). Read by [`github-release`](./commands/github-release.md). |
-| `checksums` | _(build-only)_ `true` also attaches a combined `checksums.txt` (SHA-256 of every asset) to the GitHub Release. |
+| `checksums` | _(build-only)_ `true` also attaches a combined `checksums.txt` (SHA-256 of every asset) to the GitHub Release. Proves an asset arrived **intact**; it does not prove who built it — see `attest`. |
+| `attest` | _(build-only)_ `true` signs build provenance for every release asset via `actions/attest-build-provenance`, and adds the `id-token: write` + `attestations: write` permissions to the generated workflow. This is the only setting here that establishes **authenticity**: a checksum can be replaced by whoever replaced the asset, a GitHub-signed attestation cannot. Consumers verify with `gh attestation verify <file> --repo <owner/repo>`. Off by default (it changes workflow permissions); `init` proposes enabling it. See [`github-release`](./commands/github-release.md#supply-chain-checksums-vs-provenance). |
 | `include` | _(build-only)_ extra files to bundle **inside each archive** beside the binary — repo-relative paths or globs, e.g. `["README.md", "LICENSE", "types/*.d.ts"]`. Each keeps its path within the archive. |
 
 ### Build targets (`[[package.targets]]`)

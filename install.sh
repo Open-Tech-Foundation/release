@@ -52,18 +52,20 @@ CANDIDATES="$CANDIDATES $ASSET_NAMES"
 TMP_FILE="$(mktemp "${TMPDIR:-/tmp}/${BIN_NAME}.XXXXXX")"
 EXTRACT_DIR=""
 cleanup() {
-    rm -f "$TMP_FILE"
+    rm -f "$TMP_FILE" "${TMP_FILE}.sums"
     [ -n "$EXTRACT_DIR" ] && rm -rf "$EXTRACT_DIR"
     return 0
 }
 trap cleanup EXIT INT TERM
 
 downloaded=false
+ASSET_USED=""
 for candidate in $CANDIDATES; do
     DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$candidate"
     echo "Downloading from $DOWNLOAD_URL..."
     if curl -fL -o "$TMP_FILE" "$DOWNLOAD_URL"; then
         downloaded=true
+        ASSET_USED="$candidate"
         break
     fi
 done
@@ -72,12 +74,71 @@ if [ "$downloaded" != true ]; then
     exit 1
 fi
 
-# Verify we actually got an executable, not an HTML/JSON error page. This is the
-# guard that prevents installing garbage over a good binary.
 if [ ! -s "$TMP_FILE" ]; then
     echo "Error: downloaded file is empty; refusing to install." >&2
     exit 1
 fi
+
+# --- Integrity: does this asset match the checksum published beside it? -------
+# Catches truncation and corruption. It is NOT an authenticity check: whoever could
+# replace the asset could replace checksums.txt too. That job belongs to the
+# provenance check below.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$1" | awk '{print $NF}'
+    fi
+}
+
+SUMS_FILE="${TMP_FILE}.sums"
+if curl -fsL -o "$SUMS_FILE" "https://github.com/$REPO/releases/latest/download/checksums.txt" 2>/dev/null; then
+    EXPECTED="$(awk -v f="$ASSET_USED" '$2 == f {print $1}' "$SUMS_FILE" | head -n 1)"
+    ACTUAL="$(sha256_of "$TMP_FILE")"
+    if [ -z "$ACTUAL" ]; then
+        echo "Note: no sha256 tool found; skipping checksum verification." >&2
+    elif [ -z "$EXPECTED" ]; then
+        echo "Note: $ASSET_USED not listed in checksums.txt; skipping checksum verification." >&2
+    elif [ "$EXPECTED" != "$ACTUAL" ]; then
+        rm -f "$SUMS_FILE"
+        echo "Error: checksum mismatch for $ASSET_USED." >&2
+        echo "       expected $EXPECTED" >&2
+        echo "       actual   $ACTUAL" >&2
+        echo "       Refusing to install." >&2
+        exit 1
+    else
+        echo "Checksum OK ($ASSET_USED)."
+    fi
+fi
+rm -f "$SUMS_FILE"
+
+# --- Authenticity: was this asset really built by this repo's workflow? -------
+# `gh attestation verify` checks a GitHub-signed provenance statement, which cannot
+# be forged by someone who merely replaced the asset. It needs the `gh` CLI, so it
+# is best-effort by default; set OTF_RELEASE_REQUIRE_ATTESTATION=1 to make a missing
+# `gh` (or a missing attestation) a hard failure.
+REQUIRE_ATTESTATION="${OTF_RELEASE_REQUIRE_ATTESTATION:-0}"
+if command -v gh >/dev/null 2>&1; then
+    if gh attestation verify "$TMP_FILE" --repo "$REPO" >/dev/null 2>&1; then
+        echo "Provenance verified (built by $REPO)."
+    else
+        echo "Error: build provenance could not be verified for $ASSET_USED." >&2
+        echo "       Refusing to install. Run for details:" >&2
+        echo "       gh attestation verify <file> --repo $REPO" >&2
+        exit 1
+    fi
+elif [ "$REQUIRE_ATTESTATION" = "1" ]; then
+    echo "Error: OTF_RELEASE_REQUIRE_ATTESTATION=1 but the 'gh' CLI is not installed." >&2
+    exit 1
+else
+    echo "Note: 'gh' not found; skipping provenance verification." >&2
+    echo "      Install the GitHub CLI, or set OTF_RELEASE_REQUIRE_ATTESTATION=1 to require it." >&2
+fi
+
+# Verify we actually got an executable, not an HTML/JSON error page. This is the
+# guard that prevents installing garbage over a good binary.
 
 read_magic() {
     dd if="$1" bs=4 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'

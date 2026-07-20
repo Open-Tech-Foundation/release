@@ -8,6 +8,30 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **github-release/config** — New `attest` field for build-only packages. `attest = true` adds an
+  `actions/attest-build-provenance@v2` step to the generated release job and the `id-token: write` +
+  `attestations: write` permissions it needs, signing every released asset with the workflow's OIDC
+  identity. Consumers verify with `gh attestation verify <file> --repo <owner/repo>`.
+
+  This closes the gap `checksums` cannot: a `checksums.txt` served from the same release proves an
+  asset arrived **intact**, but an attacker who can replace the binary can replace the checksum
+  beside it. Provenance is signed by GitHub and proves the asset was built by this repo's workflow
+  from this commit — **authenticity**, not just integrity. The step's `subject-path` and the
+  command's asset output directory come from one shared function (`github_release::assets_subdir`),
+  so the glob cannot drift and silently sign nothing. Signing runs after the release is created, so
+  a signing outage cannot block shipping.
+
+  Off by default, because enabling it changes a workflow's permissions and `upgrade` must not do
+  that silently. `init` proposes it (default yes) when configuring a build-only package.
+- **install** — `install.sh` and `install.ps1` now verify what they download. The checksum from the
+  release's `checksums.txt` is compared before install and a mismatch is fatal; build provenance is
+  verified with `gh attestation verify` when the `gh` CLI is present. Set
+  `OTF_RELEASE_REQUIRE_ATTESTATION=1` to make provenance mandatory instead of best-effort. Both
+  checks run on the downloaded asset before it is unpacked, and both degrade cleanly against older
+  releases that carry neither. Previously the only check was a magic-byte test, which distinguishes
+  a binary from an HTML error page but accepts a malicious binary without complaint.
+- **self** — This repo now publishes `checksums.txt` and provenance for its own releases.
+
 - **github-release** — Fixed: the binary inside a release archive was **not executable**. v0.25.0's
   assets stored it as mode 644, so every extracted `otf-release` needed a `chmod +x` — the exact
   papercut archiving was meant to remove. The cause is upstream of the archiving code:

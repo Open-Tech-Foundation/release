@@ -203,6 +203,17 @@ fn release_notes(
 /// (`<bin>-<os>-<arch>[.ext]`) or — when the package configures `archive` — a `.tar.gz`/`.zip` that
 /// bundles the binary with any `include` files. When `checksums` is set, a combined `checksums.txt`
 /// (SHA-256 of every asset) is added last. `darwin`→`macos`, `win32`→`windows`, `x64`→`x86-64`.
+/// The directory, relative to `--artifacts-dir`, that this command writes a package's finished
+/// release assets into.
+///
+/// This is a **public contract**, not an implementation detail: the generated workflow points
+/// `actions/attest-build-provenance` at it to sign exactly the files that get attached. Codegen and
+/// this module both call this function so the two can never drift into signing the wrong path — a
+/// silent failure that would attest nothing while looking healthy.
+pub fn assets_subdir(package: &str) -> String {
+    format!(".flat-{}", slug(package))
+}
+
 fn stage_assets(artifacts_dir: &Path, entry: &PackageEntry, root: &Path) -> Result<Vec<PathBuf>> {
     if !artifacts_dir.exists() {
         return Ok(Vec::new());
@@ -210,7 +221,7 @@ fn stage_assets(artifacts_dir: &Path, entry: &PackageEntry, root: &Path) -> Resu
     let slug = slug(&entry.name);
     let bin = entry.bin_name.clone().unwrap_or_else(|| slug.clone());
 
-    let flat = artifacts_dir.join(format!(".flat-{slug}"));
+    let flat = artifacts_dir.join(assets_subdir(&entry.name));
     if flat.exists() {
         fs::remove_dir_all(&flat).with_context(|| format!("clearing {}", flat.display()))?;
     }
@@ -692,6 +703,7 @@ mod tests {
             publish: None,
             archive: None,
             checksums: false,
+            attest: false,
             include: Vec::new(),
         }
     }

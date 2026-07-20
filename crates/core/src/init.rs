@@ -442,6 +442,7 @@ pub fn orchestrate(
                     publish: None,
                     archive: None,
                     checksums: false,
+                    attest: false,
                     include: Vec::new(),
                 });
             }
@@ -467,6 +468,7 @@ pub fn orchestrate(
                 publish: None,
                 archive: None,
                 checksums: false,
+                attest: false,
                 include: Vec::new(),
             });
         }
@@ -747,8 +749,17 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
     let mut s = String::from("name: Release\n\non:\n  push:\n    branches: [main]\n");
     if any_build_only || needs_publish {
         s.push_str("\npermissions:\n  contents: write  # create tags and GitHub Releases\n");
-        if npm_enabled || jsr_publishes {
+        // Provenance is signed with the job's OIDC identity and written to the attestation store,
+        // so it needs both scopes on top of `contents: write`.
+        let attests = config
+            .packages
+            .iter()
+            .any(|p| p.is_build_only() && p.attest);
+        if npm_enabled || jsr_publishes || attests {
             s.push_str("  id-token: write\n");
+        }
+        if attests {
+            s.push_str("  attestations: write  # sign build provenance for release assets\n");
         }
     }
     // Serialize release runs: two quick pushes to main must not run two `otf-release publish`
@@ -1257,15 +1268,30 @@ fn render_github_release(s: &mut String, needs: &[String], entry: &PackageEntry)
     s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     if staged {
         s.push_str(&format!(
-            "        run: otf-release github-release --package {} --artifacts-dir .artifacts\n\n",
+            "        run: otf-release github-release --package {} --artifacts-dir .artifacts\n",
             entry.name
         ));
     } else {
         s.push_str(&format!(
-            "        run: otf-release github-release --package {}\n\n",
+            "        run: otf-release github-release --package {}\n",
             entry.name
         ));
     }
+
+    // Sign what was actually attached. `github-release` writes its finished assets to a path this
+    // module and the command agree on via `assets_subdir`, so the glob can't point somewhere empty.
+    // Runs after the release so a signing outage can't block shipping; the attestation lands in
+    // GitHub's store, not on the release, so the order does not affect what consumers verify.
+    if staged && entry.attest {
+        s.push_str("      - name: Attest build provenance\n");
+        s.push_str("        uses: actions/attest-build-provenance@v2\n");
+        s.push_str("        with:\n");
+        s.push_str(&format!(
+            "          subject-path: .artifacts/{}/*\n",
+            crate::github_release::assets_subdir(&entry.name)
+        ));
+    }
+    s.push('\n');
 }
 
 /// Prompt for a generic package's build/publish commands and assemble its [`PackageEntry`].
@@ -1367,7 +1393,7 @@ fn configure_generic(
     // Build-only packaging: archive the staged binaries and/or emit a checksums file, like the
     // hand-written release scripts this replaces. `github-release` reads these; the workflow YAML is
     // unchanged (a thin call).
-    let (archive, checksums, include) = if mode == Mode::BuildOnly {
+    let (archive, checksums, include, attest) = if mode == Mode::BuildOnly {
         // Binaries always ship as archives; only the format is a choice. `auto` leads because it
         // matches what each platform's users expect to download.
         let archive = match Select::new(
@@ -1411,9 +1437,21 @@ fn configure_generic(
         .raw_prompt()?
         .index
             == 0;
-        (archive, checksums, include)
+        let attest = Select::new(
+            &format!("  {name} — sign build provenance for the release assets?"),
+            vec!["Yes (recommended)", "No"],
+        )
+        .with_help_message(
+            "GitHub-signed proof these assets were built by this repo's workflow from this commit. \
+             Consumers verify with `gh attestation verify <file> --repo <owner/repo>`. Unlike a \
+             checksum, it can't be forged by whoever replaced the asset. Public repos only",
+        )
+        .raw_prompt()?
+        .index
+            == 0;
+        (archive, checksums, include, attest)
     } else {
-        (None, false, Vec::new())
+        (None, false, Vec::new(), false)
     };
 
     Ok(PackageEntry {
@@ -1431,6 +1469,7 @@ fn configure_generic(
         publish,
         archive,
         checksums,
+        attest,
         include,
     })
 }
@@ -1641,6 +1680,7 @@ impl InitPrompt for StdinInitPrompt {
             publish: None,
             archive: None,
             checksums: false,
+            attest: false,
             include: Vec::new(),
         })
     }
@@ -2033,6 +2073,7 @@ pub(crate) mod tests {
             publish: None,
             archive: None,
             checksums: false,
+            attest: false,
             include: Vec::new(),
         }
     }
@@ -2053,6 +2094,7 @@ pub(crate) mod tests {
             publish: None,
             archive: None,
             checksums: false,
+            attest: false,
             include: Vec::new(),
         }
     }
@@ -2077,6 +2119,7 @@ pub(crate) mod tests {
             publish: publish.map(|s| s.into()),
             archive: None,
             checksums: false,
+            attest: false,
             include: Vec::new(),
         }
     }
@@ -2180,6 +2223,7 @@ pub(crate) mod tests {
                 publish: None,
                 archive: None,
                 checksums: false,
+                attest: false,
                 include: Vec::new(),
             }],
         };
@@ -2226,6 +2270,7 @@ pub(crate) mod tests {
                     publish: None,
                     archive: None,
                     checksums: false,
+                    attest: false,
                     include: Vec::new(),
                 },
                 PackageEntry {
@@ -2243,6 +2288,7 @@ pub(crate) mod tests {
                     publish: None,
                     archive: None,
                     checksums: false,
+                    attest: false,
                     include: Vec::new(),
                 },
             ],
@@ -2429,6 +2475,7 @@ pub(crate) mod tests {
                 publish: None,
                 archive: None,
                 checksums: false,
+                attest: false,
                 include: Vec::new(),
             }],
         };
@@ -2478,6 +2525,7 @@ pub(crate) mod tests {
                 publish: None,
                 archive: None,
                 checksums: false,
+                attest: false,
                 include: Vec::new(),
             }],
         }
@@ -2592,6 +2640,7 @@ pub(crate) mod tests {
                 publish: None,
                 archive: None,
                 checksums: false,
+                attest: false,
                 include: Vec::new(),
             }],
         };
@@ -2854,6 +2903,62 @@ pub(crate) mod tests {
             discovered[1].publishable,
             "the released binary still versions"
         );
+    }
+
+    /// Provenance is the only mechanism here that proves *authenticity*, so the wiring has to be
+    /// exact: the right permissions, and a subject path that actually matches the released files.
+    #[test]
+    fn attest_wires_permissions_and_signs_the_real_asset_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let factory = FakeFactory {
+            packages: vec![pkg("esrun", true)],
+        };
+        let mut entry = cargo_build_only("esrun");
+        entry.attest = true;
+        let prompt = FakePrompt {
+            adapters: vec![Ecosystem::Cargo],
+            build_names: vec!["esrun".into()],
+            entries: vec![entry],
+            ..FakePrompt::default()
+        };
+        orchestrate(&factory, &prompt, tmp.path(), &InitOptions { force: true }).unwrap();
+        let out =
+            std::fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
+
+        assert!(out.contains("  id-token: write\n"));
+        assert!(out.contains("  attestations: write"));
+        assert!(out.contains("        uses: actions/attest-build-provenance@v2\n"));
+        // The subject path must be the directory `github-release` actually writes assets to —
+        // a stale glob would sign nothing while the job still reports success.
+        let expected = format!(
+            "          subject-path: .artifacts/{}/*\n",
+            crate::github_release::assets_subdir("esrun")
+        );
+        assert!(out.contains(&expected), "{out}");
+        // Signing runs after the release, so a signing outage cannot block shipping.
+        let release_at = out.find("otf-release github-release").unwrap();
+        let attest_at = out.find("attest-build-provenance").unwrap();
+        assert!(release_at < attest_at);
+    }
+
+    /// Opt-in: a repo that did not ask for provenance gets neither the step nor the extra scopes.
+    #[test]
+    fn without_attest_no_step_and_no_extra_permissions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let factory = FakeFactory {
+            packages: vec![pkg("esrun", true)],
+        };
+        let prompt = FakePrompt {
+            adapters: vec![Ecosystem::Cargo],
+            build_names: vec!["esrun".into()],
+            entries: vec![cargo_build_only("esrun")],
+            ..FakePrompt::default()
+        };
+        orchestrate(&factory, &prompt, tmp.path(), &InitOptions { force: true }).unwrap();
+        let out =
+            std::fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
+        assert!(!out.contains("attest-build-provenance"));
+        assert!(!out.contains("attestations: write"));
     }
 
     /// The prompt is a cost, so it must not fire for an ordinary publish-everything repo.

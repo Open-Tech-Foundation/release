@@ -553,6 +553,7 @@ fn publish_ignore_path_packages(config: &ReleaseConfig) -> Vec<PackageEntry> {
             publish: None,
             archive: None,
             checksums: false,
+            attest: false,
             include: Vec::new(),
         })
         .collect()
@@ -673,6 +674,7 @@ mod tests {
                 publish: None,
                 archive: None,
                 checksums: false,
+                attest: false,
                 include: Vec::new(),
             }],
             ..Default::default()

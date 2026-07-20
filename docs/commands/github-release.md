@@ -71,8 +71,61 @@ include   = ["README.md", "LICENSE", "types/*.d.ts"]   # bundled inside each arc
 - **`checksums`** — writes a `sha256sum`-style `checksums.txt` (`<hex>  <asset>`) covering every
   attached asset and adds it to the release.
 
-The generated workflow does not change when you adjust these — the binary reads them from
-`release.toml`, so the release job stays the same thin call.
+The generated workflow does not change when you adjust `archive`/`include`/`checksums` — the binary
+reads them from `release.toml`, so the release job stays the same thin call. `attest` is the
+exception: it adds a step and two permissions (below).
+
+## Supply chain: checksums vs. provenance
+
+These solve different problems, and the difference matters:
+
+| | Answers | Defeats |
+| --- | --- | --- |
+| `checksums = true` | "did this arrive intact?" | truncation, corruption, a partial upload |
+| `attest = true` | "was this really built by *you*?" | a swapped asset, a compromised release |
+
+A `checksums.txt` served from the same release is **integrity, not authenticity** — an attacker who
+can replace the binary can replace the checksum file beside it. Only provenance is signed by GitHub
+with the workflow's OIDC identity, so it cannot be forged by replacing files.
+
+```toml
+[[package]]
+name      = "esrun"
+mode      = "build-only"
+checksums = true
+attest    = true
+```
+
+`attest = true` makes `init` add to the generated workflow:
+
+```yaml
+permissions:
+  contents: write
+  id-token: write
+  attestations: write       # sign build provenance for release assets
+```
+
+```yaml
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: .artifacts/.flat-<slug>/*
+```
+
+That `subject-path` is the directory `github-release` writes its finished assets to. Codegen and the
+command derive it from one shared function, so the glob cannot drift and silently sign nothing.
+The step runs **after** the release, so a signing outage can't block shipping — the attestation goes
+to GitHub's attestation store, not onto the release, so ordering doesn't change what consumers see.
+
+Consumers verify with:
+
+```bash
+gh attestation verify otf-release-linux-x86-64.tar.gz --repo Open-Tech-Foundation/release
+```
+
+> **Off by default.** Provenance needs the two extra scopes above, so enabling it silently on
+> `upgrade` would change a workflow's permissions without asking. `init` proposes it (default yes).
+> It is supported on public repositories; private repos depend on your GitHub plan.
 
 > **Upgrading from before archives were the default:** asset names gain an extension
 > (`esrun-linux-x86-64` → `esrun-linux-x86-64.tar.gz`). Anything that downloads a release asset by

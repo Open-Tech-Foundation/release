@@ -397,9 +397,20 @@ pub struct PackageEntry {
 
     // --- build-only release packaging (used by `github-release`) ---
     /// Package each staged binary into an archive before attaching it: `tar.gz`, `zip`, or `auto`.
-    /// Omit to attach the raw OS/arch-renamed binary.
+    /// Defaults to `auto` for build-only packages — see [`PackageEntry::archive_format`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive: Option<ArchiveFormat>,
+    /// Generate signed build provenance for every release asset, via GitHub's
+    /// `actions/attest-build-provenance`. Consumers verify with `gh attestation verify <file>
+    /// --repo <owner/repo>`.
+    ///
+    /// This is the only one of the three that establishes **authenticity**. `checksums` proves an
+    /// asset arrived intact; provenance proves it was built by this repo's workflow from this
+    /// commit — an attacker who replaces an asset can replace the checksum beside it, but cannot
+    /// forge the signature. Off by default so `upgrade` never silently changes a workflow's
+    /// permissions; `init` proposes enabling it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub attest: bool,
     /// Also attach a combined `checksums.txt` (SHA-256 of every asset) to the GitHub Release.
     #[serde(default, skip_serializing_if = "is_false")]
     pub checksums: bool,
@@ -757,6 +768,7 @@ mod tests {
                     publish: None,
                     archive: Some(ArchiveFormat::Auto),
                     checksums: true,
+                    attest: false,
                     include: vec!["README.md".into(), "LICENSE".into()],
                 },
                 PackageEntry {
@@ -774,6 +786,7 @@ mod tests {
                     publish: None,
                     archive: None,
                     checksums: false,
+                    attest: false,
                     include: Vec::new(),
                 },
             ],

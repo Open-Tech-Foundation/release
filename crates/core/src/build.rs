@@ -319,6 +319,7 @@ mod tests {
             publish: None,
             archive: None,
             checksums: false,
+            attest: false,
             include: Vec::new(),
         };
         let config = ReleaseConfig {

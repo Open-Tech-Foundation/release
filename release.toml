@@ -17,6 +17,8 @@ artifacts = "target/{triple}/release/{bin}{ext}"
 bin_name = "otf-release"
 manifest = "Cargo.toml"
 version_field = "version"
+checksums = true
+attest = true
 
 [[package.targets]]
 name = "linux"

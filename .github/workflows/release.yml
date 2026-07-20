@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write  # create tags and GitHub Releases
+  id-token: write
+  attestations: write  # sign build provenance for release assets
 
 concurrency:
   group: release
@@ -109,4 +111,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: otf-release github-release --package otf-release --artifacts-dir .artifacts
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: .artifacts/.flat-otf-release/*
 

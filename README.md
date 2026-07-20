@@ -56,6 +56,20 @@ Prebuilt binaries are published for **Linux** (x86-64, arm64), **macOS** (x86-64
 hosts no FreeBSD runner. The install scripts pick the right asset and unpack it; to grab one by
 hand, see the [latest release](https://github.com/Open-Tech-Foundation/release/releases/latest).
 
+**Verifying what you installed.** Every asset ships with a SHA-256 in `checksums.txt` and a
+GitHub-signed build provenance attestation. The install scripts check the checksum automatically,
+and verify provenance when the [`gh` CLI](https://cli.github.com) is present — set
+`OTF_RELEASE_REQUIRE_ATTESTATION=1` to make provenance mandatory rather than best-effort. To check
+a download by hand:
+
+```bash
+gh attestation verify otf-release-linux-x86-64.tar.gz --repo Open-Tech-Foundation/release
+```
+
+The attestation is what proves the binary came from this repo's workflow; a checksum alone only
+proves the download wasn't corrupted. Your own releases can ship both — see
+[`checksums` and `attest`](docs/commands/github-release.md#supply-chain-checksums-vs-provenance).
+
 ### 2. Set up the repo
 
 ```bash
@@ -186,6 +200,7 @@ Implementing a new adapter? Start at [adapters/overview.md](docs/adapters/overvi
 | Matrix binaries | Cross-compiled per-target builds via [`matrix`](docs/commands/matrix-build.md) / [`build`](docs/commands/matrix-build.md), staged for publish. Targets come from a built-in registry that reconciles the Rust triple, the CI runner, and the Node `platform-arch` stage dir. |
 | Build targets | Linux (glibc + **musl**), macOS, Windows, and **FreeBSD** — the last built natively inside a VM guest on the Linux runner, since GitHub hosts no FreeBSD runner. |
 | Release assets | Binaries ship as archives by default: `<bin>-<os>-<arch>.tar.gz`, `.zip` on Windows. The binary is stored mode `755` so it extracts ready to run, `include` files can be bundled alongside, and a SHA-256 `checksums.txt` can be attached. |
+| Supply chain | `attest = true` signs GitHub build provenance for every release asset and wires the required workflow permissions. Consumers verify with `gh attestation verify`. Unlike a checksum, it can't be forged by whoever replaced the asset. |
 
 ### Changelog & workflow
 

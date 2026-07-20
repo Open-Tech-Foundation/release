@@ -49,12 +49,14 @@ $DestPath = Join-Path $InstallDir "${BinName}.exe"
 $TmpFile = New-TemporaryFile
 try {
     $Downloaded = $false
+    $AssetUsed = ""
     foreach ($AssetName in $AssetNames) {
         $DownloadUrl = "https://github.com/$Repo/releases/latest/download/$AssetName"
         Write-Host "Downloading from $DownloadUrl..."
         try {
             Invoke-WebRequest -Uri $DownloadUrl -OutFile $TmpFile.FullName
             $Downloaded = $true
+            $AssetUsed = $AssetName
             break
         } catch {
             if (Test-Path $TmpFile.FullName) {
@@ -72,6 +74,53 @@ try {
     if ((Get-Item $TmpFile.FullName).Length -eq 0) {
         Write-Error "Downloaded file is empty; refusing to install."
         exit 1
+    }
+
+    # --- Integrity: does this asset match the checksum published beside it? ---
+    # Catches truncation and corruption. NOT an authenticity check — whoever could
+    # replace the asset could replace checksums.txt too. See the provenance check below.
+    $SumsFile = "$($TmpFile.FullName).sums"
+    try {
+        Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest/download/checksums.txt" -OutFile $SumsFile -ErrorAction Stop
+        $Expected = $null
+        foreach ($Line in Get-Content $SumsFile) {
+            $Parts = $Line -split '\s+', 2
+            if ($Parts.Count -eq 2 -and $Parts[1].Trim() -eq $AssetUsed) { $Expected = $Parts[0].Trim(); break }
+        }
+        if (-not $Expected) {
+            Write-Host "Note: $AssetUsed not listed in checksums.txt; skipping checksum verification."
+        } else {
+            $Actual = (Get-FileHash -Path $TmpFile.FullName -Algorithm SHA256).Hash.ToLower()
+            if ($Actual -ne $Expected.ToLower()) {
+                Write-Error "Checksum mismatch for $AssetUsed.`n       expected $Expected`n       actual   $Actual`n       Refusing to install."
+                exit 1
+            }
+            Write-Host "Checksum OK ($AssetUsed)."
+        }
+    } catch {
+        # No checksums.txt on this release (older releases) — nothing to compare against.
+    } finally {
+        if (Test-Path $SumsFile) { Remove-Item -Path $SumsFile -Force }
+    }
+
+    # --- Authenticity: was this asset really built by this repo's workflow? ---
+    # `gh attestation verify` checks a GitHub-signed provenance statement, which cannot
+    # be forged by someone who merely replaced the asset. Best-effort by default; set
+    # OTF_RELEASE_REQUIRE_ATTESTATION=1 to make a missing gh (or attestation) fatal.
+    $RequireAttestation = $env:OTF_RELEASE_REQUIRE_ATTESTATION -eq "1"
+    if (Get-Command gh -ErrorAction SilentlyContinue) {
+        & gh attestation verify $TmpFile.FullName --repo $Repo 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Provenance verified (built by $Repo)."
+        } else {
+            Write-Error "Build provenance could not be verified for $AssetUsed. Refusing to install. Run for details: gh attestation verify <file> --repo $Repo"
+            exit 1
+        }
+    } elseif ($RequireAttestation) {
+        Write-Error "OTF_RELEASE_REQUIRE_ATTESTATION=1 but the 'gh' CLI is not installed."
+        exit 1
+    } else {
+        Write-Host "Note: 'gh' not found; skipping provenance verification. Install the GitHub CLI, or set OTF_RELEASE_REQUIRE_ATTESTATION=1 to require it."
     }
 
     function Read-Magic($Path) {
