@@ -324,6 +324,7 @@ mod tests {
             include: Vec::new(),
         };
         let config = ReleaseConfig {
+            otf_release_version: None,
             packages: vec![entry],
             ..Default::default()
         };

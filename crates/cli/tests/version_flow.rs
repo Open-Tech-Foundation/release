@@ -187,6 +187,7 @@ fn version_flow_releases_on_a_branch_and_never_touches_main() {
         "2026-06-24",
         &VersionOptions::default(),
         &ReleaseConfig {
+            otf_release_version: None,
             hooks,
             tag_format: "{name}@{version}".to_string(),
             ..Default::default()
@@ -265,6 +266,7 @@ fn dry_run_prints_the_plan_and_writes_nothing() {
             skip_pr: false,
         },
         &ReleaseConfig {
+            otf_release_version: None,
             hooks,
             tag_format: "{name}@{version}".to_string(),
             ..Default::default()

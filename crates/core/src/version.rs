@@ -1006,6 +1006,7 @@ mod tests {
         let prompt = FakePrompt;
         let hook_runner = crate::hooks::fakes::FakeHookRunner::new();
         let config = crate::config::ReleaseConfig {
+            otf_release_version: None,
             changelog_strategy: crate::config::ChangelogStrategy::Curated,
             ..Default::default()
         };
@@ -1053,6 +1054,7 @@ mod tests {
             prs: RefCell::new(Vec::new()),
         };
         let config = crate::config::ReleaseConfig {
+            otf_release_version: None,
             default_branch: "trunk".to_string(),
             changelog_strategy: crate::config::ChangelogStrategy::Curated,
             ..Default::default()
@@ -1084,6 +1086,7 @@ mod tests {
         let adapter = FakeVersionAdapter::new(test_pkg(root, "npm-lib"));
         let git = FakeGit::new(); // on `main`
         let config = crate::config::ReleaseConfig {
+            otf_release_version: None,
             default_branch: "master".to_string(),
             changelog_strategy: crate::config::ChangelogStrategy::Curated,
             ..Default::default()
@@ -1153,6 +1156,7 @@ mod tests {
             prs: RefCell::new(Vec::new()),
         };
         let config = crate::config::ReleaseConfig {
+            otf_release_version: None,
             changelog_strategy: crate::config::ChangelogStrategy::Curated,
             ..Default::default()
         };
@@ -1255,6 +1259,7 @@ mod tests {
             ]),
         };
         let config = crate::config::ReleaseConfig {
+            otf_release_version: None,
             changelog_strategy: crate::config::ChangelogStrategy::Curated,
             ..Default::default()
         };

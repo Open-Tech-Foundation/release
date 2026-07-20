@@ -8,6 +8,34 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **workflow/init — supply chain.** Generated workflows no longer track a moving target for their
+  own tooling. Both the installer script and the release it downloads are pinned to the tool version
+  that generated the workflow:
+
+  ```yaml
+        env:
+          OTF_RELEASE_VERSION: v0.25.0
+        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/v0.25.0/install.sh | bash
+  ```
+
+  Previously every generated job fetched `install.sh` from this repo's `main` and the binary from
+  `releases/latest`. That put our default branch inside every consumer's pipeline — a push here
+  executed in their CI with nothing merged on their side — and made their releases irreproducible,
+  since the same commit could build with a different tool on a different day. Attestation does not
+  cover this; it protects the downloaded binary, not the script that fetches it.
+
+  `install.sh` and `install.ps1` now honour `OTF_RELEASE_VERSION` (a tag, or unset for `latest`,
+  which stays the default for a human running the one-line install by hand). `otf-release upgrade`
+  bumps both pins.
+- **config** — New optional `otf_release_version` overriding that pin. The default — the generating
+  binary's version — is right whenever the generator was itself a released build, which is every
+  normal repo. It breaks for a repo that generates its own workflow from an unreleased tree: the pin
+  would name a tag that does not exist yet, and the release could never install its own tooling.
+  This repo sets it for exactly that reason.
+- **ci** — The installer smoke test now asserts that a pinned version installs *that* version. A
+  silently ignored pin would fall back to `latest` and leave every consumer floating with nothing to
+  show for it.
+
 - **ci** — Added an installer smoke test (`.github/workflows/installer-smoke.yml`). It runs
   `install.sh` on Ubuntu and macOS under both `sh` and `bash`, runs `install.ps1` on Windows, and
   asserts in each case that the installer exits 0 *and* that the installed binary actually runs. A

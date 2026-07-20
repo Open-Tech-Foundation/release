@@ -513,6 +513,14 @@ pub struct PublishConfig {
 pub struct ReleaseConfig {
     /// Ecosystems enabled for this repo.
     pub adapters: Vec<Ecosystem>,
+    /// Which `otf-release` release the generated workflow installs, as a git tag (e.g. `v0.25.0`).
+    ///
+    /// Defaults to the version of the binary that generated the workflow, which for a normal repo
+    /// is exactly right — you installed a released build, so it exists. Set it explicitly when that
+    /// assumption breaks: most notably this repo, which generates its own workflow from an
+    /// unreleased working tree, so the default would pin to a tag that does not exist yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otf_release_version: Option<String>,
     /// Publishable packages that this tool must not version or publish.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skip_publish: Vec<String>,
@@ -589,6 +597,7 @@ fn default_tag_format() -> String {
 impl Default for ReleaseConfig {
     fn default() -> Self {
         Self {
+            otf_release_version: None,
             adapters: Vec::new(),
             skip_publish: Vec::new(),
             hooks: Hooks::default(),
@@ -794,6 +803,7 @@ mod tests {
     #[test]
     fn round_trips_through_toml() {
         let cfg = ReleaseConfig {
+            otf_release_version: None,
             snapshot_tag: None,
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
             legacy_tag_formats: Vec::new(),
@@ -905,6 +915,7 @@ mod tests {
     fn save_and_load_via_disk() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = ReleaseConfig {
+            otf_release_version: None,
             snapshot_tag: None,
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
             legacy_tag_formats: Vec::new(),
@@ -928,6 +939,7 @@ mod tests {
     #[test]
     fn skip_publish_marks_packages_non_publishable_and_publish_skips_them() {
         let cfg = ReleaseConfig {
+            otf_release_version: None,
             skip_publish: vec!["@scope/manual".to_string()],
             ..ReleaseConfig::default()
         };

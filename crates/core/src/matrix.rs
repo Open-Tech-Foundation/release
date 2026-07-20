@@ -82,6 +82,7 @@ mod tests {
 
     fn config_with(packages: Vec<PackageEntry>) -> ReleaseConfig {
         ReleaseConfig {
+            otf_release_version: None,
             packages,
             ..ReleaseConfig::default()
         }

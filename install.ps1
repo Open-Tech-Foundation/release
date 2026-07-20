@@ -27,6 +27,16 @@ $BareAssetNames = @(
     "otf-release-win32-${LegacyArchName}.exe"
 )
 
+# Which release to install. Unset means `latest` — right for a human running the irm line
+# by hand. Generated workflows set an exact tag so a pipeline builds with the tool version
+# its repo reviewed, and re-running an old commit behaves the way it did then.
+$Version = if ($env:OTF_RELEASE_VERSION) { $env:OTF_RELEASE_VERSION } else { "latest" }
+$ReleaseBase = if ($Version -eq "latest") {
+    "https://github.com/$Repo/releases/latest/download"
+} else {
+    "https://github.com/$Repo/releases/download/$Version"
+}
+
 # Releases ship the binary inside a .zip (the archive name drops the .exe). Older
 # releases attached the raw .exe, so try archives first and fall back to the bare
 # names — that keeps this script working against both old and new releases.
@@ -51,7 +61,7 @@ try {
     $Downloaded = $false
     $AssetUsed = ""
     foreach ($AssetName in $AssetNames) {
-        $DownloadUrl = "https://github.com/$Repo/releases/latest/download/$AssetName"
+        $DownloadUrl = "$ReleaseBase/$AssetName"
         Write-Host "Downloading from $DownloadUrl..."
         try {
             Invoke-WebRequest -Uri $DownloadUrl -OutFile $TmpFile.FullName
@@ -81,7 +91,7 @@ try {
     # replace the asset could replace checksums.txt too. See the provenance check below.
     $SumsFile = "$($TmpFile.FullName).sums"
     try {
-        Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest/download/checksums.txt" -OutFile $SumsFile -ErrorAction Stop
+        Invoke-WebRequest -Uri "$ReleaseBase/checksums.txt" -OutFile $SumsFile -ErrorAction Stop
         $Expected = $null
         foreach ($Line in Get-Content $SumsFile) {
             $Parts = $Line -split '\s+', 2

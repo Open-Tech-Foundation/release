@@ -654,6 +654,7 @@ mod tests {
 
     fn config() -> ReleaseConfig {
         ReleaseConfig {
+            otf_release_version: None,
             adapters: vec![Ecosystem::Npm],
             provider: "github".to_string(),
             snapshot_tag: Some("snapshot".to_string()),

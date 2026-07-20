@@ -196,6 +196,7 @@ fn version_then_publish_ships_exactly_the_computed_bumps() {
         today,
         &VersionOptions::default(),
         &ReleaseConfig {
+            otf_release_version: None,
             hooks: hooks.clone(),
             tag_format: "{name}@{version}".to_string(),
             ..Default::default()

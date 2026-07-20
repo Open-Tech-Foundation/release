@@ -59,6 +59,29 @@ Trigger: a merge to `main` (i.e. merging a release PR produced by
 | **No guard hack** | Asset packages are first-class publishable packages with a binary target. No `private:true`; the matrix invariant is enforced instead — `publish` refuses to ship a matrix package whose staged binaries are absent. |
 | **Stateless** | `publish` reads what to attach from `.artifacts/<pkg>/` on disk — nothing persisted. For matrix packages each target's artifact is merged back into `.artifacts/<pkg>` (`download-artifact` with `merge-multiple: true`) before packing. |
 
+## Pinned tooling
+
+Every job installs `otf-release`, and both halves of that install are **pinned** to the tool version
+that generated the workflow:
+
+```yaml
+      - name: Install otf-release
+        shell: bash
+        env:
+          OTF_RELEASE_VERSION: v0.25.0        # which release to download
+        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/v0.25.0/install.sh | bash
+                                                                                          # ^ which script to run
+```
+
+Neither tracks `main` or `latest`, and that is the point. An unpinned installer means **we** decide
+what runs in **your** CI: publishing a release, or pushing to our default branch, would change your
+next pipeline run with nothing merged on your side. Pinned, the only way your tooling changes is a
+regenerated workflow you reviewed. It also makes re-running an old commit reproducible instead of
+picking up whatever shipped since.
+
+`otf-release upgrade` bumps both pins. Override the version with
+[`otf_release_version`](./configuration.md) in `release.toml`.
+
 ## build-only (GitHub Release) shape
 
 A `build-only` package ships a **binary** release, not a registry publish — this is how

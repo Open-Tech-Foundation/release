@@ -733,6 +733,7 @@ mod tests {
 
     fn config_with(entry: PackageEntry, notes: GithubReleaseNotes) -> ReleaseConfig {
         ReleaseConfig {
+            otf_release_version: None,
             adapters: vec![Ecosystem::Generic],
             packages: vec![entry],
             tag_format: "v{version}".to_string(),

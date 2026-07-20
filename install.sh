@@ -4,6 +4,17 @@ set -eu
 REPO="Open-Tech-Foundation/release"
 BIN_NAME="otf-release"
 
+# Which release to install. Unset means `latest` — right for a human running the curl
+# line by hand. Generated workflows set an exact tag (e.g. v0.26.0) so a pipeline builds
+# with the tool version its repo actually reviewed, and re-running an old commit behaves
+# the way it did then instead of picking up whatever shipped since.
+VERSION="${OTF_RELEASE_VERSION:-latest}"
+if [ "$VERSION" = "latest" ]; then
+    RELEASE_BASE="https://github.com/$REPO/releases/latest/download"
+else
+    RELEASE_BASE="https://github.com/$REPO/releases/download/$VERSION"
+fi
+
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 
@@ -61,7 +72,7 @@ trap cleanup EXIT INT TERM
 downloaded=false
 ASSET_USED=""
 for candidate in $CANDIDATES; do
-    DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$candidate"
+    DOWNLOAD_URL="$RELEASE_BASE/$candidate"
     echo "Downloading from $DOWNLOAD_URL..."
     if curl -fL -o "$TMP_FILE" "$DOWNLOAD_URL"; then
         downloaded=true
@@ -94,7 +105,7 @@ sha256_of() {
 }
 
 SUMS_FILE="${TMP_FILE}.sums"
-if curl -fsL -o "$SUMS_FILE" "https://github.com/$REPO/releases/latest/download/checksums.txt" 2>/dev/null; then
+if curl -fsL -o "$SUMS_FILE" "$RELEASE_BASE/checksums.txt" 2>/dev/null; then
     EXPECTED="$(awk -v f="$ASSET_USED" '$2 == f {print $1}' "$SUMS_FILE" | head -n 1)"
     ACTUAL="$(sha256_of "$TMP_FILE")"
     if [ -z "$ACTUAL" ]; then

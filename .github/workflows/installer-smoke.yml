@@ -58,6 +58,19 @@ jobs:
           command -v otf-release
           otf-release --version
 
+      # Generated workflows pin OTF_RELEASE_VERSION so a pipeline is reproducible. If the pin were
+      # ever ignored the installer would silently fall back to `latest` and every consumer would be
+      # floating again with nothing to show for it — so assert the exact version landed.
+      # v0.24.0 also shipped raw (pre-archive) assets, so this exercises the fallback path too.
+      - name: A pinned version installs exactly that release
+        run: |
+          OTF_RELEASE_VERSION=v0.24.0 ${{ matrix.shell }} ./install.sh
+          got="$(otf-release --version | awk '{print $2}')"
+          if [ "$got" != "0.24.0" ]; then
+            echo "::error::pin ignored — asked for 0.24.0, installed $got"
+            exit 1
+          fi
+
   windows:
     name: install.ps1 (windows-latest)
     runs-on: windows-latest
@@ -83,6 +96,19 @@ jobs:
           if (-not (Test-Path $bin)) { throw "binary not found at $bin" }
           & $bin --version
           if ($LASTEXITCODE -ne 0) { throw "installed binary failed to run" }
+
+      - name: A pinned version installs exactly that release
+        shell: pwsh
+        env:
+          OTF_RELEASE_VERSION: v0.24.0
+        run: |
+          ./install.ps1
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 left exit code $LASTEXITCODE" }
+          $bin = Join-Path $env:USERPROFILE ".cargo\bin\otf-release.exe"
+          $got = (& $bin --version) -replace '^\S+\s+', ''
+          if ($got.Trim() -ne "0.24.0") {
+            throw "pin ignored — asked for 0.24.0, installed $got"
+          }
 
   tamper:
     name: install.sh refuses a tampered asset

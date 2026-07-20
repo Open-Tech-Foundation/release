@@ -25,7 +25,9 @@ jobs:
           fetch-depth: 0
       - name: Install otf-release
         shell: bash
-        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
+        env:
+          OTF_RELEASE_VERSION: v0.25.0
+        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/v0.25.0/install.sh | bash
       - id: check
         run: |
           echo "should_release=$(otf-release check --exclude-package otf-release)" >> "$GITHUB_OUTPUT"
@@ -41,7 +43,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install otf-release
         shell: bash
-        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
+        env:
+          OTF_RELEASE_VERSION: v0.25.0
+        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/v0.25.0/install.sh | bash
       - id: set
         run: echo "matrix=$(otf-release matrix --package otf-release)" >> "$GITHUB_OUTPUT"
 
@@ -66,11 +70,15 @@ jobs:
       - name: Install otf-release
         if: runner.os != 'Windows'
         shell: bash
-        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
+        env:
+          OTF_RELEASE_VERSION: v0.25.0
+        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/v0.25.0/install.sh | bash
       - name: Install otf-release
         if: runner.os == 'Windows'
         shell: pwsh
-        run: irm https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.ps1 | iex
+        env:
+          OTF_RELEASE_VERSION: v0.25.0
+        run: irm https://raw.githubusercontent.com/Open-Tech-Foundation/release/v0.25.0/install.ps1 | iex
       - name: Build otf-release
         if: ${{ !matrix.vm }}
         run: otf-release build --package otf-release --target ${{ matrix.name }}/${{ matrix.arch }}
@@ -106,7 +114,9 @@ jobs:
           path: .artifacts
       - name: Install otf-release
         shell: bash
-        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
+        env:
+          OTF_RELEASE_VERSION: v0.25.0
+        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/v0.25.0/install.sh | bash
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

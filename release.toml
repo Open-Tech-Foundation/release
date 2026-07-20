@@ -1,5 +1,11 @@
 adapters = ["generic"]
 tag_format = "v{version}"
+
+# This repo generates its own workflow from an unreleased working tree, so the default pin (the
+# generating binary's version) would point at a tag that does not exist yet and the release could
+# never install its own tooling. Pin to the newest *released* version instead, and bump it after a
+# release when you want CI to pick up newer tooling.
+otf_release_version = "v0.25.0"
 provider = "github"
 changelog_strategy = "curated"
 changelog_scope = "root"
