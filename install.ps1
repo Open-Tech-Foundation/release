@@ -104,23 +104,50 @@ try {
     }
 
     # --- Authenticity: was this asset really built by this repo's workflow? ---
-    # `gh attestation verify` checks a GitHub-signed provenance statement, which cannot
-    # be forged by someone who merely replaced the asset. Best-effort by default; set
-    # OTF_RELEASE_REQUIRE_ATTESTATION=1 to make a missing gh (or attestation) fatal.
+    # Three states, deliberately distinguished (see install.sh for the full rationale):
+    #   no attestation published -> nothing to check; releases can predate provenance.
+    #   published + verifies     -> good.
+    #   published + fails        -> FATAL; something replaced a signed asset.
+    # "Can't check" (no gh, or gh unauthenticated) is a warning, never a failure —
+    # treating it as fatal deadlocks the very release that would publish the first
+    # attestation. OTF_RELEASE_REQUIRE_ATTESTATION=1 makes every non-verified state fatal.
     $RequireAttestation = $env:OTF_RELEASE_REQUIRE_ATTESTATION -eq "1"
-    if (Get-Command gh -ErrorAction SilentlyContinue) {
+    function Resolve-AttestationGap($Message) {
+        if ($RequireAttestation) {
+            Write-Error "OTF_RELEASE_REQUIRE_ATTESTATION=1 and $Message"
+            exit 1
+        }
+        Write-Host "Note: $Message"
+    }
+
+    $Digest = (Get-FileHash -Path $TmpFile.FullName -Algorithm SHA256).Hash.ToLower()
+    $Attested = $false
+    try {
+        Invoke-WebRequest -Uri "https://api.github.com/repos/$Repo/attestations/sha256:$Digest" -UseBasicParsing -ErrorAction Stop | Out-Null
+        $Attested = $true
+    } catch { }
+
+    $GhPresent = [bool](Get-Command gh -ErrorAction SilentlyContinue)
+    $GhAuthed = $false
+    if ($GhPresent) {
+        & gh auth status 2>$null | Out-Null
+        $GhAuthed = ($LASTEXITCODE -eq 0)
+    }
+
+    if (-not $Attested) {
+        Resolve-AttestationGap "no build provenance is published for $AssetUsed; skipping verification."
+    } elseif (-not $GhPresent) {
+        Resolve-AttestationGap "provenance exists but the 'gh' CLI is not installed, so it cannot be verified."
+    } elseif (-not $GhAuthed) {
+        Resolve-AttestationGap "provenance exists but 'gh' is not authenticated (in GitHub Actions, set GH_TOKEN), so it cannot be verified."
+    } else {
         & gh attestation verify $TmpFile.FullName --repo $Repo 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "Provenance verified (built by $Repo)."
         } else {
-            Write-Error "Build provenance could not be verified for $AssetUsed. Refusing to install. Run for details: gh attestation verify <file> --repo $Repo"
+            Write-Error "Build provenance FAILED verification for $AssetUsed. A signed attestation exists but does not match this download. Refusing to install. Run for details: gh attestation verify <file> --repo $Repo"
             exit 1
         }
-    } elseif ($RequireAttestation) {
-        Write-Error "OTF_RELEASE_REQUIRE_ATTESTATION=1 but the 'gh' CLI is not installed."
-        exit 1
-    } else {
-        Write-Host "Note: 'gh' not found; skipping provenance verification. Install the GitHub CLI, or set OTF_RELEASE_REQUIRE_ATTESTATION=1 to require it."
     }
 
     function Read-Magic($Path) {

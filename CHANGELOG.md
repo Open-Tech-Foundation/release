@@ -8,6 +8,21 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **install — fixes a release deadlock introduced in 0.26.0.** Provenance verification treated
+  "cannot verify" as "verification failed" and aborted the install. GitHub Actions runners ship the
+  `gh` CLI but leave it unauthenticated unless `GH_TOKEN` is set, so the fatal branch was the
+  *default* branch in CI — the opposite of the documented best-effort behavior. Worse, it
+  deadlocked: the release that would publish the first attestation could not run, because installing
+  the tool already demanded one.
+
+  The scripts now distinguish three states instead of two. No provenance published for the asset
+  (any release predating attestation) is a note and installation proceeds. Provenance published but
+  uncheckable — no `gh`, or `gh` unauthenticated — is a note, since inability to verify is not
+  evidence of tampering. Provenance published and **failing** verification is fatal: that is a
+  positive signal something replaced a signed asset, not an unknown. Existence is settled with an
+  unauthenticated call to the attestations API keyed by the download's SHA-256.
+  `OTF_RELEASE_REQUIRE_ATTESTATION=1` still turns every non-verified state into a hard failure.
+
 ## [0.26.0] - 2026-07-20
 
 - **config** — New optional `executable` field for build-only packages, controlling whether the

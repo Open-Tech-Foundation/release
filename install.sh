@@ -115,26 +115,51 @@ fi
 rm -f "$SUMS_FILE"
 
 # --- Authenticity: was this asset really built by this repo's workflow? -------
-# `gh attestation verify` checks a GitHub-signed provenance statement, which cannot
-# be forged by someone who merely replaced the asset. It needs the `gh` CLI, so it
-# is best-effort by default; set OTF_RELEASE_REQUIRE_ATTESTATION=1 to make a missing
-# `gh` (or a missing attestation) a hard failure.
+# Three states, deliberately distinguished, because collapsing them either breaks
+# installs or hides tampering:
+#
+#   no attestation published  -> nothing to check (releases predating provenance).
+#   published + verifies      -> good.
+#   published + fails         -> FATAL. Something replaced a signed asset.
+#
+# "Can't check" (no gh, or gh unauthenticated — the norm inside GitHub Actions,
+# where gh exists but needs GH_TOKEN) is a warning, never a failure. Treating it as
+# fatal deadlocks CI: the release that would publish the first attestation cannot
+# run, because installing the tool would already demand one.
+# OTF_RELEASE_REQUIRE_ATTESTATION=1 makes every non-verified state fatal.
 REQUIRE_ATTESTATION="${OTF_RELEASE_REQUIRE_ATTESTATION:-0}"
-if command -v gh >/dev/null 2>&1; then
-    if gh attestation verify "$TMP_FILE" --repo "$REPO" >/dev/null 2>&1; then
-        echo "Provenance verified (built by $REPO)."
-    else
-        echo "Error: build provenance could not be verified for $ASSET_USED." >&2
-        echo "       Refusing to install. Run for details:" >&2
-        echo "       gh attestation verify <file> --repo $REPO" >&2
+
+attestation_required_failure() {
+    if [ "$REQUIRE_ATTESTATION" = "1" ]; then
+        echo "Error: OTF_RELEASE_REQUIRE_ATTESTATION=1 and $1" >&2
         exit 1
     fi
-elif [ "$REQUIRE_ATTESTATION" = "1" ]; then
-    echo "Error: OTF_RELEASE_REQUIRE_ATTESTATION=1 but the 'gh' CLI is not installed." >&2
-    exit 1
+    echo "Note: $1" >&2
+}
+
+DIGEST="$(sha256_of "$TMP_FILE")"
+ATTESTED=no
+if [ -n "$DIGEST" ] && curl -sfL -o /dev/null \
+    "https://api.github.com/repos/$REPO/attestations/sha256:$DIGEST" 2>/dev/null; then
+    ATTESTED=yes
+fi
+
+if [ "$ATTESTED" != yes ]; then
+    attestation_required_failure "no build provenance is published for $ASSET_USED; skipping verification."
+elif ! command -v gh >/dev/null 2>&1; then
+    attestation_required_failure "provenance exists but the 'gh' CLI is not installed, so it cannot be verified."
+elif ! gh auth status >/dev/null 2>&1; then
+    attestation_required_failure "provenance exists but 'gh' is not authenticated (in GitHub Actions, set GH_TOKEN), so it cannot be verified."
+elif gh attestation verify "$TMP_FILE" --repo "$REPO" >/dev/null 2>&1; then
+    echo "Provenance verified (built by $REPO)."
 else
-    echo "Note: 'gh' not found; skipping provenance verification." >&2
-    echo "      Install the GitHub CLI, or set OTF_RELEASE_REQUIRE_ATTESTATION=1 to require it." >&2
+    # Provenance is published for this digest but does not check out. Unlike the
+    # cases above this is not "unknown" — it is a positive signal of tampering.
+    echo "Error: build provenance FAILED verification for $ASSET_USED." >&2
+    echo "       A signed attestation exists but does not match this download." >&2
+    echo "       Refusing to install. Run for details:" >&2
+    echo "       gh attestation verify <file> --repo $REPO" >&2
+    exit 1
 fi
 
 # Verify we actually got an executable, not an HTML/JSON error page. This is the

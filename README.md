@@ -58,9 +58,10 @@ hand, see the [latest release](https://github.com/Open-Tech-Foundation/release/r
 
 **Verifying what you installed.** Every asset ships with a SHA-256 in `checksums.txt` and a
 GitHub-signed build provenance attestation. The install scripts check the checksum automatically,
-and verify provenance when the [`gh` CLI](https://cli.github.com) is present — set
-`OTF_RELEASE_REQUIRE_ATTESTATION=1` to make provenance mandatory rather than best-effort. To check
-a download by hand:
+and verify provenance when one is published and the [`gh` CLI](https://cli.github.com) is available
+and authenticated. A provenance that exists but **fails** to verify aborts the install; being
+unable to check one (no `gh`, or an older release with no attestation) only prints a note — set
+`OTF_RELEASE_REQUIRE_ATTESTATION=1` to make those fatal too. To check a download by hand:
 
 ```bash
 gh attestation verify otf-release-linux-x86-64.tar.gz --repo Open-Tech-Foundation/release
