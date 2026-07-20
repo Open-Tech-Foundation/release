@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-20
+
 - **targets** — Added FreeBSD build targets to the registry: `freebsd` / `x86_64`
   (`x86_64-unknown-freebsd`) and `freebsd` / `aarch64` (`aarch64-unknown-freebsd`), staged as
   `freebsd-x64` / `freebsd-arm64` and released as `<bin>-freebsd-<arch>`. Both are opt-in.
