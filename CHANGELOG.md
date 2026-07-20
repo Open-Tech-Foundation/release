@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-07-20
+
 - **workflow/init — supply chain.** Generated workflows no longer track a moving target for their
   own tooling. Both the installer script and the release it downloads are pinned to the tool version
   that generated the workflow:
