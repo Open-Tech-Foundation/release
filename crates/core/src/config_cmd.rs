@@ -32,6 +32,8 @@ pub enum PackageField {
     Command,
     Artifacts,
     Targets,
+    Checksums,
+    Attest,
     GenericManifest,
     GenericVersionField,
     GenericPublishCommand,
@@ -66,6 +68,8 @@ pub trait ConfigPrompt {
     fn tag_format(&self, current: &str) -> Result<String>;
     /// Re-pick a package's build targets, with the configured ones pre-checked.
     fn targets(&self, current: &[Target]) -> Result<Vec<Target>>;
+    /// Flip an on/off package flag, starting on its current value.
+    fn toggle(&self, prompt: &str, help: &str, current: bool) -> Result<bool>;
     fn text(&self, prompt: &str, current: &str) -> Result<String>;
 }
 
@@ -147,6 +151,10 @@ impl ConfigPrompt for StdinConfigPrompt {
 
     fn package_field(&self, package: &PackageEntry) -> Result<PackageField> {
         let mut choices = vec!["Mode", "Build command", "Artifacts", "Build targets"];
+        // Both only affect assets attached to a GitHub Release, which is a build-only concern.
+        if package.is_build_only() {
+            choices.extend(["Checksums", "Build provenance"]);
+        }
         if package.adapter == Ecosystem::Generic {
             choices.extend([
                 "Generic manifest",
@@ -161,6 +169,8 @@ impl ConfigPrompt for StdinConfigPrompt {
                 "Build command" => PackageField::Command,
                 "Artifacts" => PackageField::Artifacts,
                 "Build targets" => PackageField::Targets,
+                "Checksums" => PackageField::Checksums,
+                "Build provenance" => PackageField::Attest,
                 "Generic manifest" => PackageField::GenericManifest,
                 "Generic version field" => PackageField::GenericVersionField,
                 "Generic publish command" => PackageField::GenericPublishCommand,
@@ -304,6 +314,15 @@ impl ConfigPrompt for StdinConfigPrompt {
         crate::init::pick_targets("Build targets:", current, crate::init::EDIT_TARGETS_HELP)
     }
 
+    fn toggle(&self, prompt: &str, help: &str, current: bool) -> Result<bool> {
+        Ok(Select::new(prompt, vec!["Yes", "No"])
+            .with_starting_cursor(usize::from(!current))
+            .with_help_message(help)
+            .raw_prompt()?
+            .index
+            == 0)
+    }
+
     fn text(&self, prompt: &str, current: &str) -> Result<String> {
         Ok(Text::new(prompt).with_initial_value(current).prompt()?)
     }
@@ -388,6 +407,27 @@ fn edit_package(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConf
         PackageField::Targets => {
             package.targets = prompt.targets(&package.targets)?;
             package.matrix = !package.targets.is_empty();
+        }
+        PackageField::Checksums => {
+            // Read by `github-release` at release time, so the workflow YAML is unaffected.
+            package.checksums = prompt.toggle(
+                "Attach a checksums.txt (SHA-256)?",
+                "one combined checksums.txt covering every asset on the release",
+                package.checksums,
+            )?;
+        }
+        PackageField::Attest => {
+            package.attest = prompt.toggle(
+                "Generate signed build provenance?",
+                "proves each asset was built by this repo's workflow from this commit; verified \
+                 with `gh attestation verify <file> --repo <owner/repo>`",
+                package.attest,
+            )?;
+            if package.attest {
+                // Unlike checksums, this adds an `attestations: write` permission and a signing
+                // step to the workflow, which only `upgrade` can write.
+                println!("Run `otf-release upgrade` to regenerate the workflow with attestation.");
+            }
         }
         PackageField::GenericManifest => {
             let current = package.manifest.as_deref().unwrap_or("");
@@ -560,6 +600,7 @@ mod tests {
         strategy: RefCell<ChangelogStrategy>,
         github_release_notes: RefCell<GithubReleaseNotes>,
         targets: RefCell<Vec<Target>>,
+        toggle: RefCell<bool>,
         text: RefCell<Vec<String>>,
     }
 
@@ -575,6 +616,7 @@ mod tests {
                 strategy: RefCell::new(ChangelogStrategy::Curated),
                 github_release_notes: RefCell::new(GithubReleaseNotes::AutoGenerate),
                 targets: RefCell::new(Vec::new()),
+                toggle: RefCell::new(false),
                 text: RefCell::new(Vec::new()),
             }
         }
@@ -638,9 +680,42 @@ mod tests {
             Ok(self.targets.borrow().clone())
         }
 
+        fn toggle(&self, _prompt: &str, _help: &str, _current: bool) -> Result<bool> {
+            Ok(*self.toggle.borrow())
+        }
+
         fn text(&self, _prompt: &str, _current: &str) -> Result<String> {
             Ok(self.text.borrow_mut().remove(0))
         }
+    }
+
+    #[test]
+    fn toggles_checksums_and_attest_on_a_build_only_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut base = config();
+        base.packages[0].mode = Mode::BuildOnly;
+        base.save(tmp.path()).unwrap();
+
+        for field in [PackageField::Checksums, PackageField::Attest] {
+            orchestrate_with_prompt(
+                tmp.path(),
+                &FakePrompt {
+                    toggle: RefCell::new(true),
+                    ..package_prompt(field, vec![])
+                },
+            )
+            .unwrap();
+        }
+
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert!(cfg.packages[0].checksums);
+        assert!(cfg.packages[0].attest);
+
+        // Both are `skip_serializing_if = "is_false"`, so only a `true` reaches release.toml —
+        // absence is what "off" looks like on disk.
+        let text = std::fs::read_to_string(ReleaseConfig::path(tmp.path())).unwrap();
+        assert!(text.contains("checksums = true"), "{text}");
+        assert!(text.contains("attest = true"), "{text}");
     }
 
     fn config() -> ReleaseConfig {
