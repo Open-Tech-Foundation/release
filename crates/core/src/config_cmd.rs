@@ -6,7 +6,6 @@ use inquire::{MultiSelect, Select, Text};
 use crate::config::{
     format_tag, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode,
     PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_VERSION_FIELD,
-    TARGET_REGISTRY,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +64,8 @@ pub trait ConfigPrompt {
     fn changelog_strategy(&self, current: &ChangelogStrategy) -> Result<ChangelogStrategy>;
     fn github_release_notes(&self, current: &GithubReleaseNotes) -> Result<GithubReleaseNotes>;
     fn tag_format(&self, current: &str) -> Result<String>;
+    /// Re-pick a package's build targets, with the configured ones pre-checked.
+    fn targets(&self, current: &[Target]) -> Result<Vec<Target>>;
     fn text(&self, prompt: &str, current: &str) -> Result<String>;
 }
 
@@ -299,6 +300,10 @@ impl ConfigPrompt for StdinConfigPrompt {
         }
     }
 
+    fn targets(&self, current: &[Target]) -> Result<Vec<Target>> {
+        crate::init::pick_targets("Build targets:", current, crate::init::EDIT_TARGETS_HELP)
+    }
+
     fn text(&self, prompt: &str, current: &str) -> Result<String> {
         Ok(Text::new(prompt).with_initial_value(current).prompt()?)
     }
@@ -381,9 +386,7 @@ fn edit_package(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConf
             package.artifacts = prompt.text("Artifacts glob:", &package.artifacts)?;
         }
         PackageField::Targets => {
-            let current = targets_to_text(&package.targets);
-            let edited = prompt.text("Targets (e.g. linux-x86_64, macos-aarch64):", &current)?;
-            package.targets = parse_targets(&edited);
+            package.targets = prompt.targets(&package.targets)?;
             package.matrix = !package.targets.is_empty();
         }
         PackageField::GenericManifest => {
@@ -513,38 +516,6 @@ fn optional_text(text: String) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-fn targets_to_text(targets: &[Target]) -> String {
-    targets
-        .iter()
-        .map(|t| format!("{}-{}", t.name, t.arch))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Inverse of [`targets_to_text`]. Registry names may themselves contain a hyphen (`linux-musl`),
-/// so splitting on the *first* one reads `linux-musl-x86_64` as `(linux, musl-x86_64)` — a pair no
-/// registry row matches, which [`Target::resolved`] happily returns with an empty triple and
-/// runner. Match the whole token against the registry first so those rows round-trip; fall back to
-/// splitting on the last hyphen for custom pairs (no arch contains one).
-fn parse_targets(text: &str) -> Vec<Target> {
-    text.split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| {
-            let known = TARGET_REGISTRY
-                .iter()
-                .find(|t| s == format!("{}-{}", t.name, t.arch));
-            match known {
-                Some(info) => Some(Target::resolved(info.name, info.arch)),
-                None => {
-                    let (name, arch) = s.rsplit_once('-')?;
-                    Some(Target::resolved(name, arch))
-                }
-            }
-        })
-        .collect()
-}
-
 fn publish_ignore_path_packages(config: &ReleaseConfig) -> Vec<PackageEntry> {
     let mut names: Vec<String> = config.publish.ignore_paths.keys().cloned().collect();
     names.extend(config.packages.iter().map(|pkg| pkg.name.clone()));
@@ -579,30 +550,6 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    #[test]
-    fn every_registry_target_survives_a_text_round_trip() {
-        // Opening the Targets prompt and confirming without edits must be a no-op. `linux-musl` is
-        // the row that regressed: its hyphenated name made a first-hyphen split resolve to an
-        // empty triple, silently corrupting the config.
-        for info in TARGET_REGISTRY {
-            let original = Target::resolved(info.name, info.arch);
-            let parsed = parse_targets(&targets_to_text(std::slice::from_ref(&original)));
-            assert_eq!(parsed.len(), 1, "{}-{} vanished", info.name, info.arch);
-            assert_eq!(parsed[0], original, "{}-{} changed", info.name, info.arch);
-            assert_eq!(parsed[0].triple(), info.triple);
-            assert!(!parsed[0].runner().is_empty());
-        }
-    }
-
-    #[test]
-    fn parse_targets_still_accepts_custom_pairs() {
-        // A pair outside the registry keeps its name/arch so hand-written targets aren't dropped.
-        let parsed = parse_targets("solaris-x86_64");
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].name, "solaris");
-        assert_eq!(parsed[0].arch, "x86_64");
-    }
-
     struct FakePrompt {
         actions: RefCell<Vec<ConfigAction>>,
         package: RefCell<Option<String>>,
@@ -612,6 +559,7 @@ mod tests {
         scope: RefCell<ChangelogScope>,
         strategy: RefCell<ChangelogStrategy>,
         github_release_notes: RefCell<GithubReleaseNotes>,
+        targets: RefCell<Vec<Target>>,
         text: RefCell<Vec<String>>,
     }
 
@@ -626,6 +574,7 @@ mod tests {
                 scope: RefCell::new(ChangelogScope::Package),
                 strategy: RefCell::new(ChangelogStrategy::Curated),
                 github_release_notes: RefCell::new(GithubReleaseNotes::AutoGenerate),
+                targets: RefCell::new(Vec::new()),
                 text: RefCell::new(Vec::new()),
             }
         }
@@ -683,6 +632,10 @@ mod tests {
 
         fn tag_format(&self, _current: &str) -> Result<String> {
             Ok(self.text.borrow_mut().remove(0))
+        }
+
+        fn targets(&self, _current: &[Target]) -> Result<Vec<Target>> {
+            Ok(self.targets.borrow().clone())
         }
 
         fn text(&self, _prompt: &str, _current: &str) -> Result<String> {
@@ -771,14 +724,28 @@ mod tests {
         cfg = ReleaseConfig::load(tmp.path()).unwrap();
         assert_eq!(cfg.packages[0].artifacts, "dist/**");
 
+        // The picker returns resolved targets, so the saved rows carry their triple and runner —
+        // the config can't end up with a half-populated target.
+        let picked = vec![
+            Target::resolved("linux", "x86_64"),
+            Target::resolved("linux-musl", "x86_64"),
+        ];
         orchestrate_with_prompt(
             tmp.path(),
-            &package_prompt(PackageField::Targets, vec!["linux-x86_64, macos-aarch64"]),
+            &FakePrompt {
+                targets: RefCell::new(picked),
+                ..package_prompt(PackageField::Targets, vec![])
+            },
         )
         .unwrap();
         cfg = ReleaseConfig::load(tmp.path()).unwrap();
         assert!(cfg.packages[0].matrix);
         assert_eq!(cfg.packages[0].targets.len(), 2);
+        assert_eq!(
+            cfg.packages[0].targets[1].triple(),
+            "x86_64-unknown-linux-musl"
+        );
+        assert_eq!(cfg.packages[0].targets[1].runner(), "ubuntu-latest");
 
         orchestrate_with_prompt(
             tmp.path(),

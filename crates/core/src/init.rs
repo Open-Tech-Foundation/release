@@ -611,25 +611,32 @@ fn release_output(name: &str) -> String {
     format!("release_{}", slug(name).replace('-', "_"))
 }
 
-/// Multi-select build targets from the built-in registry, returning fully-resolved [`Target`]s
-/// (triple/runner/stage_as/ext/cross all filled). 32-bit targets are offered but off by default.
-fn select_targets(prompt: &str) -> Result<Vec<Target>> {
-    let defaults: Vec<usize> = TARGET_REGISTRY
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| t.default_on)
-        .map(|(i, _)| i)
-        .collect();
+/// The target picker shared by `init` and `config`, returning fully-resolved [`Target`]s
+/// (triple/runner/stage_as/ext/cross all filled).
+///
+/// Rows are the registry in registry order, with `already_on` pre-checked. Any target in
+/// `already_on` that the registry does *not* know — hand-written into `release.toml` with an
+/// explicit triple — is appended as its own row rather than dropped, so re-editing a config can
+/// never silently discard a custom target.
+pub(crate) fn pick_targets(prompt: &str, already_on: &[Target], help: &str) -> Result<Vec<Target>> {
     let labels: Vec<String> = TARGET_REGISTRY
         .iter()
         .map(|t| format!("{} - {}-{}", t.label, t.name, t.arch))
         .collect();
+    let checked: Vec<usize> = TARGET_REGISTRY
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            already_on
+                .iter()
+                .any(|on| on.name == t.name && on.arch == t.arch)
+        })
+        .map(|(i, _)| i)
+        .collect();
+
     let selected = MultiSelect::new(prompt, labels)
-        .with_default(&defaults)
-        .with_help_message(
-            "the widely-supported platforms are pre-selected; \
-             space toggles · enter confirm",
-        )
+        .with_default(&checked)
+        .with_help_message(help)
         .raw_prompt()?;
     Ok(selected
         .iter()
@@ -638,6 +645,17 @@ fn select_targets(prompt: &str) -> Result<Vec<Target>> {
             Target::resolved(info.name, info.arch)
         })
         .collect())
+}
+
+/// Multi-select build targets for a new package. 32-bit and niche targets are offered but off by
+/// default; see [`TargetInfo::default_on`].
+fn select_targets(prompt: &str) -> Result<Vec<Target>> {
+    let defaults: Vec<Target> = TARGET_REGISTRY
+        .iter()
+        .filter(|t| t.default_on)
+        .map(|t| Target::resolved(t.name, t.arch))
+        .collect();
+    pick_targets(prompt, &defaults, INIT_TARGETS_HELP)
 }
 
 /// The preliminary job that checks if a release is needed, guarding the expensive build steps.
@@ -1538,6 +1556,12 @@ pub struct StdinInitPrompt;
 
 const MULTI_HELP: &str = "↑↓ move · space toggle · enter confirm";
 const SELECT_HELP: &str = "↑↓ move · enter select";
+
+const INIT_TARGETS_HELP: &str =
+    "the widely-supported platforms are pre-selected; space toggles · enter confirm";
+pub(crate) const EDIT_TARGETS_HELP: &str =
+    "checked = built for that platform. Unchecking one drops it from the matrix on the next \
+     `otf-release upgrade`. ↑↓ move · space toggle · enter confirm";
 
 const BUILD_PKGS_HELP: &str =
     "select packages that must produce artifacts first — for example a prebuilt binary, generated \
