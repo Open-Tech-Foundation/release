@@ -17,7 +17,7 @@ if ($Arch -eq 9) {
     exit 1
 }
 
-$AssetNames = @(
+$BareAssetNames = @(
     "${BinName}-windows-${PublicArchName}.exe",
     "windows-${ArchName}.exe",
     "win32-${ArchName}.exe",
@@ -26,6 +26,15 @@ $AssetNames = @(
     "otf-release-win32-${ArchName}.exe",
     "otf-release-win32-${LegacyArchName}.exe"
 )
+
+# Releases ship the binary inside a .zip (the archive name drops the .exe). Older
+# releases attached the raw .exe, so try archives first and fall back to the bare
+# names — that keeps this script working against both old and new releases.
+$AssetNames = @()
+foreach ($Bare in $BareAssetNames) {
+    $AssetNames += ($Bare -replace '\.exe$', '') + ".zip"
+}
+$AssetNames += $BareAssetNames
 
 $InstallDir = Join-Path $env:USERPROFILE ".cargo\bin"
 if (-not (Test-Path $InstallDir)) {
@@ -65,12 +74,36 @@ try {
         exit 1
     }
 
-    $fs = [System.IO.File]::OpenRead($TmpFile.FullName)
-    try {
-        $b0 = $fs.ReadByte()
-        $b1 = $fs.ReadByte()
-    } finally {
-        $fs.Dispose()
+    function Read-Magic($Path) {
+        $fs = [System.IO.File]::OpenRead($Path)
+        try { return @($fs.ReadByte(), $fs.ReadByte()) } finally { $fs.Dispose() }
+    }
+
+    $b0, $b1 = Read-Magic $TmpFile.FullName
+
+    # A .zip asset ("PK") holds the .exe under its own name; unpack it and carry on
+    # with the extracted file, so the executable check below applies to the real binary.
+    $ExtractDir = $null
+    if ($b0 -eq 0x50 -and $b1 -eq 0x4B) {
+        $ExtractDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+        New-Item -ItemType Directory -Force -Path $ExtractDir | Out-Null
+        $ZipCopy = "$($TmpFile.FullName).zip"
+        Copy-Item -Path $TmpFile.FullName -Destination $ZipCopy -Force
+        try {
+            Expand-Archive -Path $ZipCopy -DestinationPath $ExtractDir -Force
+        } catch {
+            Write-Error "Downloaded archive could not be extracted."
+            exit 1
+        } finally {
+            Remove-Item -Path $ZipCopy -Force -ErrorAction SilentlyContinue
+        }
+        $Extracted = Get-ChildItem -Path $ExtractDir -Recurse -Filter "${BinName}.exe" | Select-Object -First 1
+        if (-not $Extracted) {
+            Write-Error "Archive did not contain a ${BinName}.exe binary."
+            exit 1
+        }
+        Move-Item -Path $Extracted.FullName -Destination $TmpFile.FullName -Force
+        $b0, $b1 = Read-Magic $TmpFile.FullName
     }
 
     # Windows PE executables start with "MZ" (0x4D 0x5A).
@@ -85,6 +118,7 @@ try {
     Move-Item -Path $TmpFile.FullName -Destination $DestPath -Force
 } finally {
     if (Test-Path $TmpFile.FullName) { Remove-Item -Path $TmpFile.FullName -Force }
+    if ($ExtractDir -and (Test-Path $ExtractDir)) { Remove-Item -Path $ExtractDir -Recurse -Force }
 }
 
 Write-Host "$BinName installed successfully to $DestPath"

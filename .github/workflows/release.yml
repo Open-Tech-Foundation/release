@@ -7,53 +7,45 @@ on:
 permissions:
   contents: write  # create tags and GitHub Releases
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   check-release:
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.check.outputs.should_release }}
-      version: ${{ steps.check.outputs.version }}
+      release_otf_release: ${{ steps.check.outputs.release_otf_release }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install otf-release
+        shell: bash
+        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
       - id: check
         run: |
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [ "$version" = "0.0.0" ]; then
-            echo "Version is 0.0.0 (unreleased); skipping build."
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          tag="v$version"
-          if git ls-remote --tags origin "refs/tags/$tag" | grep -q .; then
-            echo "Tag $tag already exists; nothing to release."
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "should_release=$(otf-release check --exclude-package otf-release)" >> "$GITHUB_OUTPUT"
+          echo "release_otf_release=$(otf-release check --package otf-release)" >> "$GITHUB_OUTPUT"
 
   matrix-otf-release:
     needs: [check-release]
-    if: needs.check-release.outputs.should_release == 'true'
+    if: needs.check-release.outputs.release_otf_release == 'true'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
       - name: Install otf-release
-        if: runner.os != 'Windows'
         shell: bash
         run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
-      - name: Install otf-release
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: irm https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.ps1 | iex
       - id: set
         run: echo "matrix=$(otf-release matrix --package otf-release)" >> "$GITHUB_OUTPUT"
 
   build-otf-release:
     needs: [check-release, matrix-otf-release]
-    if: needs.check-release.outputs.should_release == 'true'
+    if: needs.check-release.outputs.release_otf_release == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -66,6 +58,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-${{ matrix.arch }}-linux-gnu
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !matrix.vm }}
         with:
           targets: ${{ matrix.triple }}
       - name: Install otf-release
@@ -77,15 +70,30 @@ jobs:
         shell: pwsh
         run: irm https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.ps1 | iex
       - name: Build otf-release
+        if: ${{ !matrix.vm }}
         run: otf-release build --package otf-release --target ${{ matrix.name }}/${{ matrix.arch }}
+      - name: Build otf-release in a freebsd VM
+        if: ${{ matrix.vm && matrix.name == 'freebsd' }}
+        uses: vmactions/freebsd-vm@v1
+        with:
+          arch: ${{ matrix.arch }}
+          usesh: true
+          copyback: true
+          prepare: |
+            pkg install -y rust
+          run: |
+            cargo build --release --target ${{ matrix.triple }}
+      - name: Stage otf-release
+        if: ${{ matrix.vm }}
+        run: otf-release build --package otf-release --target ${{ matrix.name }}/${{ matrix.arch }} --stage-only
       - uses: actions/upload-artifact@v4
         with:
           name: otf-release-${{ matrix.name }}-${{ matrix.arch }}
           path: .artifacts/otf-release
 
-  github-release:
+  github-release-otf-release:
     needs: [check-release, build-otf-release]
-    if: needs.check-release.outputs.should_release == 'true'
+    if: needs.check-release.outputs.release_otf_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -94,67 +102,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: .artifacts
+      - name: Install otf-release
+        shell: bash
+        run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          version="${{ needs.check-release.outputs.version }}"
-          tag="v$version"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists; nothing to do."
-          else
-            notes_file="$(mktemp)"
-            changelog_names=("")
-            changelog_files=("CHANGELOG.md")
-            for i in "${!changelog_files[@]}"; do
-              changelog_file="${changelog_files[$i]}"
-              changelog_name="${changelog_names[$i]}"
-              if [ -z "$changelog_file" ] || [ ! -f "$changelog_file" ]; then
-                continue
-              fi
-              section="$(awk -v version="$version" '
-                $0 ~ "^## \\[?" version "\\]?" { in_section=1; next }
-                in_section && /^## / { exit }
-                in_section { print }
-              ' "$changelog_file" | sed '/./,$!d')"
-              if [ -n "$section" ]; then
-                if [ -n "$changelog_name" ]; then
-                  printf '### %s\n\n%s\n\n' "$changelog_name" "$section" >> "$notes_file"
-                else
-                  printf '%s\n' "$section" >> "$notes_file"
-                fi
-              fi
-            done
-            if [ -s "$notes_file" ]; then
-              notes_arg=(--notes-file "$notes_file")
-            else
-              echo "No configured changelog notes found for $version; using GitHub generated notes."
-              notes_arg=(--generate-notes)
-            fi
-            rm -rf ".flat-artifacts-otf-release"
-            mkdir -p ".flat-artifacts-otf-release"
-            shopt -s nullglob globstar
-            for file in .artifacts/otf-release*/**/*; do
-              if [ -f "$file" ]; then
-                dir_name=$(basename "$(dirname "$file")")
-                file_name=$(basename "$file")
-                ext="${file_name##*.}"
-                os_part="${dir_name%-*}"
-                arch_part="${dir_name##*-}"
-                case "$os_part" in
-                  darwin) os_part="macos" ;;
-                  win32) os_part="windows" ;;
-                esac
-                case "$arch_part" in
-                  x64) arch_part="x86-64" ;;
-                esac
-                asset_name="otf-release-${os_part}-${arch_part}"
-                if [ "$ext" = "$file_name" ]; then
-                  cp "$file" ".flat-artifacts-otf-release/${asset_name}"
-                else
-                  cp "$file" ".flat-artifacts-otf-release/${asset_name}.${ext}"
-                fi
-              fi
-            done
-            gh release create "$tag" --target main --title "$tag" "${notes_arg[@]}" .flat-artifacts-otf-release/*
-          fi
+        run: otf-release github-release --package otf-release --artifacts-dir .artifacts
+

@@ -37,3 +37,9 @@ arch = "aarch64"
 [[package.targets]]
 name = "windows"
 arch = "x86_64"
+
+# Built natively inside a FreeBSD guest on the Linux runner (vmactions/freebsd-vm).
+# x86_64 only for now: the aarch64 leg is fully emulated and much slower.
+[[package.targets]]
+name = "freebsd"
+arch = "x86_64"

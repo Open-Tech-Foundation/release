@@ -8,6 +8,19 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **install — required for 0.24.0 → next.** `install.sh` and `install.ps1` now unpack archive
+  assets. Since 0.24.0 made archives the default, the next release publishes
+  `otf-release-<os>-<arch>.tar.gz` / `.zip`, which the old installers could not fetch (they
+  requested the bare name and 404'd) or validate (a gzip fails the ELF/PE magic check). Both scripts
+  now try the archive name first, fall back to the bare name so older releases still install, and
+  extract the binary before the existing "is this really an executable" guard runs. `self-update`
+  reruns these scripts, so it is fixed by the same change. **Without this, the release after 0.24.0
+  would have broken every `curl install.sh | bash`, including the tool's own CI jobs.**
+- **install** — `install.sh` recognizes FreeBSD (`uname -s` = `freebsd`), so the FreeBSD asset is
+  installable rather than published-but-unreachable.
+- **self** — Added a FreeBSD x86_64 target to this repo's own `release.toml`, so the VM build path
+  is exercised by a real release. aarch64 is left off: it is fully emulated and much slower.
+
 ## [0.24.0] - 2026-07-20
 
 - **github-release — BREAKING.** Build-only binaries now ship as **archives by default**: a package
