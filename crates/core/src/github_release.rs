@@ -271,7 +271,10 @@ fn stage_assets(artifacts_dir: &Path, entry: &PackageEntry, root: &Path) -> Resu
                 // The binary keeps its own name inside the archive; includes keep their repo path.
                 let mut members = vec![(file_name.to_string(), src.clone())];
                 members.extend(includes.iter().cloned());
-                write_archive(ext, &dest, &members, file_name)?;
+                // A brotli-staged member is compressed data the install step decompresses, not a
+                // program — marking it executable would be meaningless.
+                let exec = entry.compress.is_none().then_some(file_name);
+                write_archive(ext, &dest, &members, exec)?;
                 assets.push(dest);
             }
             None => {
@@ -388,20 +391,25 @@ fn map_os_arch(stage: &str) -> (String, String) {
 
 /// Write `members` (each `(name_inside_archive, source_file)`) into `dest` as a `.tar.gz` or `.zip`
 /// (chosen by `ext`). Executable bits are preserved from the source files.
-/// `exec_name` is the member that must land executable regardless of its mode on disk.
+/// `exec_name` names the member that must land executable regardless of its mode on disk — or
+/// `None` when the archive contains no executable at all.
 ///
 /// That override is load-bearing, not defensive: the staged binary reaches this job through
 /// `upload-artifact`/`download-artifact`, which zip the tree and **drop POSIX permissions**, so the
 /// file is always mode 644 here no matter what the build produced. Without forcing it, every
 /// extracted binary would need a `chmod +x` — the exact papercut archiving is meant to remove.
+///
+/// It is deliberately one named member rather than "everything": `include` files (a README, a
+/// LICENSE) keep their own mode, and a `compress = "brotli"` package stages a `.br` blob that is
+/// data, not a program, so nothing in its archive is marked executable.
 fn write_archive(
     ext: &str,
     dest: &Path,
     members: &[(String, PathBuf)],
-    exec_name: &str,
+    exec_name: Option<&str>,
 ) -> Result<()> {
     let mode_for = |name: &str, src: &Path| -> u32 {
-        if name == exec_name {
+        if Some(name) == exec_name {
             0o755
         } else {
             unix_mode(src).unwrap_or(0o644)
@@ -528,7 +536,7 @@ mod tests {
         ];
 
         let tgz = dir.path().join("out.tar.gz");
-        write_archive("tar.gz", &tgz, &members, "otf-release").unwrap();
+        write_archive("tar.gz", &tgz, &members, Some("otf-release")).unwrap();
         let decoder = flate2::read::GzDecoder::new(std::fs::File::open(&tgz).unwrap());
         let mut modes = std::collections::HashMap::new();
         for entry in tar::Archive::new(decoder).entries().unwrap() {
@@ -542,8 +550,23 @@ mod tests {
         );
         assert_eq!(modes["README.md"], 0o644, "include files keep their mode");
 
+        // `None` means the archive holds no program at all (a brotli-staged `.br` blob), so
+        // nothing gets the bit — not even the first member.
+        let none_marked = dir.path().join("none.tar.gz");
+        write_archive("tar.gz", &none_marked, &members, None).unwrap();
+        let decoder = flate2::read::GzDecoder::new(std::fs::File::open(&none_marked).unwrap());
+        for entry in tar::Archive::new(decoder).entries().unwrap() {
+            let e = entry.unwrap();
+            assert_eq!(
+                e.header().mode().unwrap() & 0o111,
+                0,
+                "{:?} must not be executable",
+                e.path().unwrap()
+            );
+        }
+
         let zipped = dir.path().join("out.zip");
-        write_archive("zip", &zipped, &members, "otf-release").unwrap();
+        write_archive("zip", &zipped, &members, Some("otf-release")).unwrap();
         let mut zr = zip::ZipArchive::new(std::fs::File::open(&zipped).unwrap()).unwrap();
         assert_eq!(
             zr.by_name("otf-release").unwrap().unix_mode().unwrap() & 0o777,
