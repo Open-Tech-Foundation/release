@@ -6,6 +6,7 @@ use inquire::{MultiSelect, Select, Text};
 use crate::config::{
     format_tag, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode,
     PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_VERSION_FIELD,
+    TARGET_REGISTRY,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -520,13 +521,26 @@ fn targets_to_text(targets: &[Target]) -> String {
         .join(", ")
 }
 
+/// Inverse of [`targets_to_text`]. Registry names may themselves contain a hyphen (`linux-musl`),
+/// so splitting on the *first* one reads `linux-musl-x86_64` as `(linux, musl-x86_64)` — a pair no
+/// registry row matches, which [`Target::resolved`] happily returns with an empty triple and
+/// runner. Match the whole token against the registry first so those rows round-trip; fall back to
+/// splitting on the last hyphen for custom pairs (no arch contains one).
 fn parse_targets(text: &str) -> Vec<Target> {
     text.split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .filter_map(|s| {
-            let (name, arch) = s.split_once('-')?;
-            Some(Target::resolved(name, arch))
+            let known = TARGET_REGISTRY
+                .iter()
+                .find(|t| s == format!("{}-{}", t.name, t.arch));
+            match known {
+                Some(info) => Some(Target::resolved(info.name, info.arch)),
+                None => {
+                    let (name, arch) = s.rsplit_once('-')?;
+                    Some(Target::resolved(name, arch))
+                }
+            }
         })
         .collect()
 }
@@ -564,6 +578,30 @@ fn publish_ignore_path_packages(config: &ReleaseConfig) -> Vec<PackageEntry> {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn every_registry_target_survives_a_text_round_trip() {
+        // Opening the Targets prompt and confirming without edits must be a no-op. `linux-musl` is
+        // the row that regressed: its hyphenated name made a first-hyphen split resolve to an
+        // empty triple, silently corrupting the config.
+        for info in TARGET_REGISTRY {
+            let original = Target::resolved(info.name, info.arch);
+            let parsed = parse_targets(&targets_to_text(std::slice::from_ref(&original)));
+            assert_eq!(parsed.len(), 1, "{}-{} vanished", info.name, info.arch);
+            assert_eq!(parsed[0], original, "{}-{} changed", info.name, info.arch);
+            assert_eq!(parsed[0].triple(), info.triple);
+            assert!(!parsed[0].runner().is_empty());
+        }
+    }
+
+    #[test]
+    fn parse_targets_still_accepts_custom_pairs() {
+        // A pair outside the registry keeps its name/arch so hand-written targets aren't dropped.
+        let parsed = parse_targets("solaris-x86_64");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "solaris");
+        assert_eq!(parsed[0].arch, "x86_64");
+    }
 
     struct FakePrompt {
         actions: RefCell<Vec<ConfigAction>>,
