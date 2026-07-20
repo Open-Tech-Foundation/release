@@ -35,15 +35,18 @@ For each selected build-only package, in order:
    - `auto-generate` → GitHub-generated notes.
    A curated/semantic source that turns up empty falls back to GitHub-generated notes rather than
    shipping an empty body.
-5. **Renames the staged binaries** — the `bin/<stage_as>/<bin>[.ext]` tree each build leg uploaded —
-   into OS/arch-named assets: `<bin>-<os>-<arch>[.ext]`, mapping `darwin`→`macos`, `win32`→`windows`,
-   `x64`→`x86-64` (e.g. `esrun-linux-x86-64`, `esrun-windows-x86-64.exe`, `esrun-macos-arm64`).
+5. **Packages the staged binaries** — the `bin/<stage_as>/<bin>[.ext]` tree each build leg uploaded —
+   into OS/arch-named assets, mapping `darwin`→`macos`, `win32`→`windows`, `x64`→`x86-64`. By
+   default each becomes an archive: `esrun-linux-x86-64.tar.gz`, `esrun-macos-arm64.tar.gz`,
+   `esrun-windows-x86-64.zip`.
 6. **Creates the Release** on `main` with those assets attached.
 
 ## Packaging (archives & checksums)
 
-By default each staged binary is attached as a raw, renamed file. A build-only package can instead
-ship archives and a checksums file — the features the hand-written release scripts used — via
+**Build-only binaries ship as archives by default** — `archive = "auto"` is assumed when the key is
+absent, so every asset carries an extension and keeps its executable bit. (A raw GitHub Release
+asset loses the executable bit, forcing a `chmod +x` on every install.) Set the key only to pin one
+format for every target, and add `checksums`/`include` as needed, via
 [`release.toml`](../configuration.md):
 
 ```toml
@@ -52,20 +55,26 @@ name      = "esrun"
 mode      = "build-only"
 matrix    = true
 bin_name  = "esrun"
-archive   = "auto"                    # tar.gz for Unix targets, zip for Windows
+archive   = "auto"                    # the default — tar.gz for Unix targets, zip for Windows
 checksums = true                      # attach a combined checksums.txt (SHA-256)
 include   = ["README.md", "LICENSE", "types/*.d.ts"]   # bundled inside each archive
 ```
 
-- **`archive`** — `"tar.gz"`, `"zip"`, or `"auto"`. Each target becomes `<bin>-<os>-<arch>.tar.gz`
-  (or `.zip`); the binary keeps its own name inside the archive, with its executable bit preserved.
+- **`archive`** — `"tar.gz"`, `"zip"`, or `"auto"` (the default). Each target becomes
+  `<bin>-<os>-<arch>.tar.gz` (or `.zip`); the binary keeps its own name inside the archive, with its
+  executable bit preserved. There is currently no way to attach a raw, extensionless binary.
 - **`include`** — extra files bundled beside the binary inside every archive, each keeping its
   repo-relative path (so `types/*.d.ts` stays under `types/`). Globs are expanded from the repo root.
 - **`checksums`** — writes a `sha256sum`-style `checksums.txt` (`<hex>  <asset>`) covering every
   attached asset and adds it to the release.
 
-The generated workflow does not change when you enable these — the binary reads them from
+The generated workflow does not change when you adjust these — the binary reads them from
 `release.toml`, so the release job stays the same thin call.
+
+> **Upgrading from before archives were the default:** asset names gain an extension
+> (`esrun-linux-x86-64` → `esrun-linux-x86-64.tar.gz`). Anything that downloads a release asset by
+> name — an install script, a README `curl` line, a Dockerfile — must be updated, and must now
+> unpack the archive.
 
 ## In the workflow
 

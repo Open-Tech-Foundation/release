@@ -26,6 +26,28 @@ a release PR, and a publish/release workflow scaffold. Implemented in
   `Cargo.lock` exists, `otf-release version` runs `cargo update --workspace` so the lockfile is
   refreshed in the release commit.
 
+> ### ⚠️ Not for a Cargo workspace with internal path dependencies
+>
+> "No dependency graph or ranges" is the catch. If your root `Cargo.toml` pins internal crates —
+>
+> ```toml
+> [workspace.dependencies]
+> my-core = { path = "crates/core", version = "0.9.0" }
+> ```
+>
+> — the generic adapter bumps `[workspace.package] version` and **leaves those pins at the old
+> version**, because `update_dep_range` is a no-op here. The workspace then fails to resolve at all:
+>
+> ```
+> error: failed to select a version for the requirement `my-core = "^0.9.0"`
+> candidate versions found which didn't match: 0.10.0
+> ```
+>
+> Use the [**cargo** adapter](./cargo.md) instead — it reconciles those pins. You do **not** have to
+> publish to crates.io to use it: set `mode = "build-only"` on the package, and list any library
+> crates in `skip_publish` (`init` offers this automatically). The generic adapter is the right
+> choice for a Cargo project only when it has no internal path dependencies.
+
 ## `release.toml`
 
 ```toml

@@ -3,9 +3,10 @@
 Reference documentation for `otf-release`, the manual-bump, changelog-aware release CLI for
 polyglot monorepos.
 
-> **Status:** The implemented command surface includes `init`, `version`, `publish`, `matrix`,
-> `build`, `snapshot`, `config`, `upgrade`, and `self-update`. The implemented adapters are
-> **npm**, **cargo**, and **generic**. GitHub is the only fully implemented forge provider.
+> **Status:** The implemented command surface includes `init`, `version`, `check`, `publish`,
+> `matrix`, `build`, `github-release`, `snapshot`, `config`, `upgrade`, and `self-update`. The
+> implemented adapters are **npm**, **cargo**, **jsr**, and **generic**. GitHub is the only fully
+> implemented forge provider.
 
 ## Start here
 

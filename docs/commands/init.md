@@ -31,25 +31,37 @@ otf-release init [--force]
    For each selected package, prompt for:
    - **mode** — `publish` (build, then push to the ecosystem's registry) or **`build-only`**
      (build, then attach the artifacts to a **GitHub Release** — no registry push);
-   - **build matrix?** — if yes, the **target triples** (a default set, each marked `# edit me`);
-   - the **build command** and the **artifacts** glob to stage.
-4. **For the generic adapter** (if enabled): `init` **scans the repo** for recognized manifests that
+   - **build matrix?** — if yes, pick targets from the built-in registry. Each selected target is
+     written with every reconciled field (triple, runner, `stage_as`, `ext`, `cross`, `vm`) already
+     filled in — the tool owns that mapping, so there is nothing to hand-tune. Niche targets (musl,
+     FreeBSD, 32-bit, `win32-arm64`) are offered but off by default;
+   - the **build command** and the **artifacts** glob to stage;
+   - for `build-only` packages: the **archive format** (`auto` / `tar.gz` / `zip` — binaries always
+     ship as archives), any **extra files** to bundle inside each archive, and whether to attach a
+     **`checksums.txt`**.
+4. **Offer `skip_publish`** — asked only when the repo configured a `build-only` package *and* other
+   discovered crates are still publishable. Those crates are listed (pre-selected) and your answer is
+   recorded in `release.toml`. This matters for a binary-distribution Cargo workspace: its library
+   crates carry no `publish = false`, so without this they would be pushed to crates.io on the first
+   `publish` run. Skipped packages are still **versioned** in lockstep — only the push is suppressed.
+   A repo that publishes everything is never asked.
+5. **For the generic adapter** (if enabled): `init` **scans the repo** for recognized manifests that
    carry a version and presents them in a multi-select to **import** — so you don't hand-type
    manifest paths (single project or monorepo). Generic is the *custom-way* path, so the scan spans
    **all** project types (`Cargo.toml`, `package.json`, `deno.json`, `pyproject.toml`, …), not just
    ones lacking a native adapter. Per imported package you supply only the optional build/artifacts
    and publish command; you can also **add packages by hand**. See
    [adapters/generic.md](../adapters/generic.md).
-5. **Persist `release.toml`** and **generate `release.yml`** from it. Both writes are guarded:
+6. **Persist `release.toml`** and **generate `release.yml`** from it. Both writes are guarded:
    re-running warns before overwrite (`--force` to replace).
-6. **Choose a global git tag format** from common options: `v{version}`, `{version}`,
+7. **Choose a global git tag format** from common options: `v{version}`, `{version}`,
    `{name}@{version}`, or `{name}@v{version}` (plus custom input). `init` inspects existing local
    tags and marks the matching pattern as suggested when it can. With no tags, multi-package repos
    default to `{name}@{version}` to avoid tag collisions. If you edit a detected pattern to migrate
    schemes, the detected pattern is saved as `legacy_tag_formats` so release history still works.
-7. **Choose where release notes are maintained**: one root `CHANGELOG.md`, or per-package
+8. **Choose where release notes are maintained**: one root `CHANGELOG.md`, or per-package
    `CHANGELOG.md` files.
-8. **Choose what GitHub Release descriptions contain** for `build-only` packages:
+9. **Choose what GitHub Release descriptions contain** for `build-only` packages:
    auto-generated GitHub notes, curated changelog notes, or a semantic-style commit list since the
    previous matching configured tag. In package-level changelog scope, curated GitHub Release
    notes combine the released sections from all configured packages.
@@ -63,14 +75,28 @@ taking an `--adapter` flag. See [configuration.md](../configuration.md) for the 
 adapters = ["crates.io"]
 changelog_scope = "root"
 
+# Library crates in the workspace that must never reach crates.io (asked in step 4).
+skip_publish = ["opentf-release-core", "opentf-release-adapters"]
+
 [[package]]
 name      = "opentf-release"
 adapter   = "crates.io"
 mode      = "build-only"          # artifacts -> GitHub Release, no registry push
 matrix    = true
-targets   = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
-command   = "cargo build --release -p opentf-release --target ${{ matrix.target }}"
-artifacts = "target/${{ matrix.target }}/release/otf-release*"
+command   = "cargo build --release --target {triple}"   # {triple}/{ext}/{bin} expand per target
+artifacts = "target/{triple}/release/otf-release{ext}"
+bin_name  = "otf-release"
+archive   = "auto"                # the default: .zip on Windows, .tar.gz elsewhere
+checksums = true
+
+# One table per target, written in full from the built-in registry.
+[[package.targets]]
+name = "linux"
+arch = "x86_64"
+triple   = "x86_64-unknown-linux-gnu"
+runner   = "ubuntu-latest"
+stage_as = "linux-x64"
+ext      = ""
 
 # "auto-generate" | "curated-changelog" | "semantic-commits"
 github_release_notes = "auto-generate"
@@ -97,11 +123,11 @@ For npm repos, generated jobs detect the package manager from the root lockfile:
 
 ## Explicit caveats (surfaced to the user)
 
-- **Matrix triples can't be fully inferred.** `init` writes a sensible default plus a
-  `# edit me` marker; tuning them is your job.
-- **Repo-specific build steps are yours to refine.** `init` wires the DAG, secrets, and your
-  build command/artifacts; the exact runner-per-target and version-discovery line carry
-  `# edit me` markers.
+- **Repo-specific build steps are yours to refine.** `init` wires the DAG, secrets, and the target
+  reconciliation; the build command and artifacts glob are the parts only you can supply.
+- **VM targets need no runner, but do need patience.** FreeBSD builds inside a guest on the Linux
+  runner; the aarch64 leg is fully emulated and much slower than a native build. See
+  [configuration.md](../configuration.md#build-targets-packagetargets).
 - **npm workspace discovery only imports real packages.** A workspace `package.json` must have a
   string `name` and `version` to become a release package. Missing fields are reported as skipped;
   malformed JSON is still treated as a broken manifest and stops the scan.

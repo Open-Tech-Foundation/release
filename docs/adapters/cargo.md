@@ -46,6 +46,36 @@ core = { path = "../core" }
 core = { path = "../core", version = "1.4.2" }
 ```
 
+## Internal pins in `[workspace.dependencies]`
+
+A workspace can centralize its internal crates in the root table and have members inherit them:
+
+```toml
+# root Cargo.toml
+[workspace.dependencies]
+my-core = { path = "crates/core", version = "0.9.0" }   # ← bumped in lockstep
+serde   = "1"                                            # ← external, untouched
+
+# member Cargo.toml
+[dependencies]
+my-core = { workspace = true }                           # ← inherits; no version injected
+```
+
+A lockstep bump rewrites every internal pin here alongside `[workspace.package] version`. Without
+that, the pin would strand at the old version and **the workspace stops resolving entirely**:
+
+```
+error: failed to select a version for the requirement `my-core = "^0.9.0"`
+candidate versions found which didn't match: 0.10.0
+```
+
+Selection is structural, never name-based: an entry qualifies only if it has **both** `path` and
+`version`. External pins have no `path` and are left alone, and a member's `{ workspace = true }`
+entry is never given a conflicting `version` key.
+
+> This lives in the **cargo** adapter. A Cargo workspace configured through the
+> [generic](./generic.md) adapter does not get it — see that doc's caveat.
+
 ## Range syntax (`format_range`)
 
 A bare version in `Cargo.toml` already means `^version`, so the adapter writes the plain

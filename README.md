@@ -91,6 +91,8 @@ Full reference lives in [`docs/`](docs/README.md). Use these paths by role:
 | Publish from CI | [publish](docs/commands/publish.md) · [preflight](docs/preflight.md) |
 | Tune `release.toml` | [configuration](docs/configuration.md) · [config command](docs/commands/config.md) |
 | Cross-compile binaries in CI | [matrix / build](docs/commands/matrix-build.md) |
+| Ship binaries on a GitHub Release | [github-release](docs/commands/github-release.md) |
+| Add a musl or FreeBSD target | [configuration → build targets](docs/configuration.md#build-targets-packagetargets) |
 | Gate releases in CI | [check](docs/commands/check.md) |
 | Write or debug an adapter | [Adapter overview](docs/adapters/overview.md) |
 | See what's planned | [Roadmap](docs/roadmap.md) |
@@ -119,9 +121,9 @@ Commands are grouped by where they run. Each links to reference docs where avail
 | --- | --- |
 | [`check`](docs/commands/check.md) | Prints `true` when any configured package has a real version whose tag doesn't exist yet, else `false`. Drives the workflow `check-release` job so ordinary pushes to `main` skip the build. |
 | [`matrix`](docs/commands/matrix-build.md) | Prints the GitHub Actions build matrix (JSON) for a matrix package from `release.toml` — no hand-maintained target list in YAML. |
-| [`build`](docs/commands/matrix-build.md) | Builds one matrix target (`--package` / `--target`), cross-compiling as needed, and stages the binary at `bin/<platform>-<arch>/<bin>[.br]` for publish. |
+| [`build`](docs/commands/matrix-build.md) | Builds one matrix target (`--package` / `--target`), cross-compiling as needed, and stages the binary at `bin/<platform>-<arch>/<bin>[.br]` for publish. `--stage-only` stages a binary built by an earlier step instead (VM targets, container builds). |
 | [`publish`](docs/commands/publish.md) | Publishes in dependency order, skips already-published versions, creates `name@version` tags, and creates package releases from notes. Refuses to publish a matrix package whose per-platform binaries weren't staged. |
-| [`github-release`](docs/commands/github-release.md) | Build-only twin of `publish`: reads a package's version, renames its staged binaries into OS/arch assets, and creates its GitHub Release (idempotently). Keeps the workflow's release job a thin call — no inline `gh`/`awk`/`jq`. |
+| [`github-release`](docs/commands/github-release.md) | Build-only twin of `publish`: reads a package's version, packages its staged binaries into OS/arch assets (`.tar.gz` / `.zip` archives by default, optional `checksums.txt`), and creates its GitHub Release (idempotently). Keeps the workflow's release job a thin call — no inline `gh`/`awk`/`jq`. |
 | [`snapshot`](docs/commands/snapshot.md) | Creates hash-based prerelease versions such as `1.2.3-snapshot.a1b2c3d` and publishes them from CI. |
 
 ### Maintenance
@@ -154,7 +156,8 @@ publish commands. The core never reads a `package.json` or `Cargo.toml` directly
 | --- | --- | --- |
 | **npm** | [npm.md](docs/adapters/npm.md) | Discovers npm workspaces, preserves dependency range operators, resolves `workspace:*`, checks `npm view`, publishes with `npm publish --access public --no-workspaces`. |
 | **Cargo** | [cargo.md](docs/adapters/cargo.md) | Discovers Cargo workspaces, supports concrete crate versions and `version.workspace = true`, updates path dependency versions, checks `cargo info`, publishes with `cargo publish -p`. |
-| **Generic** | [generic.md](docs/adapters/generic.md) | Versions configured JSON/TOML/text manifest fields; optional publish command for registries such as JSR. Idempotency is tag-based. |
+| **JSR** | _(reference doc pending)_ | Native JSR/Deno support: versions `deno.json`/`deno.jsonc`/`jsr.json`, updates internal ranges inside `"imports"`, resolves `workspace:*`, checks the registry API. |
+| **Generic** | [generic.md](docs/adapters/generic.md) | Versions configured JSON/TOML/text manifest fields; optional publish command for a registry the tool has no native adapter for. **Not for a Cargo workspace with internal path deps** — use the cargo adapter. Idempotency is tag-based. |
 
 Implementing a new adapter? Start at [adapters/overview.md](docs/adapters/overview.md).
 
@@ -174,8 +177,10 @@ Implementing a new adapter? Start at [adapters/overview.md](docs/adapters/overvi
 | Capability | Details |
 | --- | --- |
 | Polyglot publishing | [`publish`](docs/commands/publish.md) loops enabled adapters and publishes each ecosystem in dependency order. |
-| Build-only packages | CI builds artifacts and attaches them to a GitHub Release instead of publishing to a registry. |
-| Matrix binaries | Cross-compiled per-target builds via [`matrix`](docs/commands/matrix-build.md) / [`build`](docs/commands/matrix-build.md), staged for publish. |
+| Build-only packages | CI builds artifacts and attaches them to a GitHub Release instead of publishing to a registry. `skip_publish` (offered by `init`) keeps a workspace's library crates out of the registry while still versioning them in lockstep. |
+| Matrix binaries | Cross-compiled per-target builds via [`matrix`](docs/commands/matrix-build.md) / [`build`](docs/commands/matrix-build.md), staged for publish. Targets come from a built-in registry that reconciles the Rust triple, the CI runner, and the Node `platform-arch` stage dir. |
+| Build targets | Linux (glibc + **musl**), macOS, Windows, and **FreeBSD** — the last built natively inside a VM guest on the Linux runner, since GitHub hosts no FreeBSD runner. |
+| Release assets | Binaries ship as archives by default: `<bin>-<os>-<arch>.tar.gz`, `.zip` on Windows. Preserves the executable bit, can bundle `include` files, and can attach a SHA-256 `checksums.txt`. |
 
 ### Changelog & workflow
 

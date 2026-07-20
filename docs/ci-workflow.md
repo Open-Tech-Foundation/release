@@ -31,6 +31,12 @@ check-release
   and stages the binary under `.artifacts/<pkg>/bin/<stage_as>/`. For a non-matrix package it is a
   single runner that runs the entry's `command` and uploads its `artifacts`. **No `# edit me`** —
   the tool owns the triple/runner/cross/stage_as reconciliation.
+
+  A row with `vm: true` takes a different path in the same job. Host toolchain setup and cross prep
+  are gated off with `if: ${{ !matrix.vm }}`, a `vmactions/<os>-vm` step builds the binary *inside a
+  guest OS*, and the host then runs `otf-release build … --stage-only` to stage what the guest copied
+  back. This is how FreeBSD is supported on runners GitHub does not offer — see
+  [commands/matrix-build.md](./commands/matrix-build.md#--stage-only).
 - **`publish-<pkg>`** — owns one configured build package and runs only when that package has an
   untagged current version. The fallback `publish` job excludes all such packages and handles only
   dynamically discovered packages that do not need a configured build.
@@ -68,8 +74,9 @@ build-<pkg>  (cross-compile each target on its runner)  ──needs──▶  gi
   [`otf-release github-release --package <pkg> --artifacts-dir .artifacts`](./commands/github-release.md).
   The **binary** reads the package's version (the same manifest read `check`/`publish` use — never a
   `cargo metadata | jq '.packages[0]'` guess), renders the tag from `tag_format`, builds the release
-  body from the global `github_release_notes` setting, renames the staged `bin/<stage_as>/<bin>`
-  binaries into OS/arch assets (`<bin>-<os>-<arch>[.ext]`), and creates the Release. It is
+  body from the global `github_release_notes` setting, packages the staged `bin/<stage_as>/<bin>`
+  binaries into OS/arch assets — archives by default, e.g. `<bin>-linux-x86-64.tar.gz` and
+  `<bin>-windows-x86-64.zip` — and creates the Release. It is
   **idempotent** (an existing release for the tag is skipped). The generated YAML is a thin, stable
   call — **no inline `gh`/`awk`/`jq` and no `# edit me`** version line, exactly like the registry
   `publish` job. **No crates.io, no `cargo publish`** — the artifacts are how users install the
