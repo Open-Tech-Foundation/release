@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **github-release** — Fixed: the binary inside a release archive was **not executable**. v0.25.0's
+  assets stored it as mode 644, so every extracted `otf-release` needed a `chmod +x` — the exact
+  papercut archiving was meant to remove. The cause is upstream of the archiving code:
+  `upload-artifact`/`download-artifact` zip the staged tree and drop POSIX permissions, so the
+  binary always arrives at the release job non-executable no matter what the build produced. The
+  archive writer now stores the binary member as mode `755` explicitly instead of inheriting it from
+  disk. `include` files keep their own mode. Verified against both `.tar.gz` and `.zip`.
+- **docs** — Corrected the "preserves the executable bit" claim in the README and docs, which was
+  true of the archiving code in isolation but false of the actual CI pipeline.
+- **install/README** — Documented FreeBSD in the install section and listed the published target set.
+
 ## [0.25.0] - 2026-07-20
 
 - **install — required for 0.24.0 → next.** `install.sh` and `install.ps1` now unpack archive

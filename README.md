@@ -31,7 +31,7 @@ release PR, then to CI-driven publishing.
 
 ### 1. Install
 
-**macOS / Linux**
+**macOS / Linux / FreeBSD**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.sh | bash
@@ -50,6 +50,11 @@ cargo install --git https://github.com/Open-Tech-Foundation/release
 ```
 
 Already installed? Update with `otf-release self-update`.
+
+Prebuilt binaries are published for **Linux** (x86-64, arm64), **macOS** (x86-64, arm64),
+**Windows** (x86-64), and **FreeBSD** (x86-64) — the last built natively in a VM, since GitHub
+hosts no FreeBSD runner. The install scripts pick the right asset and unpack it; to grab one by
+hand, see the [latest release](https://github.com/Open-Tech-Foundation/release/releases/latest).
 
 ### 2. Set up the repo
 
@@ -180,7 +185,7 @@ Implementing a new adapter? Start at [adapters/overview.md](docs/adapters/overvi
 | Build-only packages | CI builds artifacts and attaches them to a GitHub Release instead of publishing to a registry. `skip_publish` (offered by `init`) keeps a workspace's library crates out of the registry while still versioning them in lockstep. |
 | Matrix binaries | Cross-compiled per-target builds via [`matrix`](docs/commands/matrix-build.md) / [`build`](docs/commands/matrix-build.md), staged for publish. Targets come from a built-in registry that reconciles the Rust triple, the CI runner, and the Node `platform-arch` stage dir. |
 | Build targets | Linux (glibc + **musl**), macOS, Windows, and **FreeBSD** — the last built natively inside a VM guest on the Linux runner, since GitHub hosts no FreeBSD runner. |
-| Release assets | Binaries ship as archives by default: `<bin>-<os>-<arch>.tar.gz`, `.zip` on Windows. Preserves the executable bit, can bundle `include` files, and can attach a SHA-256 `checksums.txt`. |
+| Release assets | Binaries ship as archives by default: `<bin>-<os>-<arch>.tar.gz`, `.zip` on Windows. The binary is stored mode `755` so it extracts ready to run, `include` files can be bundled alongside, and a SHA-256 `checksums.txt` can be attached. |
 
 ### Changelog & workflow
 

@@ -44,8 +44,8 @@ For each selected build-only package, in order:
 ## Packaging (archives & checksums)
 
 **Build-only binaries ship as archives by default** — `archive = "auto"` is assumed when the key is
-absent, so every asset carries an extension and keeps its executable bit. (A raw GitHub Release
-asset loses the executable bit, forcing a `chmod +x` on every install.) Set the key only to pin one
+absent, so every asset carries an extension and extracts ready to run. (A raw GitHub Release asset
+arrives non-executable, forcing a `chmod +x` on every install.) Set the key only to pin one
 format for every target, and add `checksums`/`include` as needed, via
 [`release.toml`](../configuration.md):
 
@@ -62,7 +62,10 @@ include   = ["README.md", "LICENSE", "types/*.d.ts"]   # bundled inside each arc
 
 - **`archive`** — `"tar.gz"`, `"zip"`, or `"auto"` (the default). Each target becomes
   `<bin>-<os>-<arch>.tar.gz` (or `.zip`); the binary keeps its own name inside the archive, with its
-  executable bit preserved. There is currently no way to attach a raw, extensionless binary.
+  stored mode `755` so it extracts ready to run — the staged binary reaches this job through
+  `upload-artifact`, which drops POSIX permissions, so the bit is set here rather than inherited.
+  `include` files keep their own mode. There is currently no way to attach a raw, extensionless
+  binary.
 - **`include`** — extra files bundled beside the binary inside every archive, each keeping its
   repo-relative path (so `types/*.d.ts` stays under `types/`). Globs are expanded from the repo root.
 - **`checksums`** — writes a `sha256sum`-style `checksums.txt` (`<hex>  <asset>`) covering every

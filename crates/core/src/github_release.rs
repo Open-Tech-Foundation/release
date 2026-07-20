@@ -14,9 +14,8 @@
 //!   3. skips idempotently if that release already exists (forward-resumable),
 //!   4. builds the release body from `github_release_notes` (curated changelog / commit list /
 //!      GitHub-generated),
-//!   5. turns the staged `bin/<stage_as>/<bin>` tree into assets — raw OS/arch-named binaries
-//!      (`<bin>-<os>-<arch>[.ext]`), or, when the package configures `archive`, `.tar.gz`/`.zip`
-//!      bundles (with any `include` files) plus an optional `checksums.txt`, and
+//!   5. turns the staged `bin/<stage_as>/<bin>` tree into OS/arch-named assets — `.tar.gz`/`.zip`
+//!      bundles by default (with any `include` files) plus an optional `checksums.txt`, and
 //!   6. creates the Release on `main` with those assets attached.
 
 use std::fs;
@@ -261,7 +260,7 @@ fn stage_assets(artifacts_dir: &Path, entry: &PackageEntry, root: &Path) -> Resu
                 // The binary keeps its own name inside the archive; includes keep their repo path.
                 let mut members = vec![(file_name.to_string(), src.clone())];
                 members.extend(includes.iter().cloned());
-                write_archive(ext, &dest, &members)?;
+                write_archive(ext, &dest, &members, file_name)?;
                 assets.push(dest);
             }
             None => {
@@ -378,18 +377,35 @@ fn map_os_arch(stage: &str) -> (String, String) {
 
 /// Write `members` (each `(name_inside_archive, source_file)`) into `dest` as a `.tar.gz` or `.zip`
 /// (chosen by `ext`). Executable bits are preserved from the source files.
-fn write_archive(ext: &str, dest: &Path, members: &[(String, PathBuf)]) -> Result<()> {
+/// `exec_name` is the member that must land executable regardless of its mode on disk.
+///
+/// That override is load-bearing, not defensive: the staged binary reaches this job through
+/// `upload-artifact`/`download-artifact`, which zip the tree and **drop POSIX permissions**, so the
+/// file is always mode 644 here no matter what the build produced. Without forcing it, every
+/// extracted binary would need a `chmod +x` — the exact papercut archiving is meant to remove.
+fn write_archive(
+    ext: &str,
+    dest: &Path,
+    members: &[(String, PathBuf)],
+    exec_name: &str,
+) -> Result<()> {
+    let mode_for = |name: &str, src: &Path| -> u32 {
+        if name == exec_name {
+            0o755
+        } else {
+            unix_mode(src).unwrap_or(0o644)
+        }
+    };
+
     let file =
         fs::File::create(dest).with_context(|| format!("creating archive {}", dest.display()))?;
     if ext == "zip" {
         use zip::write::SimpleFileOptions;
         let mut zip = zip::ZipWriter::new(file);
         for (name, src) in members {
-            let mut options =
-                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-            if let Some(mode) = unix_mode(src) {
-                options = options.unix_permissions(mode);
-            }
+            let options = SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated)
+                .unix_permissions(mode_for(name, src));
             zip.start_file(name, options)
                 .with_context(|| format!("zip entry {name}"))?;
             let mut reader =
@@ -402,7 +418,20 @@ fn write_archive(ext: &str, dest: &Path, members: &[(String, PathBuf)]) -> Resul
         let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
         let mut tar = tar::Builder::new(gz);
         for (name, src) in members {
-            tar.append_path_with_name(src, name)
+            let meta = fs::metadata(src).with_context(|| format!("reading {}", src.display()))?;
+            let mut header = tar::Header::new_gnu();
+            header.set_size(meta.len());
+            header.set_mode(mode_for(name, src));
+            header.set_mtime(
+                meta.modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            );
+            let mut reader =
+                fs::File::open(src).with_context(|| format!("reading {}", src.display()))?;
+            tar.append_data(&mut header, name, &mut reader)
                 .with_context(|| format!("tar entry {name}"))?;
         }
         tar.into_inner()
@@ -463,6 +492,57 @@ mod tests {
     use super::*;
 
     use std::cell::RefCell;
+
+    /// Regression: v0.25.0 published archives whose binary was mode 644, so every extracted
+    /// `otf-release` needed a `chmod +x`. The cause is upstream of this code —
+    /// `upload-artifact`/`download-artifact` zip the staged tree and drop POSIX permissions, so the
+    /// binary always arrives here non-executable. Reproduce that exact input (a 644 source) and
+    /// assert the archive stores 755 anyway. Include files keep their own mode.
+    #[cfg(unix)]
+    #[test]
+    fn archived_binary_is_executable_even_when_the_staged_file_is_not() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("otf-release");
+        std::fs::write(&bin, b"binary").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let readme = dir.path().join("README.md");
+        std::fs::write(&readme, b"docs").unwrap();
+        std::fs::set_permissions(&readme, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let members = vec![
+            ("otf-release".to_string(), bin.clone()),
+            ("README.md".to_string(), readme.clone()),
+        ];
+
+        let tgz = dir.path().join("out.tar.gz");
+        write_archive("tar.gz", &tgz, &members, "otf-release").unwrap();
+        let decoder = flate2::read::GzDecoder::new(std::fs::File::open(&tgz).unwrap());
+        let mut modes = std::collections::HashMap::new();
+        for entry in tar::Archive::new(decoder).entries().unwrap() {
+            let e = entry.unwrap();
+            let name = e.path().unwrap().to_string_lossy().into_owned();
+            modes.insert(name, e.header().mode().unwrap() & 0o777);
+        }
+        assert_eq!(
+            modes["otf-release"], 0o755,
+            "binary must extract executable"
+        );
+        assert_eq!(modes["README.md"], 0o644, "include files keep their mode");
+
+        let zipped = dir.path().join("out.zip");
+        write_archive("zip", &zipped, &members, "otf-release").unwrap();
+        let mut zr = zip::ZipArchive::new(std::fs::File::open(&zipped).unwrap()).unwrap();
+        assert_eq!(
+            zr.by_name("otf-release").unwrap().unix_mode().unwrap() & 0o777,
+            0o755
+        );
+        assert_eq!(
+            zr.by_name("README.md").unwrap().unix_mode().unwrap() & 0o777,
+            0o644
+        );
+    }
 
     use crate::adapter::{Bump, DepKind};
     use crate::config::{ArchiveFormat, Ecosystem, Mode, PackageEntry};

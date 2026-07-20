@@ -96,7 +96,7 @@ artifacts = "dist/**"
 | `artifacts` | The built binary to stage (matrix: templated like `command`) / a glob to attach to the release. |
 | `bin_name` | _(matrix only)_ the compiled binary's base name; staged as `bin/<stage_as>/<bin_name><ext>`. |
 | `compress` | _(matrix only)_ `"brotli"` compresses each staged binary to `…<ext>.br` (decompressed at install time); omit to stage raw. |
-| `archive` | _(build-only)_ how to package each staged binary: `"tar.gz"`, `"zip"`, or `"auto"`. **Defaults to `"auto"`** (`.zip` for Windows targets, `.tar.gz` elsewhere) — build-only binaries always ship as archives, so every asset carries an extension and keeps its executable bit. Read by [`github-release`](./commands/github-release.md). |
+| `archive` | _(build-only)_ how to package each staged binary: `"tar.gz"`, `"zip"`, or `"auto"`. **Defaults to `"auto"`** (`.zip` for Windows targets, `.tar.gz` elsewhere) — build-only binaries always ship as archives, so every asset carries an extension and the binary extracts ready to run (stored mode `755`). Read by [`github-release`](./commands/github-release.md). |
 | `checksums` | _(build-only)_ `true` also attaches a combined `checksums.txt` (SHA-256 of every asset) to the GitHub Release. |
 | `include` | _(build-only)_ extra files to bundle **inside each archive** beside the binary — repo-relative paths or globs, e.g. `["README.md", "LICENSE", "types/*.d.ts"]`. Each keeps its path within the archive. |
 
