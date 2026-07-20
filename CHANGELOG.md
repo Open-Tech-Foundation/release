@@ -8,6 +8,21 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **github-release — BREAKING.** Build-only binaries now ship as **archives by default**: a package
+  that sets no `archive` key gets `"auto"` (`.zip` for Windows targets, `.tar.gz` elsewhere) instead
+  of a raw, extensionless binary. Every asset therefore carries an extension, and the executable bit
+  survives the download — a raw GitHub Release asset loses it, forcing a `chmod +x` on every install.
+  Asset names change (`esrun-linux-x86-64` → `esrun-linux-x86-64.tar.gz`), so **any installer that
+  downloads a release asset by name needs updating** before the next release. There is currently no
+  way to opt back into raw binaries; an `archive = "none"` escape hatch can be added if one is
+  wanted. `init` no longer offers "attach the raw binaries" — it asks only which format.
+- **init** — `init` now offers `skip_publish` instead of leaving it to be hand-written. When a repo
+  configures a `build-only` package but other discovered crates remain publishable, those crates are
+  listed (pre-selected) and the answer is recorded. This closes a real footgun for binary-only Cargo
+  workspaces: library crates carry no `publish = false`, nothing else stopped them, and the first
+  `publish` run would have pushed them to crates.io. Skipped packages are still versioned in
+  lockstep — only the registry push is suppressed. Repos that publish everything are never asked.
+
 ## [0.23.0] - 2026-07-20
 
 - **targets** — Added FreeBSD build targets to the registry: `freebsd` / `x86_64`

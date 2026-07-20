@@ -421,6 +421,18 @@ impl PackageEntry {
         self.mode == Mode::BuildOnly && !(self.adapter == Ecosystem::Npm && self.matrix)
     }
 
+    /// How `github-release` should package this package's binaries.
+    ///
+    /// Build-only packages default to [`ArchiveFormat::Auto`] when `archive` is unset: an archive
+    /// is the convention every consumer already expects (`.zip` on Windows, `.tar.gz` elsewhere),
+    /// it preserves the executable bit a bare binary download loses, and it is the only shape that
+    /// can carry `include` files. A raw binary is not currently reachable — that opt-out is a
+    /// deliberate future addition, not an oversight.
+    pub fn archive_format(&self) -> Option<ArchiveFormat> {
+        self.archive
+            .or_else(|| self.is_build_only().then_some(ArchiveFormat::Auto))
+    }
+
     /// The inverse of [`is_build_only`]: the package is published to its registry.
     pub fn is_publish(&self) -> bool {
         !self.is_build_only()

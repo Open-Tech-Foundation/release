@@ -242,7 +242,8 @@ fn stage_assets(artifacts_dir: &Path, entry: &PackageEntry, root: &Path) -> Resu
     }
 
     // Extra files that go *inside* each archive (only meaningful when archiving).
-    let includes = if entry.archive.is_some() {
+    let archive = entry.archive_format();
+    let includes = if archive.is_some() {
         resolve_includes(root, &entry.include)?
     } else {
         Vec::new()
@@ -252,7 +253,7 @@ fn stage_assets(artifacts_dir: &Path, entry: &PackageEntry, root: &Path) -> Resu
     for (stage, src) in &staged {
         let file_name = src.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         let (os, arch) = map_os_arch(stage);
-        match entry.archive {
+        match archive {
             Some(format) => {
                 let stem = asset_stem(&bin, &os, &arch);
                 let ext = format.extension_for(&os);
@@ -761,8 +762,11 @@ mod tests {
         assert!(forge.created.borrow().is_empty());
     }
 
+    /// A build-only package that never mentions `archive` still ships archives — that is the
+    /// default. The `.zip`/`.tar.gz` split follows the target OS, so each platform gets the shape
+    /// its users expect to download.
     #[test]
-    fn stages_and_attaches_renamed_binaries() {
+    fn stages_and_attaches_archived_binaries_by_default() {
         let tmp = tempfile::tempdir().unwrap();
         let artifacts = tmp.path().join(".artifacts");
         // Two staged artifacts named like the matrix upload: `<slug>-<name>-<arch>/bin/<stage_as>/<bin>`.
@@ -808,11 +812,16 @@ mod tests {
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert!(
-            names.contains(&"esrun-linux-x86-64".to_string()),
+            names.contains(&"esrun-linux-x86-64.tar.gz".to_string()),
             "{names:?}"
         );
         assert!(
-            names.contains(&"esrun-windows-x86-64.exe".to_string()),
+            names.contains(&"esrun-windows-x86-64.zip".to_string()),
+            "{names:?}"
+        );
+        // The raw, extensionless binary is never attached now.
+        assert!(
+            !names.iter().any(|n| n == "esrun-linux-x86-64"),
             "{names:?}"
         );
     }

@@ -10,7 +10,7 @@
 //! interactive choices go through the [`InitPrompt`] trait, and package discovery through the
 //! [`AdapterFactory`] trait, so the flow is testable.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -136,6 +136,10 @@ pub trait InitPrompt {
     /// version); the user imports from those and/or adds more by hand. Asked only when the generic
     /// adapter is enabled.
     fn generic_packages(&self, found: &[GenericCandidate]) -> Result<Vec<PackageEntry>>;
+    /// Which discovered packages should be excluded from registry publish. Asked only when the
+    /// repo looks binary-distribution-shaped: some package is `build-only` while other discovered
+    /// crates would still be pushed to a registry. Returns the names to record in `skip_publish`.
+    fn select_skip_publish(&self, candidates: &[&Pkg]) -> Result<Vec<String>>;
     /// Confirm overwriting an existing file (only asked when not `--force`).
     fn confirm_overwrite(&self, path: &Path) -> Result<bool>;
     /// Ask for the git tag format used by version/preflight/publish.
@@ -475,6 +479,24 @@ pub fn orchestrate(
         packages.extend(prompt.generic_packages(&found)?);
     }
 
+    // A repo that configured a build-only package but still has other discovered crates is
+    // binary-distribution shaped: those leftovers would be pushed to a registry nobody asked for.
+    // (A Cargo workspace's library crates are the usual case — they carry no `publish = false`,
+    // so nothing else stops them.) Offer to record them in `skip_publish`.
+    let skip_publish = {
+        let configured: HashSet<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+        let any_build_only = packages.iter().any(|p| p.is_build_only());
+        let leftovers: Vec<&Pkg> = publishable
+            .iter()
+            .filter(|p| !configured.contains(p.name.as_str()))
+            .collect();
+        if any_build_only && !leftovers.is_empty() {
+            prompt.select_skip_publish(&leftovers)?
+        } else {
+            Vec::new()
+        }
+    };
+
     let tag_suggestion = suggest_tag_format(root, publishable.len());
     let tag_format = prompt.tag_format(&tag_suggestion)?;
     crate::config::format_tag(&tag_format, "package", "1.2.3")?;
@@ -486,7 +508,7 @@ pub fn orchestrate(
             ignore_paths: publish_ignore_paths_seed(&publishable, &packages),
         },
         adapters: enabled,
-        skip_publish: Vec::new(),
+        skip_publish,
         packages,
         snapshot_tag: None,
         tag_format,
@@ -1346,23 +1368,26 @@ fn configure_generic(
     // hand-written release scripts this replaces. `github-release` reads these; the workflow YAML is
     // unchanged (a thin call).
     let (archive, checksums, include) = if mode == Mode::BuildOnly {
+        // Binaries always ship as archives; only the format is a choice. `auto` leads because it
+        // matches what each platform's users expect to download.
         let archive = match Select::new(
-            &format!("  {name} — package binaries as archives?"),
+            &format!("  {name} — archive format for the release binaries:"),
             vec![
-                "No — attach the raw binaries",
                 "auto (.tar.gz on Unix, .zip on Windows)",
                 "tar.gz for every target",
                 "zip for every target",
             ],
         )
-        .with_help_message("an archive bundles the binary (and any extra files) per platform")
+        .with_help_message(
+            "an archive bundles the binary (and any extra files) per platform, and preserves the \
+             executable bit a raw download loses",
+        )
         .raw_prompt()?
         .index
         {
-            1 => Some(ArchiveFormat::Auto),
-            2 => Some(ArchiveFormat::TarGz),
-            3 => Some(ArchiveFormat::Zip),
-            _ => None,
+            1 => Some(ArchiveFormat::TarGz),
+            2 => Some(ArchiveFormat::Zip),
+            _ => Some(ArchiveFormat::Auto),
         };
         let include = if archive.is_some() {
             let raw = Text::new(&format!(
@@ -1419,6 +1444,10 @@ const SELECT_HELP: &str = "↑↓ move · enter select";
 const BUILD_PKGS_HELP: &str =
     "select packages that must produce artifacts first — for example a prebuilt binary, generated \
      dist files, or a bundled CLI. Packages you don't pick are published as-is. ↑↓ move · space toggle · enter confirm";
+const SKIP_PUBLISH_HELP: &str =
+    "checked = recorded in skip_publish and never pushed to a registry. They are still versioned in \
+     lockstep with the release — this only stops the publish. Leave a package unchecked to publish \
+     it normally. ↑↓ move · space toggle · enter confirm";
 const MODE_HELP: &str =
     "publish → push to the registry  ·  build-only → standalone binaries on a GitHub Release (no registry)";
 const MATRIX_HELP: &str =
@@ -1478,6 +1507,27 @@ impl InitPrompt for StdinInitPrompt {
         Ok(chosen
             .iter()
             .map(|o| publishable[o.index].name.clone())
+            .collect())
+    }
+
+    fn select_skip_publish(&self, candidates: &[&Pkg]) -> Result<Vec<String>> {
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let labels: Vec<String> = candidates.iter().map(|p| p.name.clone()).collect();
+        // Pre-selected: the common case for a binary-distribution repo is that none of the library
+        // crates go to the registry, and an accidental publish is far worse than an extra keystroke.
+        let defaults: Vec<usize> = (0..labels.len()).collect();
+        let chosen = MultiSelect::new(
+            "These packages would also be published to a registry — exclude any?",
+            labels,
+        )
+        .with_default(&defaults)
+        .with_help_message(SKIP_PUBLISH_HELP)
+        .raw_prompt()?;
+        Ok(chosen
+            .iter()
+            .map(|o| candidates[o.index].name.clone())
             .collect())
     }
 
@@ -1764,6 +1814,7 @@ impl InitPrompt for StdinInitPrompt {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -1829,6 +1880,10 @@ pub(crate) mod tests {
         generic: Vec<PackageEntry>,
         overwrite: bool,
         tag_format: Option<String>,
+        /// What `select_skip_publish` returns.
+        skip_publish: Vec<String>,
+        /// What it was *offered* — `None` when the prompt was never reached.
+        skip_offered: RefCell<Option<Vec<String>>>,
     }
     impl InitPrompt for FakePrompt {
         fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
@@ -1844,6 +1899,11 @@ pub(crate) mod tests {
         }
         fn select_build_packages(&self, _: &[&Pkg]) -> Result<Vec<String>> {
             Ok(self.build_names.clone())
+        }
+        fn select_skip_publish(&self, candidates: &[&Pkg]) -> Result<Vec<String>> {
+            *self.skip_offered.borrow_mut() =
+                Some(candidates.iter().map(|p| p.name.clone()).collect());
+            Ok(self.skip_publish.clone())
         }
         fn build_entry(&self, name: &str, _: &[Ecosystem]) -> Result<PackageEntry> {
             Ok(self
@@ -2737,6 +2797,83 @@ pub(crate) mod tests {
         assert!(out.contains("        run: otf-release publish --package docs-site\n"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         assert!(out.contains("      - name: Install otf-release\n"));
+    }
+
+    /// The ES-Runtime shape: a Cargo workspace whose binary crate is `build-only` while its library
+    /// crates carry no `publish = false`. Nothing else stops those from being pushed to crates.io,
+    /// so `init` must offer them for `skip_publish` and record the answer — no hand-editing.
+    #[test]
+    fn build_only_workspace_offers_its_library_crates_for_skip_publish() {
+        let tmp = tempfile::tempdir().unwrap();
+        let factory = FakeFactory {
+            packages: vec![
+                pkg("es-runtime-cli", true),
+                pkg("es-runtime-common", true),
+                pkg("es-runtime-engine", true),
+            ],
+        };
+        let prompt = FakePrompt {
+            adapters: vec![Ecosystem::Cargo],
+            build_names: vec!["es-runtime-cli".into()],
+            entries: vec![cargo_build_only("es-runtime-cli")],
+            skip_publish: vec!["es-runtime-common".into(), "es-runtime-engine".into()],
+            ..FakePrompt::default()
+        };
+        orchestrate(&factory, &prompt, tmp.path(), &InitOptions { force: true }).unwrap();
+
+        // Only the crates that aren't already configured are offered — never the build-only one.
+        assert_eq!(
+            prompt.skip_offered.borrow().clone().unwrap(),
+            vec![
+                "es-runtime-common".to_string(),
+                "es-runtime-engine".to_string()
+            ]
+        );
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.skip_publish,
+            vec![
+                "es-runtime-common".to_string(),
+                "es-runtime-engine".to_string()
+            ]
+        );
+        // Marked non-publishable, exactly as a manifest-level `publish = false` would.
+        let mut discovered = vec![
+            crate::adapter::Pkg {
+                publishable: true,
+                ..pkg("es-runtime-common", true)
+            },
+            crate::adapter::Pkg {
+                publishable: true,
+                ..pkg("es-runtime-cli", true)
+            },
+        ];
+        cfg.apply_publish_skips(&mut discovered);
+        assert!(!discovered[0].publishable, "library crate is skipped");
+        assert!(
+            discovered[1].publishable,
+            "the released binary still versions"
+        );
+    }
+
+    /// The prompt is a cost, so it must not fire for an ordinary publish-everything repo.
+    #[test]
+    fn publish_only_repo_is_never_asked_about_skip_publish() {
+        let tmp = tempfile::tempdir().unwrap();
+        let factory = FakeFactory {
+            packages: vec![pkg("lib-a", true), pkg("lib-b", true)],
+        };
+        let prompt = FakePrompt {
+            adapters: vec![Ecosystem::Cargo],
+            build_names: Vec::new(),
+            ..FakePrompt::default()
+        };
+        orchestrate(&factory, &prompt, tmp.path(), &InitOptions { force: true }).unwrap();
+        assert!(prompt.skip_offered.borrow().is_none());
+        assert!(ReleaseConfig::load(tmp.path())
+            .unwrap()
+            .skip_publish
+            .is_empty());
     }
 
     #[test]

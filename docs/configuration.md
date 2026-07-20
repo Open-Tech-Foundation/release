@@ -83,7 +83,7 @@ artifacts = "dist/**"
 | `adapters` | Enabled ecosystems: `"npm"`, `"crates.io"`, `"generic"`. Drives which publish/release jobs `init` generates. |
 | `tag_format` | Global git tag format used by `version`, preflight, `publish`, and generated GitHub Release jobs. Must include `{version}`; may include `{name}` for package-scoped tags, e.g. `{name}@{version}`. |
 | `legacy_tag_formats` | Optional older tag formats used only to find prior release history during `version`/preflight and generated changelog notes. New tags are still written with `tag_format`. |
-| `skip_publish` | Optional package names to exclude from versioning, preflight, and registry publish even if their manifests are otherwise publishable. |
+| `skip_publish` | Package names never pushed to a registry, even when their manifests look publishable. They are still **versioned** in lockstep with the release — this only suppresses the publish. `init` fills this in automatically: when a repo has a `build-only` package alongside other discovered crates (a Cargo workspace's library crates, say, which carry no `publish = false`), it lists them and records your answer. |
 | `publish.ignore_paths` | Optional per-package path globs. If a package has commits since its last tag, `[Unreleased]` is empty, and **every** changed file matches one of these globs, the release flow prints a warning and continues instead of aborting. |
 | `changelog_scope` | Where curated release notes live: `"root"` uses the root `CHANGELOG.md` for every package; `"package"` uses each package's adapter-discovered `CHANGELOG.md`. |
 | `github_release_notes` | GitHub Release body source for `build-only` packages: `"auto-generate"` lets GitHub generate notes, `"curated-changelog"` copies root notes in root scope or combines released sections from all configured package changelogs in package scope, and `"semantic-commits"` writes a commit list since the previous matching `tag_format` tag. `init` asks for this and `config` can edit it later. |
@@ -96,9 +96,9 @@ artifacts = "dist/**"
 | `artifacts` | The built binary to stage (matrix: templated like `command`) / a glob to attach to the release. |
 | `bin_name` | _(matrix only)_ the compiled binary's base name; staged as `bin/<stage_as>/<bin_name><ext>`. |
 | `compress` | _(matrix only)_ `"brotli"` compresses each staged binary to `…<ext>.br` (decompressed at install time); omit to stage raw. |
-| `archive` | _(build-only)_ package each staged binary before attaching it: `"tar.gz"`, `"zip"`, or `"auto"` (`.zip` for Windows targets, `.tar.gz` elsewhere). Omit to attach the raw OS/arch-renamed binary. Read by [`github-release`](./commands/github-release.md). |
+| `archive` | _(build-only)_ how to package each staged binary: `"tar.gz"`, `"zip"`, or `"auto"`. **Defaults to `"auto"`** (`.zip` for Windows targets, `.tar.gz` elsewhere) — build-only binaries always ship as archives, so every asset carries an extension and keeps its executable bit. Read by [`github-release`](./commands/github-release.md). |
 | `checksums` | _(build-only)_ `true` also attaches a combined `checksums.txt` (SHA-256 of every asset) to the GitHub Release. |
-| `include` | _(build-only, requires `archive`)_ extra files to bundle **inside each archive** beside the binary — repo-relative paths or globs, e.g. `["README.md", "LICENSE", "types/*.d.ts"]`. Each keeps its path within the archive. |
+| `include` | _(build-only)_ extra files to bundle **inside each archive** beside the binary — repo-relative paths or globs, e.g. `["README.md", "LICENSE", "types/*.d.ts"]`. Each keeps its path within the archive. |
 
 ### Build targets (`[[package.targets]]`)
 

@@ -49,6 +49,12 @@ impl InitPrompt for NpmOnlyPrompt {
     ) -> Result<(String, String)> {
         Ok((default_name.to_string(), default_exports.to_string()))
     }
+    fn select_skip_publish(
+        &self,
+        _candidates: &[&otf_release_core::adapter::Pkg],
+    ) -> Result<Vec<String>> {
+        panic!("no build-only package here, so skip_publish must never be asked");
+    }
     fn select_build_packages(
         &self,
         publishable: &[&otf_release_core::adapter::Pkg],
