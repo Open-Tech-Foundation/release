@@ -132,6 +132,9 @@ try {
     if ($GhPresent) {
         & gh auth status 2>$null | Out-Null
         $GhAuthed = ($LASTEXITCODE -eq 0)
+        # Clear it immediately. GitHub Actions appends `exit $LASTEXITCODE` to every pwsh step,
+        # so a failed *probe* left lying around fails the whole step after a successful install.
+        $global:LASTEXITCODE = 0
     }
 
     if (-not $Attested) {
@@ -142,7 +145,9 @@ try {
         Resolve-AttestationGap "provenance exists but 'gh' is not authenticated (in GitHub Actions, set GH_TOKEN), so it cannot be verified."
     } else {
         & gh attestation verify $TmpFile.FullName --repo $Repo 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) {
+        $Verified = ($LASTEXITCODE -eq 0)
+        $global:LASTEXITCODE = 0
+        if ($Verified) {
             Write-Host "Provenance verified (built by $Repo)."
         } else {
             Write-Error "Build provenance FAILED verification for $AssetUsed. A signed attestation exists but does not match this download. Refusing to install. Run for details: gh attestation verify <file> --repo $Repo"
@@ -199,3 +204,9 @@ try {
 
 Write-Host "$BinName installed successfully to $DestPath"
 Write-Host "Make sure $InstallDir is in your PATH."
+
+# Reaching here means the install succeeded, so report success explicitly. GitHub Actions appends
+# `exit $LASTEXITCODE` to every pwsh step, so any native command that ran along the way — a `gh`
+# probe, say — would otherwise fail the step despite a working install. Setting the variable
+# rather than calling `exit 0` keeps `irm | iex` from closing an interactive session.
+$global:LASTEXITCODE = 0

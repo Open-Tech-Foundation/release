@@ -8,6 +8,15 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **install (Windows)** — `install.ps1` failed its GitHub Actions step *after installing
+  successfully*. GitHub appends `exit $LASTEXITCODE` to every `pwsh` step, and the `gh auth status`
+  probe added for provenance verification leaves a non-zero exit code behind on a runner where `gh`
+  is unauthenticated. The install completed, printed its success messages, and the step then failed
+  on a stale exit code from a check whose failure is explicitly non-fatal. Every native `gh` call
+  now clears `$LASTEXITCODE` as soon as its result has been read, and the script ends by setting it
+  to `0`. Setting the variable rather than calling `exit 0` keeps `irm | iex` from closing an
+  interactive session.
+
 - **install — fixes a release deadlock introduced in 0.26.0.** Provenance verification treated
   "cannot verify" as "verification failed" and aborted the install. GitHub Actions runners ship the
   `gh` CLI but leave it unauthenticated unless `GH_TOKEN` is set, so the fatal branch was the
