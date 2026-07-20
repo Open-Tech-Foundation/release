@@ -271,9 +271,8 @@ fn stage_assets(artifacts_dir: &Path, entry: &PackageEntry, root: &Path) -> Resu
                 // The binary keeps its own name inside the archive; includes keep their repo path.
                 let mut members = vec![(file_name.to_string(), src.clone())];
                 members.extend(includes.iter().cloned());
-                // A brotli-staged member is compressed data the install step decompresses, not a
-                // program — marking it executable would be meaningless.
-                let exec = entry.compress.is_none().then_some(file_name);
+                // Data rather than a program (a brotli blob, or `executable = false`) gets no bit.
+                let exec = entry.marks_executable().then_some(file_name);
                 write_archive(ext, &dest, &members, exec)?;
                 assets.push(dest);
             }
@@ -727,6 +726,7 @@ mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            executable: None,
             include: Vec::new(),
         }
     }

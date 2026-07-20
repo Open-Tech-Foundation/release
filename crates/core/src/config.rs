@@ -418,6 +418,14 @@ pub struct PackageEntry {
     /// globs, e.g. `["README.md", "LICENSE", "types/*.d.ts"]`. Ignored when `archive` is unset.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub include: Vec<String>,
+    /// Whether the staged artifact is stored executable (mode `755`) inside each archive.
+    ///
+    /// Unset infers it — see [`PackageEntry::marks_executable`] — which is right for a CLI binary
+    /// and right for a brotli-compressed blob. Set it explicitly for the cases inference cannot
+    /// know about: `false` for a build-only package shipping data (a `.wasm`, a `.jar`, a model
+    /// file), `true` for a program the inference would otherwise skip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<bool>,
 }
 
 impl PackageEntry {
@@ -442,6 +450,18 @@ impl PackageEntry {
     pub fn archive_format(&self) -> Option<ArchiveFormat> {
         self.archive
             .or_else(|| self.is_build_only().then_some(ArchiveFormat::Auto))
+    }
+
+    /// Whether the staged artifact is stored executable inside its release archive.
+    ///
+    /// Defaults to "yes, unless the artifact is compressed": a `compress = "brotli"` package stages
+    /// a `.br` blob the install step decompresses, which is data rather than a program. An explicit
+    /// `executable` in `release.toml` overrides that inference in either direction.
+    ///
+    /// Defaulting to *not* executable would be the wrong safe-looking choice — it would silently
+    /// ship archives whose binary needs a `chmod +x`, which is the bug this behavior exists to fix.
+    pub fn marks_executable(&self) -> bool {
+        self.executable.unwrap_or(self.compress.is_none())
     }
 
     /// The inverse of [`is_build_only`]: the package is published to its registry.
@@ -732,6 +752,45 @@ mod tests {
         }
     }
 
+    /// The default must be "executable" for an ordinary binary: getting this backwards ships
+    /// archives that need a `chmod +x`, which is the bug the mode override exists to prevent.
+    #[test]
+    fn executable_defaults_to_inference_and_is_overridable_both_ways() {
+        let mut entry = PackageEntry {
+            name: "esrun".into(),
+            adapter: Ecosystem::Cargo,
+            mode: Mode::BuildOnly,
+            matrix: true,
+            targets: Vec::new(),
+            command: String::new(),
+            artifacts: String::new(),
+            bin_name: Some("esrun".into()),
+            compress: None,
+            manifest: None,
+            version_field: None,
+            publish: None,
+            archive: None,
+            checksums: false,
+            attest: false,
+            include: Vec::new(),
+            executable: None,
+        };
+
+        // Unset + raw binary ⇒ executable.
+        assert!(entry.marks_executable());
+
+        // Unset + brotli ⇒ the staged `.br` is data, not a program.
+        entry.compress = Some("brotli".into());
+        assert!(!entry.marks_executable());
+
+        // An explicit value wins over the inference in both directions.
+        entry.executable = Some(true);
+        assert!(entry.marks_executable());
+        entry.compress = None;
+        entry.executable = Some(false);
+        assert!(!entry.marks_executable(), "for a .wasm/.jar-style payload");
+    }
+
     #[test]
     fn round_trips_through_toml() {
         let cfg = ReleaseConfig {
@@ -769,6 +828,7 @@ mod tests {
                     archive: Some(ArchiveFormat::Auto),
                     checksums: true,
                     attest: false,
+                    executable: None,
                     include: vec!["README.md".into(), "LICENSE".into()],
                 },
                 PackageEntry {
@@ -787,6 +847,7 @@ mod tests {
                     archive: None,
                     checksums: false,
                     attest: false,
+                    executable: None,
                     include: Vec::new(),
                 },
             ],

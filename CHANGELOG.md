@@ -8,6 +8,16 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **config** — New optional `executable` field for build-only packages, controlling whether the
+  staged artifact is stored executable inside its release archive. Omitting it keeps the inference
+  (executable unless `compress` is set, since a brotli-staged `.br` is data the install step
+  decompresses, not a program); an explicit `true`/`false` overrides it. Use `false` for a
+  build-only package shipping a payload rather than a program — a `.wasm`, a `.jar`, a model file —
+  which no inference can detect. `include` files always keep their own mode.
+
+  Deliberately an override rather than an opt-in: defaulting to *not* executable would silently
+  ship archives whose binary needs a `chmod +x`, the exact bug the mode override exists to prevent.
+
 - **github-release/config** — New `attest` field for build-only packages. `attest = true` adds an
   `actions/attest-build-provenance@v2` step to the generated release job and the `id-token: write` +
   `attestations: write` permissions it needs, signing every released asset with the workflow's OIDC

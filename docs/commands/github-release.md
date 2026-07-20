@@ -66,6 +66,10 @@ include   = ["README.md", "LICENSE", "types/*.d.ts"]   # bundled inside each arc
   `upload-artifact`, which drops POSIX permissions, so the bit is set here rather than inherited.
   `include` files keep their own mode. There is currently no way to attach a raw, extensionless
   binary.
+- **`executable`** — overrides that mode decision. Omit it: the default is "executable unless
+  `compress` is set", since a brotli-staged `.br` is data the install step decompresses rather than
+  a program. Set `executable = false` for a build-only package whose artifact is a payload
+  (`.wasm`, `.jar`) instead of something you run, or `true` to force the bit on.
 - **`include`** — extra files bundled beside the binary inside every archive, each keeping its
   repo-relative path (so `types/*.d.ts` stays under `types/`). Globs are expanded from the repo root.
 - **`checksums`** — writes a `sha256sum`-style `checksums.txt` (`<hex>  <asset>`) covering every

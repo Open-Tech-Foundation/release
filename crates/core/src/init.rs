@@ -443,6 +443,7 @@ pub fn orchestrate(
                     archive: None,
                     checksums: false,
                     attest: false,
+                    executable: None,
                     include: Vec::new(),
                 });
             }
@@ -469,6 +470,7 @@ pub fn orchestrate(
                 archive: None,
                 checksums: false,
                 attest: false,
+                executable: None,
                 include: Vec::new(),
             });
         }
@@ -1471,6 +1473,7 @@ fn configure_generic(
         checksums,
         attest,
         include,
+        executable: None,
     })
 }
 
@@ -1681,6 +1684,7 @@ impl InitPrompt for StdinInitPrompt {
             archive: None,
             checksums: false,
             attest: false,
+            executable: None,
             include: Vec::new(),
         })
     }
@@ -2074,6 +2078,7 @@ pub(crate) mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            executable: None,
             include: Vec::new(),
         }
     }
@@ -2095,6 +2100,7 @@ pub(crate) mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            executable: None,
             include: Vec::new(),
         }
     }
@@ -2120,6 +2126,7 @@ pub(crate) mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            executable: None,
             include: Vec::new(),
         }
     }
@@ -2224,6 +2231,7 @@ pub(crate) mod tests {
                 archive: None,
                 checksums: false,
                 attest: false,
+                executable: None,
                 include: Vec::new(),
             }],
         };
@@ -2271,6 +2279,7 @@ pub(crate) mod tests {
                     archive: None,
                     checksums: false,
                     attest: false,
+                    executable: None,
                     include: Vec::new(),
                 },
                 PackageEntry {
@@ -2289,6 +2298,7 @@ pub(crate) mod tests {
                     archive: None,
                     checksums: false,
                     attest: false,
+                    executable: None,
                     include: Vec::new(),
                 },
             ],
@@ -2476,6 +2486,7 @@ pub(crate) mod tests {
                 archive: None,
                 checksums: false,
                 attest: false,
+                executable: None,
                 include: Vec::new(),
             }],
         };
@@ -2526,6 +2537,7 @@ pub(crate) mod tests {
                 archive: None,
                 checksums: false,
                 attest: false,
+                executable: None,
                 include: Vec::new(),
             }],
         }
@@ -2641,6 +2653,7 @@ pub(crate) mod tests {
                 archive: None,
                 checksums: false,
                 attest: false,
+                executable: None,
                 include: Vec::new(),
             }],
         };
