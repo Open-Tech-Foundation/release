@@ -195,6 +195,10 @@ pub struct Target {
     /// Whether this target needs cross-compile prep (a non-host linker) on its runner.
     #[serde(default, skip_serializing_if = "is_false")]
     pub cross: bool,
+    /// Whether this target builds *natively inside a VM* on its runner (a `vmactions/<name>-vm`
+    /// step) instead of cross-compiling on the host. Set for OSes GitHub hosts no runner for.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub vm: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -212,6 +216,8 @@ pub struct TargetInfo {
     pub stage_as: &'static str,
     pub ext: &'static str,
     pub cross: bool,
+    /// Whether this target builds natively inside a VM on its runner. See [`Target::vm`].
+    pub vm: bool,
     /// Whether `init` selects this target by default. Only the widely-supported platforms (the set
     /// an npm package's `extract.js` resolver typically handles) are on by default; niche targets
     /// (`win32-arm64`, 32-bit) stay in the registry for explicit opt-in.
@@ -223,28 +229,31 @@ pub struct TargetInfo {
 /// is the one mistake that publishes a working-looking package no install can use.
 #[rustfmt::skip]
 pub const TARGET_REGISTRY: &[TargetInfo] = &[
-    TargetInfo { label: "Linux x64",          name: "linux",   arch: "x86_64",  triple: "x86_64-unknown-linux-gnu",  runner: "ubuntu-latest",  stage_as: "linux-x64",   ext: "",     cross: false, default_on: true },
-    TargetInfo { label: "Linux ARM64",        name: "linux",   arch: "aarch64", triple: "aarch64-unknown-linux-gnu", runner: "ubuntu-latest",  stage_as: "linux-arm64", ext: "",     cross: true,  default_on: true },
-    TargetInfo { label: "Linux x86 (32-bit)", name: "linux",   arch: "x86",     triple: "i686-unknown-linux-gnu",    runner: "ubuntu-latest",  stage_as: "linux-ia32",  ext: "",     cross: true,  default_on: false },
+    TargetInfo { label: "Linux x64",          name: "linux",   arch: "x86_64",  triple: "x86_64-unknown-linux-gnu",  runner: "ubuntu-latest",  stage_as: "linux-x64",   ext: "",     cross: false, vm: false, default_on: true },
+    TargetInfo { label: "Linux ARM64",        name: "linux",   arch: "aarch64", triple: "aarch64-unknown-linux-gnu", runner: "ubuntu-latest",  stage_as: "linux-arm64", ext: "",     cross: true,  vm: false, default_on: true },
+    TargetInfo { label: "Linux x86 (32-bit)", name: "linux",   arch: "x86",     triple: "i686-unknown-linux-gnu",    runner: "ubuntu-latest",  stage_as: "linux-ia32",  ext: "",     cross: true,  vm: false, default_on: false },
     // musl (statically linked, portable across distros). Keyed under a distinct `linux-musl` name so
     // it doesn't collide with the glibc `(linux, <arch>)` rows; a separate `stage_as` keeps its assets
     // distinct (e.g. `esrun-linux-musl-x86-64`). x86_64 links self-contained via `rustup target add`;
     // aarch64 cross-links with the GNU linker like the glibc ARM64 target. Off by default (opt-in).
-    TargetInfo { label: "Linux x64 (musl, static)",   name: "linux-musl", arch: "x86_64",  triple: "x86_64-unknown-linux-musl",  runner: "ubuntu-latest", stage_as: "linux-musl-x64",   ext: "", cross: false, default_on: false },
-    TargetInfo { label: "Linux ARM64 (musl, static)", name: "linux-musl", arch: "aarch64", triple: "aarch64-unknown-linux-musl", runner: "ubuntu-latest", stage_as: "linux-musl-arm64", ext: "", cross: true,  default_on: false },
-    TargetInfo { label: "macOS ARM64",        name: "macos",   arch: "aarch64", triple: "aarch64-apple-darwin",      runner: "macos-latest",   stage_as: "darwin-arm64",ext: "",     cross: false, default_on: true },
-    TargetInfo { label: "macOS x64",          name: "macos",   arch: "x86_64",  triple: "x86_64-apple-darwin",       runner: "macos-latest",   stage_as: "darwin-x64",  ext: "",     cross: false, default_on: true },
-    TargetInfo { label: "Windows x64",        name: "windows", arch: "x86_64",  triple: "x86_64-pc-windows-msvc",    runner: "windows-latest", stage_as: "win32-x64",   ext: ".exe", cross: false, default_on: true },
+    TargetInfo { label: "Linux x64 (musl, static)",   name: "linux-musl", arch: "x86_64",  triple: "x86_64-unknown-linux-musl",  runner: "ubuntu-latest", stage_as: "linux-musl-x64",   ext: "", cross: false, vm: false, default_on: false },
+    TargetInfo { label: "Linux ARM64 (musl, static)", name: "linux-musl", arch: "aarch64", triple: "aarch64-unknown-linux-musl", runner: "ubuntu-latest", stage_as: "linux-musl-arm64", ext: "", cross: true,  vm: false, default_on: false },
+    TargetInfo { label: "macOS ARM64",        name: "macos",   arch: "aarch64", triple: "aarch64-apple-darwin",      runner: "macos-latest",   stage_as: "darwin-arm64",ext: "",     cross: false, vm: false, default_on: true },
+    TargetInfo { label: "macOS x64",          name: "macos",   arch: "x86_64",  triple: "x86_64-apple-darwin",       runner: "macos-latest",   stage_as: "darwin-x64",  ext: "",     cross: false, vm: false, default_on: true },
+    TargetInfo { label: "Windows x64",        name: "windows", arch: "x86_64",  triple: "x86_64-pc-windows-msvc",    runner: "windows-latest", stage_as: "win32-x64",   ext: ".exe", cross: false, vm: false, default_on: true },
     // win32-arm64 is rarely in a package's resolver SUPPORTED set and cross-links arm64 on an x64
     // Windows runner; offered but off by default.
-    TargetInfo { label: "Windows ARM64",      name: "windows", arch: "aarch64", triple: "aarch64-pc-windows-msvc",   runner: "windows-latest", stage_as: "win32-arm64", ext: ".exe", cross: false, default_on: false },
-    TargetInfo { label: "Windows x86 (32-bit)", name: "windows", arch: "x86",   triple: "i686-pc-windows-msvc",      runner: "windows-latest", stage_as: "win32-ia32",  ext: ".exe", cross: false, default_on: false },
-    // FreeBSD. GitHub has no FreeBSD runner, so these cross-compile on the Linux runner — but the
-    // built-in `cross` prep installs a GNU/Linux gcc, which is wrong for FreeBSD, so `cross` is left
-    // false: the FreeBSD sysroot + linker are user-supplied (via the package `command`, a sysroot,
-    // `cross-rs`, or a FreeBSD VM action). `stage_as` is a valid Node `process.platform-arch`.
-    TargetInfo { label: "FreeBSD x64",   name: "freebsd", arch: "x86_64",  triple: "x86_64-unknown-freebsd",  runner: "ubuntu-latest", stage_as: "freebsd-x64",   ext: "", cross: false, default_on: false },
-    TargetInfo { label: "FreeBSD ARM64", name: "freebsd", arch: "aarch64", triple: "aarch64-unknown-freebsd", runner: "ubuntu-latest", stage_as: "freebsd-arm64", ext: "", cross: false, default_on: false },
+    TargetInfo { label: "Windows ARM64",      name: "windows", arch: "aarch64", triple: "aarch64-pc-windows-msvc",   runner: "windows-latest", stage_as: "win32-arm64", ext: ".exe", cross: false, vm: false, default_on: false },
+    TargetInfo { label: "Windows x86 (32-bit)", name: "windows", arch: "x86",   triple: "i686-pc-windows-msvc",      runner: "windows-latest", stage_as: "win32-ia32",  ext: ".exe", cross: false, vm: false, default_on: false },
+    // FreeBSD. GitHub hosts no FreeBSD runner, and cross-compiling from Linux does not work off the
+    // shelf: rustc emits objects fine, but the link step needs FreeBSD base libs (-lexecinfo, -lkvm,
+    // -lprocstat, …) that Rust does not ship, and aarch64-unknown-freebsd is tier 3 with no prebuilt
+    // std at all. So these build *natively inside a VM* (`vm: true`) on the Linux runner instead —
+    // which also makes aarch64 the VM's host target, sidestepping the tier-3 problem entirely.
+    // `cross` stays false: the GNU/Linux cross prep is the wrong toolchain here.
+    // Caveat: only x86_64 is hardware-accelerated; aarch64 is fully emulated and much slower.
+    TargetInfo { label: "FreeBSD x64",   name: "freebsd", arch: "x86_64",  triple: "x86_64-unknown-freebsd",  runner: "ubuntu-latest", stage_as: "freebsd-x64",   ext: "", cross: false, vm: true, default_on: false },
+    TargetInfo { label: "FreeBSD ARM64 (emulated, slow)", name: "freebsd", arch: "aarch64", triple: "aarch64-unknown-freebsd", runner: "ubuntu-latest", stage_as: "freebsd-arm64", ext: "", cross: false, vm: true, default_on: false },
 ];
 
 /// Look up the built-in facts for a `(name, arch)` pair.
@@ -297,6 +306,12 @@ impl Target {
         self.cross || self.info().map(|i| i.cross).unwrap_or(false)
     }
 
+    /// Whether this target builds natively inside a VM — true if explicitly set, else the registry
+    /// value. VM targets skip host toolchain setup and cross prep: the build runs in the guest.
+    pub fn is_vm(&self) -> bool {
+        self.vm || self.info().map(|i| i.vm).unwrap_or(false)
+    }
+
     /// Expand the per-target placeholders in a command/artifacts template: `{triple}`, `{ext}`,
     /// `{stage_as}`, `{bin}`, `{arch}`, `{name}` (the OS name). `bin` is the package's binary name.
     pub fn render(&self, template: &str, bin: &str) -> String {
@@ -321,6 +336,7 @@ impl Target {
                 stage_as: i.stage_as.to_string(),
                 ext: i.ext.to_string(),
                 cross: i.cross,
+                vm: i.vm,
             },
             None => Self {
                 name: name.to_string(),
@@ -667,22 +683,29 @@ mod tests {
     }
 
     #[test]
-    fn freebsd_targets_resolve_with_user_supplied_toolchain() {
+    fn freebsd_targets_build_in_a_vm_not_by_cross_compiling() {
         let bsd = Target::resolved("freebsd", "x86_64");
         assert_eq!(bsd.triple(), "x86_64-unknown-freebsd");
-        assert_eq!(bsd.runner(), "ubuntu-latest");
+        assert_eq!(bsd.runner(), "ubuntu-latest"); // the *host*; the build happens in the guest
         assert_eq!(bsd.stage_as(), "freebsd-x64"); // valid Node process.platform-arch
-                                                   // `cross` is false on purpose: the GNU/Linux cross prep is wrong for FreeBSD, so the tool
-                                                   // must not install it or set a linux linker — the user supplies the FreeBSD sysroot/linker.
+
+        // `vm` and `cross` are mutually exclusive here: cross-compiling FreeBSD from Linux needs
+        // base-system libs Rust does not ship, and the GNU/Linux cross prep is the wrong toolchain.
+        assert!(bsd.is_vm());
         assert!(!bsd.is_cross());
 
-        assert_eq!(
-            Target::resolved("freebsd", "aarch64").triple(),
-            "aarch64-unknown-freebsd"
-        );
+        // aarch64 is tier 3 with no prebuilt std, so it *only* works as the guest's host target.
+        let arm = Target::resolved("freebsd", "aarch64");
+        assert_eq!(arm.triple(), "aarch64-unknown-freebsd");
+        assert!(arm.is_vm());
+        assert!(!arm.is_cross());
 
         for info in TARGET_REGISTRY.iter().filter(|t| t.name == "freebsd") {
             assert!(!info.default_on, "{} should be opt-in", info.label);
+        }
+        // Every natively-hosted target stays a host build — VM prep is FreeBSD-only for now.
+        for info in TARGET_REGISTRY.iter().filter(|t| t.name != "freebsd") {
+            assert!(!info.vm, "{} should build on the host", info.label);
         }
     }
 

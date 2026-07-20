@@ -10,7 +10,7 @@ use anyhow::{anyhow, bail, Result};
 use crate::config::{PackageEntry, ReleaseConfig};
 
 /// Emit the matrix JSON for `package` (or, when `None` and exactly one matrix package exists, that
-/// one). Shape: `{"include":[{name,arch,triple,runner,ext,cross,stage_as}, …]}`, ready to drop into
+/// one). Shape: `{"include":[{name,arch,triple,runner,ext,cross,vm,stage_as}, …]}`, ready to drop into
 /// `strategy.matrix: ${{ fromJSON(...) }}`.
 pub fn matrix_json(config: &ReleaseConfig, package: Option<&str>) -> Result<String> {
     let entry = select_package(config, package)?;
@@ -19,13 +19,14 @@ pub fn matrix_json(config: &ReleaseConfig, package: Option<&str>) -> Result<Stri
         .iter()
         .map(|t| {
             format!(
-                r#"{{"name":"{}","arch":"{}","triple":"{}","runner":"{}","ext":"{}","cross":{},"stage_as":"{}"}}"#,
+                r#"{{"name":"{}","arch":"{}","triple":"{}","runner":"{}","ext":"{}","cross":{},"vm":{},"stage_as":"{}"}}"#,
                 t.name,
                 t.arch,
                 t.triple(),
                 t.runner(),
                 t.ext(),
                 t.is_cross(),
+                t.is_vm(),
                 t.stage_as()
             )
         })
@@ -104,6 +105,26 @@ mod tests {
         assert!(json.contains(r#""ext":".exe""#));
         assert!(json.contains(r#""cross":false"#));
         assert!(json.starts_with(r#"{"include":["#));
+        // Host-built targets carry vm:false; the workflow's `!matrix.vm` gates depend on the field
+        // being present on every row, not just VM ones.
+        assert_eq!(json.matches(r#""vm":false"#).count(), 2);
+    }
+
+    #[test]
+    fn vm_targets_are_flagged_for_the_workflow() {
+        let cfg = config_with(vec![matrix_pkg(
+            "esrun",
+            vec![
+                Target::resolved("linux", "x86_64"),
+                Target::resolved("freebsd", "aarch64"),
+            ],
+        )]);
+        let json = matrix_json(&cfg, None).unwrap();
+        assert!(json.contains(r#""name":"freebsd","arch":"aarch64""#));
+        assert!(json.contains(r#""triple":"aarch64-unknown-freebsd""#));
+        // The VM row builds in a guest, so it is not a cross build and runs on the Linux host.
+        assert!(json.contains(r#""cross":false,"vm":true,"stage_as":"freebsd-arm64""#));
+        assert!(json.contains(r#""cross":false,"vm":false,"stage_as":"linux-x64""#));
     }
 
     #[test]

@@ -116,6 +116,7 @@ no install can use, so the tool owns this mapping.
 | `stage_as` | Node `process.platform-process.arch` stage dir. Looked up if omitted. **Must** match what the package resolves at install time. |
 | `ext` | Executable extension (`""` or `.exe`). Looked up if omitted. |
 | `cross` | Whether the runner needs cross-compile prep (a non-host linker). Looked up if omitted. |
+| `vm` | Whether the build runs natively inside a VM guest on the runner (`vmactions/<name>-vm`) instead of on the host. Looked up if omitted. Mutually exclusive with `cross` in practice — the guest brings its own toolchain. |
 
 `init` writes every field; a hand-edited file may give just `name`/`arch` and let the built-in
 registry (`crates/core/src/config.rs`) fill the rest.
@@ -135,11 +136,7 @@ arch = "x86_64"
 A crate with C dependencies also needs a musl C toolchain on the runner (e.g. `apt-get install
 musl-tools`); add it as a build step or in the package `command`.
 
-**FreeBSD:** use `name = "freebsd"` with `arch = "x86_64"` or `"aarch64"`. GitHub hosts no FreeBSD
-runner, so these are registered on `ubuntu-latest` with `cross = false` **on purpose**: the built-in
-cross prep installs a GNU/Linux gcc, which is the wrong toolchain for FreeBSD. The tool owns the
-naming (triple, `stage_as`, asset name) and you supply the toolchain in the package `command` — a
-FreeBSD sysroot, [`cross`](https://github.com/cross-rs/cross), or a FreeBSD VM action. Both are
+**FreeBSD (built in a VM):** use `name = "freebsd"` with `arch = "x86_64"` or `"aarch64"`. Both are
 opt-in (off by default):
 
 ```toml
@@ -147,6 +144,25 @@ opt-in (off by default):
 name = "freebsd"
 arch = "x86_64"
 ```
+
+GitHub hosts no FreeBSD runner, and cross-compiling from Linux does not work off the shelf: rustc
+emits objects fine, but linking needs FreeBSD base-system libraries (`-lexecinfo`, `-lkvm`,
+`-lprocstat`, …) that Rust does not ship, and `aarch64-unknown-freebsd` is a tier-3 target with no
+prebuilt `std` at all.
+
+So these targets carry `vm = true` and build **natively inside a FreeBSD guest** on the Linux
+runner, via [`vmactions/freebsd-vm`](https://github.com/vmactions/freebsd-vm). `init` generates the
+whole leg: the guest boots, the checkout syncs in, `pkg install -y rust` provides the toolchain, the
+package `command` runs natively, and `copyback` returns the binary to the host, where
+`otf-release build … --stage-only` stages it like any other target. Inside the guest every target is
+the *host* target, so the tier-3 problem disappears.
+
+> **aarch64 is fully emulated** on an x64 runner and is therefore much slower than the x86_64 leg —
+> time a real run before depending on it. `cross` stays `false` for both: the GNU/Linux cross prep
+> is the wrong toolchain here.
+
+The same mechanism covers any OS with a `vmactions/<name>-vm` image; only FreeBSD ships in the
+registry today.
 
 ## The `generic` adapter
 

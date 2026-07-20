@@ -10,10 +10,23 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 - **targets** — Added FreeBSD build targets to the registry: `freebsd` / `x86_64`
   (`x86_64-unknown-freebsd`) and `freebsd` / `aarch64` (`aarch64-unknown-freebsd`), staged as
-  `freebsd-x64` / `freebsd-arm64` and released as `<bin>-freebsd-<arch>`. GitHub hosts no FreeBSD
-  runner, so they are registered on `ubuntu-latest` with `cross = false`: the built-in cross prep
-  installs a GNU/Linux gcc, which is wrong for FreeBSD, so the sysroot/linker stays user-supplied
-  via the package `command`. Both are opt-in (off by default).
+  `freebsd-x64` / `freebsd-arm64` and released as `<bin>-freebsd-<arch>`. Both are opt-in.
+
+  GitHub hosts no FreeBSD runner, and cross-compiling from Linux does not work off the shelf —
+  linking needs FreeBSD base-system libraries Rust does not ship, and `aarch64-unknown-freebsd` is
+  tier 3 with no prebuilt `std`. So these targets build **natively inside a FreeBSD guest** on the
+  Linux runner via `vmactions/freebsd-vm`, which makes every target the guest's host target and
+  sidesteps both problems. `init` generates the full leg (boot, sync, `pkg install -y rust`, build,
+  `copyback`). Note that the aarch64 leg is fully emulated and correspondingly slow.
+- **targets** — New `vm` field on `[[package.targets]]` (and in the `matrix` JSON) marking a target
+  that builds inside a VM guest rather than on the host runner. Host toolchain setup and cross prep
+  are gated off for those rows. Generalizes to any `vmactions/<name>-vm` image; only FreeBSD ships
+  in the registry today.
+- **build** — New `otf-release build --stage-only` flag: skip the toolchain setup and build command
+  and stage a binary an earlier step already produced. Required by VM targets (the compile happens
+  in the guest, the staging on the host), and usable for any externally-built artifact — a container
+  build, a Zig cross-compile, another action. A missing artifact now reports that the expected file
+  was never produced instead of implying a build failure that never ran.
 - **cargo** — Internal crates pinned in the root `[workspace.dependencies]` table (a `path` dep with
   an explicit `version`, referenced by members via `{ workspace = true }`) now have their version
   pins bumped in lockstep with the workspace version — previously only member `[dependencies]`

@@ -8,6 +8,10 @@
 //!   4. copies — optionally brotli-compressing — the produced binary to
 //!      `.artifacts/<package>/bin/<stage_as>/<bin><ext>[.br]`.
 //!
+//! `--stage-only` runs step 4 alone, for targets whose binary was produced by some earlier step
+//! rather than by this command — VM targets (FreeBSD et al.) build natively inside the guest, so
+//! only staging belongs on the host.
+//!
 //! That last path is the whole point: `<stage_as>` is the Node `process.platform-process.arch`
 //! directory the package's install-time resolver reads, and `.artifacts/<package>` is exactly what
 //! `publish` copies into the package before packing. Getting the layout right here is what stops a
@@ -22,7 +26,17 @@ use anyhow::{anyhow, bail, Context, Result};
 use crate::config::{ReleaseConfig, Target};
 
 /// Build one matrix target of `package` and stage its binary under `.artifacts/`.
-pub fn run(config: &ReleaseConfig, root: &Path, package: &str, target_spec: &str) -> Result<()> {
+///
+/// `stage_only` skips steps 1–3 and stages an artifact some earlier step already produced — used by
+/// VM targets, where the compile runs inside the guest (see [`Target::is_vm`]) and only the staging
+/// half belongs on the host.
+pub fn run(
+    config: &ReleaseConfig,
+    root: &Path,
+    package: &str,
+    target_spec: &str,
+    stage_only: bool,
+) -> Result<()> {
     let (os, arch) = parse_target_spec(target_spec)?;
     let entry = config
         .packages
@@ -38,14 +52,23 @@ pub fn run(config: &ReleaseConfig, root: &Path, package: &str, target_spec: &str
         anyhow!("matrix package `{package}` needs a `bin_name` to stage its binary")
     })?;
 
-    if entry.command.contains("cargo") {
-        rustup_add_target(&target.triple());
+    if !stage_only {
+        if entry.command.contains("cargo") {
+            rustup_add_target(&target.triple());
+        }
+        let command = target.render(&entry.command, bin);
+        run_build_command(root, &command, target)?;
     }
 
-    let command = target.render(&entry.command, bin);
-    run_build_command(root, &command, target)?;
-
-    let artifact = resolve_artifact(root, &target.render(&entry.artifacts, bin))?;
+    let artifact =
+        resolve_artifact(root, &target.render(&entry.artifacts, bin)).with_context(|| {
+            if stage_only {
+                "--stage-only expects the artifact to already exist; check that the earlier step \
+                 (e.g. the VM build) ran and copied its output back to the host"
+            } else {
+                "the build command completed but produced no matching artifact"
+            }
+        })?;
     let dest = staged_path(root, package, target, bin, entry.compress.as_deref());
     stage_binary(&artifact, &dest, entry.compress.as_deref())?;
     println!(
@@ -179,6 +202,7 @@ fn stage_binary(src: &Path, dest: &Path, compress: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::PackageEntry;
     use std::io::Read;
 
     #[test]
@@ -267,6 +291,49 @@ mod tests {
         let globbed = resolve_artifact(dir.path(), "target/*/release/otfwc").unwrap();
         assert!(globbed.is_file());
         assert!(resolve_artifact(dir.path(), "target/x/release/missing").is_err());
+    }
+
+    /// `--stage-only` must not invoke the build command — a VM target's command (`cargo build
+    /// --target x86_64-unknown-freebsd`) cannot succeed on the host, so running it would break the
+    /// leg. Uses a command that fails loudly to prove it was never executed.
+    #[test]
+    fn stage_only_skips_the_build_command_and_stages_an_existing_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let built = root.join("target/x86_64-unknown-freebsd/release");
+        std::fs::create_dir_all(&built).unwrap();
+        std::fs::write(built.join("esrun"), b"from the guest").unwrap();
+
+        let entry = PackageEntry {
+            name: "esrun".into(),
+            adapter: crate::config::Ecosystem::Cargo,
+            mode: crate::config::Mode::BuildOnly,
+            matrix: true,
+            targets: vec![Target::resolved("freebsd", "x86_64")],
+            command: "exit 17".into(), // would fail the run if it were ever executed
+            artifacts: "target/{triple}/release/{bin}{ext}".into(),
+            bin_name: Some("esrun".into()),
+            compress: None,
+            manifest: None,
+            version_field: None,
+            publish: None,
+            archive: None,
+            checksums: false,
+            include: Vec::new(),
+        };
+        let config = ReleaseConfig {
+            packages: vec![entry],
+            ..Default::default()
+        };
+
+        run(&config, root, "esrun", "freebsd/x86_64", true).unwrap();
+        assert_eq!(
+            std::fs::read(root.join(".artifacts/esrun/bin/freebsd-x64/esrun")).unwrap(),
+            b"from the guest"
+        );
+
+        // Without the flag the same config runs the command, which fails.
+        assert!(run(&config, root, "esrun", "freebsd/x86_64", false).is_err());
     }
 
     #[test]

@@ -817,6 +817,70 @@ fn build_toolchains(entry: &PackageEntry) -> (bool, bool) {
     (rust, node)
 }
 
+/// The distinct guest OS names among a package's VM targets, in registry order and de-duplicated.
+fn vm_os_names(entry: &PackageEntry) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for target in entry.targets.iter().filter(|t| t.is_vm()) {
+        if !seen.iter().any(|n| n == &target.name) {
+            seen.push(target.name.clone());
+        }
+    }
+    seen
+}
+
+/// Expand a build-command template against the GitHub matrix rather than a concrete target, so one
+/// emitted step serves every row of that guest OS.
+fn render_command_for_matrix(command: &str, bin: &str) -> String {
+    command
+        .replace("{triple}", "${{ matrix.triple }}")
+        .replace("{stage_as}", "${{ matrix.stage_as }}")
+        .replace("{ext}", "${{ matrix.ext }}")
+        .replace("{arch}", "${{ matrix.arch }}")
+        .replace("{name}", "${{ matrix.name }}")
+        .replace("{bin}", bin)
+}
+
+/// A `vmactions/<os>-vm` step: boot the guest, sync the checkout in, install the toolchain from
+/// `pkg`, run the package's build command natively, and copy the result back to the host.
+///
+/// Building in the guest is what makes an OS like FreeBSD work at all — cross-compiling from Linux
+/// needs base-system libraries Rust does not ship, and some arches have no prebuilt std. Inside the
+/// VM every target is the host target, so none of that applies.
+fn render_vm_build_step(s: &mut String, entry: &PackageEntry, os: &str, rust: bool, node: bool) {
+    let bin = entry.bin_name.as_deref().unwrap_or(&entry.name);
+    let mut pkgs: Vec<&str> = Vec::new();
+    if rust {
+        pkgs.push("rust");
+    }
+    if node {
+        pkgs.push("node");
+        pkgs.push("npm");
+    }
+
+    s.push_str(&format!(
+        "      - name: Build {} in a {os} VM\n",
+        entry.name
+    ));
+    s.push_str(&format!(
+        "        if: ${{{{ matrix.vm && matrix.name == '{os}' }}}}\n"
+    ));
+    s.push_str(&format!("        uses: vmactions/{os}-vm@v1\n"));
+    s.push_str("        with:\n");
+    s.push_str("          arch: ${{ matrix.arch }}\n");
+    s.push_str("          usesh: true\n");
+    // Bring the guest's build output back to the host so the staging step can find it.
+    s.push_str("          copyback: true\n");
+    if !pkgs.is_empty() {
+        s.push_str("          prepare: |\n");
+        s.push_str(&format!("            pkg install -y {}\n", pkgs.join(" ")));
+    }
+    s.push_str("          run: |\n");
+    s.push_str(&format!(
+        "            {}\n",
+        render_command_for_matrix(&entry.command, bin)
+    ));
+}
+
 /// A matrix package builds as two jobs: a tiny `matrix-<slug>` job that emits the target matrix
 /// from `release.toml` via `otf-release matrix` (so the list never drifts), and a `build-<slug>`
 /// job that fans out over `fromJSON(...)` and calls `otf-release build` per target. The tool — not
@@ -859,6 +923,16 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmT
     ));
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n");
+
+    // VM targets build natively inside a guest OS, so every host-side toolchain step below is
+    // gated off for them — the guest brings its own compiler.
+    let vm_oses = vm_os_names(entry);
+    let host_only = if vm_oses.is_empty() {
+        String::new()
+    } else {
+        "        if: ${{ !matrix.vm }}\n".to_string()
+    };
+
     // Cross prep is driven by the selected target set and each matrix row's `cross` flag.
     if entry.targets.iter().any(|target| target.is_cross()) {
         s.push_str("      - name: Install cross toolchain\n");
@@ -870,6 +944,7 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmT
     let (rust, node) = build_toolchains(entry);
     if rust {
         s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
+        s.push_str(&host_only);
         s.push_str("        with:\n          targets: ${{ matrix.triple }}\n");
     }
     if node {
@@ -878,9 +953,24 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmT
     }
     push_install_otf_release_cross_platform(s);
     s.push_str(&format!("      - name: Build {name}\n"));
+    s.push_str(&host_only);
     s.push_str(&format!(
         "        run: otf-release build --package {name} --target ${{{{ matrix.name }}}}/${{{{ matrix.arch }}}}\n"
     ));
+
+    // One VM step per distinct guest OS: `uses:` cannot be templated, so the action reference has
+    // to be literal and the row is selected with a `matrix.name` guard.
+    for os in &vm_oses {
+        render_vm_build_step(s, entry, os, rust, node);
+    }
+    if !vm_oses.is_empty() {
+        // The guest compiled and copied the binary back; only staging belongs on the host.
+        s.push_str(&format!("      - name: Stage {name}\n"));
+        s.push_str("        if: ${{ matrix.vm }}\n");
+        s.push_str(&format!(
+            "        run: otf-release build --package {name} --target ${{{{ matrix.name }}}}/${{{{ matrix.arch }}}} --stage-only\n"
+        ));
+    }
     s.push_str("      - uses: actions/upload-artifact@v4\n");
     s.push_str("        with:\n");
     s.push_str(&format!(
@@ -1672,7 +1762,7 @@ impl InitPrompt for StdinInitPrompt {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::process::Command;
@@ -2296,6 +2386,117 @@ mod tests {
         assert!(!out.contains("  github-release:\n"));
         // A generated npm version read is confident — no stray `# edit me` hint.
         assert!(!out.contains("# edit me: where the version lives"));
+    }
+
+    /// A cargo build-only matrix package over `targets` — the shape that exercises VM codegen.
+    pub(crate) fn matrix_config(targets: Vec<Target>) -> ReleaseConfig {
+        ReleaseConfig {
+            snapshot_tag: None,
+            tag_format: "v{version}".to_string(),
+            legacy_tag_formats: Vec::new(),
+            provider: "github".to_string(),
+            default_branch: "main".to_string(),
+            changelog_strategy: ChangelogStrategy::Curated,
+            changelog_scope: ChangelogScope::Root,
+            github_release_notes: GithubReleaseNotes::AutoGenerate,
+            hooks: crate::config::Hooks::default(),
+            publish: crate::config::PublishConfig::default(),
+            adapters: vec![Ecosystem::Cargo],
+            skip_publish: Vec::new(),
+            packages: vec![PackageEntry {
+                name: "esrun".into(),
+                adapter: Ecosystem::Cargo,
+                mode: Mode::BuildOnly,
+                matrix: true,
+                targets,
+                command: "cargo build --release --target {triple}".into(),
+                artifacts: "target/{triple}/release/esrun{ext}".into(),
+                bin_name: Some("esrun".into()),
+                compress: None,
+                manifest: None,
+                version_field: None,
+                publish: None,
+                archive: None,
+                checksums: false,
+                include: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn vm_targets_build_in_a_guest_and_stage_on_the_host() {
+        // A glibc Linux row (host build) beside both FreeBSD rows (guest builds).
+        let config = matrix_config(vec![
+            Target::resolved("linux", "x86_64"),
+            Target::resolved("freebsd", "x86_64"),
+            Target::resolved("freebsd", "aarch64"),
+        ]);
+        let out = render_workflow(&config);
+
+        // Exactly one VM step for the two freebsd rows — `uses:` can't be templated, so the action
+        // is literal and the row is selected by a `matrix.name` guard.
+        assert_eq!(out.matches("uses: vmactions/freebsd-vm@v1").count(), 1);
+        assert!(out.contains("        if: ${{ matrix.vm && matrix.name == 'freebsd' }}\n"));
+        assert!(out.contains("          arch: ${{ matrix.arch }}\n"));
+        assert!(out.contains("          copyback: true\n"));
+        assert!(out.contains("            pkg install -y rust\n"));
+        // The guest runs the package command with matrix expressions, not `{triple}` placeholders.
+        assert!(out.contains("            cargo build --release --target ${{ matrix.triple }}\n"));
+        assert!(!out.contains("{triple}"));
+
+        // Host toolchain setup is gated off for VM rows; the guest brings its own.
+        assert!(out.contains(
+            "      - uses: dtolnay/rust-toolchain@stable\n        if: ${{ !matrix.vm }}\n"
+        ));
+        // The normal build step skips VM rows, and a stage-only step covers them instead.
+        assert!(out.contains(
+            "      - name: Build esrun\n        if: ${{ !matrix.vm }}\n        run: otf-release build --package esrun --target ${{ matrix.name }}/${{ matrix.arch }}\n"
+        ));
+        assert!(out.contains(
+            "      - name: Stage esrun\n        if: ${{ matrix.vm }}\n        run: otf-release build --package esrun --target ${{ matrix.name }}/${{ matrix.arch }} --stage-only\n"
+        ));
+    }
+
+    /// The generated workflow's whole job is to be valid YAML that GitHub will accept. Substring
+    /// assertions elsewhere can all pass on a file that fails to parse, so parse it for real —
+    /// VM steps add nested block scalars (`prepare:`/`run:`), the easiest thing to mis-indent.
+    #[test]
+    fn generated_workflow_is_valid_yaml() {
+        let config = matrix_config(vec![
+            Target::resolved("linux", "x86_64"),
+            Target::resolved("freebsd", "x86_64"),
+            Target::resolved("freebsd", "aarch64"),
+        ]);
+        let out = render_workflow(&config);
+        let docs = yaml_rust2::YamlLoader::load_from_str(&out)
+            .unwrap_or_else(|e| panic!("generated workflow is not valid YAML: {e}\n---\n{out}"));
+        let steps = &docs[0]["jobs"]["build-esrun"]["steps"];
+        let vm_step = steps
+            .as_vec()
+            .expect("build job has steps")
+            .iter()
+            .find(|s| s["uses"].as_str() == Some("vmactions/freebsd-vm@v1"))
+            .expect("a freebsd VM step");
+        // The block scalars survived the round trip as real multi-line strings.
+        assert_eq!(
+            vm_step["with"]["prepare"].as_str(),
+            Some("pkg install -y rust\n")
+        );
+        assert_eq!(
+            vm_step["with"]["run"].as_str(),
+            Some("cargo build --release --target ${{ matrix.triple }}\n")
+        );
+        assert_eq!(vm_step["with"]["copyback"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn non_vm_packages_emit_no_vm_steps_or_gates() {
+        let config = matrix_config(vec![Target::resolved("linux", "x86_64")]);
+        let out = render_workflow(&config);
+        assert!(!out.contains("vmactions/"));
+        assert!(!out.contains("--stage-only"));
+        // No dead `!matrix.vm` guards when nothing in the matrix is a VM row.
+        assert!(!out.contains("matrix.vm"));
     }
 
     #[test]

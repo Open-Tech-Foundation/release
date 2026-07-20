@@ -158,6 +158,10 @@ enum Command {
         /// The target as `name/arch` (e.g. linux/aarch64).
         #[arg(long)]
         target: String,
+        /// Skip the build command and stage an artifact an earlier step already produced (VM
+        /// targets build inside the guest; only staging runs on the host).
+        #[arg(long)]
+        stage_only: bool,
     },
     /// CI: create a GitHub Release for a `build-only` package — read its version, build the notes,
     /// rename the staged binaries into OS/arch assets, and attach them. The build-only twin of
@@ -230,9 +234,13 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
-        Command::Build { package, target } => {
+        Command::Build {
+            package,
+            target,
+            stage_only,
+        } => {
             let config = ReleaseConfig::load(&root)?;
-            otf_release_core::build::run(&config, &root, &package, &target)?;
+            otf_release_core::build::run(&config, &root, &package, &target, stage_only)?;
             Ok(())
         }
         Command::GithubRelease {

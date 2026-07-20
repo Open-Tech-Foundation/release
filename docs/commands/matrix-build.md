@@ -27,8 +27,8 @@ Prints the GitHub Actions matrix as JSON, read straight from `release.toml`:
 
 ```json
 {"include":[
-  {"name":"linux","arch":"aarch64","triple":"aarch64-unknown-linux-gnu","runner":"ubuntu-latest","ext":"","cross":true,"stage_as":"linux-arm64"},
-  {"name":"windows","arch":"x86_64","triple":"x86_64-pc-windows-msvc","runner":"windows-latest","ext":".exe","cross":false,"stage_as":"win32-x64"}
+  {"name":"linux","arch":"aarch64","triple":"aarch64-unknown-linux-gnu","runner":"ubuntu-latest","ext":"","cross":true,"vm":false,"stage_as":"linux-arm64"},
+  {"name":"windows","arch":"x86_64","triple":"x86_64-pc-windows-msvc","runner":"windows-latest","ext":".exe","cross":false,"vm":false,"stage_as":"win32-x64"}
 ]}
 ```
 
@@ -53,6 +53,38 @@ Runs inside one matrix leg. It:
 `<stage_as>` is the Node `process.platform-process.arch` directory the package's install-time
 resolver reads. That path is the contract: get it right and every platform's binary lands exactly
 where an install looks for it.
+
+### `--stage-only`
+
+```
+otf-release build --package <name> --target <name>/<arch> --stage-only
+```
+
+Runs step 4 alone — skipping the toolchain setup and the build command — to stage a binary some
+earlier step already produced. This is what makes VM targets work: a target with `vm = true` (e.g.
+FreeBSD) compiles *inside a guest OS* on the runner, and only the staging half belongs on the host.
+The generated workflow pairs them automatically:
+
+```yaml
+- name: Build esrun in a freebsd VM
+  if: ${{ matrix.vm && matrix.name == 'freebsd' }}
+  uses: vmactions/freebsd-vm@v1
+  with:
+    arch: ${{ matrix.arch }}
+    usesh: true
+    copyback: true
+    prepare: |
+      pkg install -y rust
+    run: |
+      cargo build --release --target ${{ matrix.triple }}
+- name: Stage esrun
+  if: ${{ matrix.vm }}
+  run: otf-release build --package esrun --target ${{ matrix.name }}/${{ matrix.arch }} --stage-only
+```
+
+It is not FreeBSD-specific — use it for any binary built by something this tool did not invoke (a
+container build, a Zig cross-compile, another action). If the artifact is missing, the error says so
+explicitly rather than reporting a build failure that never happened.
 
 ## How the pieces meet `publish`
 
