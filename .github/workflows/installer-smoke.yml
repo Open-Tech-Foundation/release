@@ -131,16 +131,42 @@ jobs:
           ( cd "$fixture" && sha256sum otf-release-linux-x86-64.tar.gz | awk '{print $1"  "$2}' > checksums.txt )
           printf 'TAMPER' >> "$fixture/otf-release-linux-x86-64.tar.gz"
 
+          # Point every download at the fixture. Anchored on the RELEASE_BASE assignments rather
+          # than on full URLs, so this survives changes to how the URL is composed — it only
+          # breaks if the variable itself is renamed, which the guard below reports.
           sed \
-            -e "s|https://github.com/\$REPO/releases/latest/download/\$candidate|file://$fixture/\$candidate|" \
-            -e "s|https://github.com/\$REPO/releases/latest/download/checksums.txt|file://$fixture/checksums.txt|" \
+            -e "s|^\( *\)RELEASE_BASE=\".*\"|\1RELEASE_BASE=\"file://$fixture\"|" \
             -e "s|INSTALL_DIR=\"/usr/local/bin\"|INSTALL_DIR=\"$fixture/bin\"|" \
             install.sh > "$fixture/install-test.sh"
 
-          # The rewrites must have applied, or this would silently test the real release.
-          grep -q "file://$fixture" "$fixture/install-test.sh" \
-            || { echo "::error::fixture URL rewrite did not apply; test is not exercising the local asset"; exit 1; }
+          # Without this the test would quietly download the real release, pass for the wrong
+          # reason, and stop guarding anything.
+          rewrites="$(grep -c "file://$fixture" "$fixture/install-test.sh" || true)"
+          if [ "$rewrites" -eq 0 ]; then
+            echo "::error::fixture rewrite did not apply — install.sh no longer assigns RELEASE_BASE the way this test expects. Update the sed above."
+            exit 1
+          fi
+          grep -q "INSTALL_DIR=\"$fixture/bin\"" "$fixture/install-test.sh" \
+            || { echo "::error::INSTALL_DIR rewrite did not apply; the test could write to /usr/local/bin"; exit 1; }
 
+          # Control: the *untampered* fixture must install cleanly. Without this a fixture broken
+          # in some unrelated way would also "refuse", and the test would pass for the wrong reason.
+          cp "$fixture/otf-release-linux-x86-64.tar.gz" "$fixture/tampered.tar.gz"
+          ( cd "$fixture" && tar -czf otf-release-linux-x86-64.tar.gz otf-release )
+          set +e
+          sh "$fixture/install-test.sh" > control.log 2>&1
+          control_code=$?
+          set -e
+          if [ "$control_code" -ne 0 ]; then
+            cat control.log
+            echo "::error::the untampered control fixture failed to install; the fixture itself is broken"
+            exit 1
+          fi
+          echo "Control: untampered fixture installs cleanly."
+          rm -f "$fixture/bin/otf-release"
+
+          # Now the real case: same fixture, corrupted payload, unchanged checksums.txt.
+          mv "$fixture/tampered.tar.gz" "$fixture/otf-release-linux-x86-64.tar.gz"
           set +e
           sh "$fixture/install-test.sh" > out.log 2>&1
           code=$?
