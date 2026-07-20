@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-07-20
+
 - **github-release — BREAKING.** Build-only binaries now ship as **archives by default**: a package
   that sets no `archive` key gets `"auto"` (`.zip` for Windows targets, `.tar.gz` elsewhere) instead
   of a raw, extensionless binary. Every asset therefore carries an extension, and the executable bit
