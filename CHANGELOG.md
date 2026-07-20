@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-07-20
+
 - **config** — New optional `executable` field for build-only packages, controlling whether the
   staged artifact is stored executable inside its release archive. Omitting it keeps the inference
   (executable unless `compress` is set, since a brotli-staged `.br` is data the install step
