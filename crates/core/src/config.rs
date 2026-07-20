@@ -239,6 +239,12 @@ pub const TARGET_REGISTRY: &[TargetInfo] = &[
     // Windows runner; offered but off by default.
     TargetInfo { label: "Windows ARM64",      name: "windows", arch: "aarch64", triple: "aarch64-pc-windows-msvc",   runner: "windows-latest", stage_as: "win32-arm64", ext: ".exe", cross: false, default_on: false },
     TargetInfo { label: "Windows x86 (32-bit)", name: "windows", arch: "x86",   triple: "i686-pc-windows-msvc",      runner: "windows-latest", stage_as: "win32-ia32",  ext: ".exe", cross: false, default_on: false },
+    // FreeBSD. GitHub has no FreeBSD runner, so these cross-compile on the Linux runner — but the
+    // built-in `cross` prep installs a GNU/Linux gcc, which is wrong for FreeBSD, so `cross` is left
+    // false: the FreeBSD sysroot + linker are user-supplied (via the package `command`, a sysroot,
+    // `cross-rs`, or a FreeBSD VM action). `stage_as` is a valid Node `process.platform-arch`.
+    TargetInfo { label: "FreeBSD x64",   name: "freebsd", arch: "x86_64",  triple: "x86_64-unknown-freebsd",  runner: "ubuntu-latest", stage_as: "freebsd-x64",   ext: "", cross: false, default_on: false },
+    TargetInfo { label: "FreeBSD ARM64", name: "freebsd", arch: "aarch64", triple: "aarch64-unknown-freebsd", runner: "ubuntu-latest", stage_as: "freebsd-arm64", ext: "", cross: false, default_on: false },
 ];
 
 /// Look up the built-in facts for a `(name, arch)` pair.
@@ -656,6 +662,26 @@ mod tests {
 
         // Neither musl target is selected by `init` unless explicitly opted in.
         for info in TARGET_REGISTRY.iter().filter(|t| t.name == "linux-musl") {
+            assert!(!info.default_on, "{} should be opt-in", info.label);
+        }
+    }
+
+    #[test]
+    fn freebsd_targets_resolve_with_user_supplied_toolchain() {
+        let bsd = Target::resolved("freebsd", "x86_64");
+        assert_eq!(bsd.triple(), "x86_64-unknown-freebsd");
+        assert_eq!(bsd.runner(), "ubuntu-latest");
+        assert_eq!(bsd.stage_as(), "freebsd-x64"); // valid Node process.platform-arch
+                                                   // `cross` is false on purpose: the GNU/Linux cross prep is wrong for FreeBSD, so the tool
+                                                   // must not install it or set a linux linker — the user supplies the FreeBSD sysroot/linker.
+        assert!(!bsd.is_cross());
+
+        assert_eq!(
+            Target::resolved("freebsd", "aarch64").triple(),
+            "aarch64-unknown-freebsd"
+        );
+
+        for info in TARGET_REGISTRY.iter().filter(|t| t.name == "freebsd") {
             assert!(!info.default_on, "{} should be opt-in", info.label);
         }
     }

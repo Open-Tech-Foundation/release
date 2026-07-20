@@ -993,6 +993,10 @@ mod tests {
             asset_file_name("esrun", "linux-musl-arm64", "esrun"),
             "esrun-linux-musl-arm64"
         );
+        assert_eq!(
+            asset_file_name("esrun", "freebsd-x64", "esrun"),
+            "esrun-freebsd-x86-64"
+        );
     }
 
     #[test]

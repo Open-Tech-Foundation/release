@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **targets** — Added FreeBSD build targets to the registry: `freebsd` / `x86_64`
+  (`x86_64-unknown-freebsd`) and `freebsd` / `aarch64` (`aarch64-unknown-freebsd`), staged as
+  `freebsd-x64` / `freebsd-arm64` and released as `<bin>-freebsd-<arch>`. GitHub hosts no FreeBSD
+  runner, so they are registered on `ubuntu-latest` with `cross = false`: the built-in cross prep
+  installs a GNU/Linux gcc, which is wrong for FreeBSD, so the sysroot/linker stays user-supplied
+  via the package `command`. Both are opt-in (off by default).
 - **cargo** — Internal crates pinned in the root `[workspace.dependencies]` table (a `path` dep with
   an explicit `version`, referenced by members via `{ workspace = true }`) now have their version
   pins bumped in lockstep with the workspace version — previously only member `[dependencies]`

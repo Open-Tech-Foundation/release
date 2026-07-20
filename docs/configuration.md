@@ -135,6 +135,19 @@ arch = "x86_64"
 A crate with C dependencies also needs a musl C toolchain on the runner (e.g. `apt-get install
 musl-tools`); add it as a build step or in the package `command`.
 
+**FreeBSD:** use `name = "freebsd"` with `arch = "x86_64"` or `"aarch64"`. GitHub hosts no FreeBSD
+runner, so these are registered on `ubuntu-latest` with `cross = false` **on purpose**: the built-in
+cross prep installs a GNU/Linux gcc, which is the wrong toolchain for FreeBSD. The tool owns the
+naming (triple, `stage_as`, asset name) and you supply the toolchain in the package `command` — a
+FreeBSD sysroot, [`cross`](https://github.com/cross-rs/cross), or a FreeBSD VM action. Both are
+opt-in (off by default):
+
+```toml
+[[package.targets]]
+name = "freebsd"
+arch = "x86_64"
+```
+
 ## The `generic` adapter
 
 For an ecosystem the tool doesn't natively support (e.g. Deno's JSR), enable `"generic"` and
