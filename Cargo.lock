@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "otf-release"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1247,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "otf-release-adapters"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "anyhow",
  "glob",
@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "otf-release-core"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "anyhow",
  "brotli",

@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-07-22
+
 - **adapters — a single-package repo discovered nothing.** The cargo adapter built its crate list
   purely from `[workspace] members`, and the npm adapter purely from `workspaces`. A plain
   `Cargo.toml` or `package.json` with no workspace section therefore matched no members and
