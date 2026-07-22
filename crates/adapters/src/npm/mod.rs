@@ -42,6 +42,21 @@ pub struct SkippedWorkspaceManifest {
     pub reason: String,
 }
 
+/// The shape of a Node repo, read off the root `package.json`. Which shape it is decides where the
+/// member packages come from, so it is settled first — a single-package repo is not a workspace
+/// whose `workspaces` globs happen to match nothing.
+enum Layout {
+    /// No `workspaces` field: the root manifest *is* the one package.
+    Single,
+    /// A `workspaces` field: members come from its globs. The root joins them only when it is a
+    /// real package itself (a `name` and a `version`); a workspace root is usually a private
+    /// container, and pulling it in regardless would report it as a skipped manifest on every run.
+    Workspace {
+        patterns: Vec<String>,
+        root_is_member: bool,
+    },
+}
+
 impl NpmAdapter {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -58,12 +73,22 @@ impl NpmAdapter {
         }
     }
 
-    /// Expand the root `package.json` `workspaces` field into member package directories.
+    /// Every package directory in the repo, by [`Layout`]: the root alone for a single-package
+    /// repo, the `workspaces` globs (plus the root, when it is a package too) for a workspace.
     fn member_dirs(&self) -> Result<Vec<PathBuf>> {
-        let root_json = Manifest::read(&self.root.join("package.json"))?.json_value()?;
-        let patterns = workspace_patterns(&root_json);
+        let root_manifest = Manifest::read(&self.root.join("package.json"))?;
+        let (patterns, root_is_member) = match layout_of(&root_manifest)? {
+            Layout::Single => return Ok(vec![self.root.clone()]),
+            Layout::Workspace {
+                patterns,
+                root_is_member,
+            } => (patterns, root_is_member),
+        };
 
         let mut dirs = BTreeSet::new();
+        if root_is_member {
+            dirs.insert(self.root.clone());
+        }
         for pattern in patterns {
             let joined = self.root.join(&pattern).join("package.json");
             let glob_str = joined
@@ -338,6 +363,24 @@ fn kind_of(section: &str) -> DepKind {
 
 /// Read the `workspaces` field, supporting both the array form and the
 /// `{ "packages": [...] }` object form.
+/// Classify the repo from the root manifest's `workspaces` field.
+fn layout_of(root: &Manifest) -> Result<Layout> {
+    let json = root.json_value()?;
+    // Only the two shapes npm itself accepts count as a workspace declaration; anything else
+    // (absent, or a malformed value) is a plain single-package repo.
+    let is_workspace = matches!(
+        json.get("workspaces"),
+        Some(Value::Array(_)) | Some(Value::Object(_))
+    );
+    if !is_workspace {
+        return Ok(Layout::Single);
+    }
+    Ok(Layout::Workspace {
+        patterns: workspace_patterns(&json),
+        root_is_member: skip_reason(root)?.is_none(),
+    })
+}
+
 fn workspace_patterns(root_json: &Value) -> Vec<String> {
     let strings = |arr: &Vec<Value>| {
         arr.iter()
@@ -499,6 +542,66 @@ mod tests {
 
         let c = pkgs.iter().find(|p| p.name == "@x/c").unwrap();
         assert!(!c.publishable, "private app is not publishable");
+    }
+
+    #[test]
+    fn discovers_the_root_package_of_a_single_package_repo() {
+        // No `workspaces` field: the root manifest is the one package.
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path().join("package.json"),
+            r#"{ "name": "mytool", "version": "0.1.0" }"#,
+        );
+
+        let pkgs = NpmAdapter::new(tmp.path()).discover_packages().unwrap();
+        assert_eq!(pkgs.len(), 1, "got: {pkgs:?}");
+        assert_eq!(pkgs[0].name, "mytool");
+        assert!(pkgs[0].publishable);
+        assert_eq!(pkgs[0].manifest_path, tmp.path().join("package.json"));
+    }
+
+    #[test]
+    fn private_workspace_root_is_not_a_member() {
+        // The usual monorepo root: a private container with no version. It must stay out of both
+        // discovery and the skipped-manifest notes.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root.join("package.json"),
+            r#"{ "name": "root", "private": true, "workspaces": ["packages/*"] }"#,
+        );
+        write(
+            root.join("packages/a/package.json"),
+            r#"{ "name": "@x/a", "version": "1.0.0" }"#,
+        );
+
+        let adapter = NpmAdapter::new(root);
+        let names: Vec<_> = adapter
+            .discover_packages()
+            .unwrap()
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        assert_eq!(names, ["@x/a"]);
+        assert_eq!(adapter.skipped_workspace_manifests().unwrap(), vec![]);
+    }
+
+    #[test]
+    fn workspace_root_that_is_itself_a_package_is_a_member() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root.join("package.json"),
+            r#"{ "name": "top", "version": "3.0.0", "workspaces": ["packages/*"] }"#,
+        );
+        write(
+            root.join("packages/a/package.json"),
+            r#"{ "name": "@x/a", "version": "1.0.0" }"#,
+        );
+
+        let pkgs = NpmAdapter::new(root).discover_packages().unwrap();
+        let names: Vec<_> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["@x/a", "top"]);
     }
 
     #[test]

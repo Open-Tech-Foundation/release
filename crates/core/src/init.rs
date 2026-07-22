@@ -435,6 +435,14 @@ pub fn orchestrate(
     // or cross-compiled — decisions only the user can make. npm packages are auto-configured below,
     // so they are deliberately excluded from this prompt (and from the adapter choice).
     let cargo_refs: Vec<&Pkg> = cargo_publishable.iter().collect();
+    if enabled.contains(&Ecosystem::Cargo) && cargo_refs.is_empty() {
+        // Silence here reads as "this init has no build step", when it actually means discovery
+        // came back empty — say so rather than skipping the questions without a word.
+        println!(
+            "No publishable crates found — skipping the build-step questions. Add `[[package]]` \
+             entries to release.toml by hand, or re-run init once the crates are in place."
+        );
+    }
     let build_names = prompt.select_build_packages(&cargo_refs)?;
     let enabled_non_npm: Vec<Ecosystem> = enabled
         .iter()

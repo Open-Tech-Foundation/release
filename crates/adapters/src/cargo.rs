@@ -39,6 +39,18 @@ struct CargoDep {
     version_req: Option<String>,
 }
 
+/// The shape of a Rust repo, read off the root `Cargo.toml`. Which shape it is decides where the
+/// member crates come from, so it is settled first — a single-crate repo is not a workspace whose
+/// member list happens to be empty.
+enum Layout {
+    /// `[package]` and no `[workspace]`: the root manifest *is* the one crate.
+    Single,
+    /// `[workspace]`: members come from the `members` globs. `root_is_member` is true when the
+    /// root manifest also carries a `[package]` — cargo counts that crate as a member of its own
+    /// workspace.
+    Workspace { root_is_member: bool },
+}
+
 /// A `Cargo.toml` held as a `toml_edit` document so edits preserve formatting.
 struct CargoManifest {
     path: PathBuf,
@@ -97,6 +109,21 @@ impl CargoManifest {
             Some(item) if item.as_bool() == Some(false) => false,
             Some(item) if item.as_array().is_some_and(|a| a.is_empty()) => false,
             _ => true,
+        }
+    }
+
+    /// Classify the repo from the tables the root manifest declares.
+    fn layout(&self) -> Result<Layout> {
+        match (
+            self.doc.contains_key("workspace"),
+            self.doc.contains_key("package"),
+        ) {
+            (true, root_is_member) => Ok(Layout::Workspace { root_is_member }),
+            (false, true) => Ok(Layout::Single),
+            (false, false) => bail!(
+                "{}: neither a `[package]` nor a `[workspace]` — not a cargo project root",
+                self.path.display()
+            ),
         }
     }
 
@@ -264,9 +291,20 @@ impl CargoAdapter {
         }
     }
 
+    /// Every crate directory in the repo, by [`Layout`]: the root alone for a single-crate repo,
+    /// the `members` globs (plus the root crate, when the root manifest declares one) for a
+    /// workspace.
     fn member_dirs(&self) -> Result<Vec<PathBuf>> {
         let root = CargoManifest::read(&self.root.join("Cargo.toml"))?;
+        let root_is_member = match root.layout()? {
+            Layout::Single => return Ok(vec![self.root.clone()]),
+            Layout::Workspace { root_is_member } => root_is_member,
+        };
+
         let mut dirs = BTreeSet::new();
+        if root_is_member {
+            dirs.insert(self.root.clone());
+        }
         for pattern in root.workspace_members() {
             let joined = self.root.join(&pattern).join("Cargo.toml");
             let glob_str = joined
@@ -592,6 +630,69 @@ mod tests {
 
         let c = pkgs.iter().find(|p| p.name == "c").unwrap();
         assert!(!c.publishable, "publish = false => not publishable");
+    }
+
+    #[test]
+    fn discovers_the_root_crate_of_a_single_crate_repo() {
+        // No `[workspace]` at all: the root manifest is the one crate. Reading members off an
+        // absent `[workspace] members` would find nothing and silently report an empty repo.
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"mytool\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+
+        let pkgs = CargoAdapter::new(tmp.path()).discover_packages().unwrap();
+        assert_eq!(pkgs.len(), 1, "got: {pkgs:?}");
+        assert_eq!(pkgs[0].name, "mytool");
+        assert_eq!(pkgs[0].version, "0.1.0");
+        assert!(pkgs[0].publishable);
+        assert_eq!(pkgs[0].manifest_path, tmp.path().join("Cargo.toml"));
+    }
+
+    #[test]
+    fn root_package_of_a_workspace_is_a_member() {
+        // `[package]` + `[workspace]` in one manifest: cargo treats the root crate as a member of
+        // its own workspace, so it must be discovered alongside the globbed members.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"top\"\nversion = \"1.0.0\"\n\n[workspace]\nmembers = [\"crates/*\"]\n",
+        );
+        write(
+            root.join("crates/a/Cargo.toml"),
+            "[package]\nname = \"a\"\nversion = \"1.0.0\"\n",
+        );
+
+        let pkgs = CargoAdapter::new(root).discover_packages().unwrap();
+        let names: Vec<_> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["a", "top"]);
+    }
+
+    #[test]
+    fn virtual_workspace_does_not_pull_in_the_root() {
+        // `[workspace]` with no `[package]`: nothing to discover at the root itself.
+        let pkgs = CargoAdapter::new(workspace().path())
+            .discover_packages()
+            .unwrap();
+        let names: Vec<_> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn manifest_with_neither_package_nor_workspace_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path().join("Cargo.toml"),
+            "[dependencies]\nserde = \"1\"\n",
+        );
+
+        let err = CargoAdapter::new(tmp.path())
+            .discover_packages()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a cargo project root"), "got: {err}");
     }
 
     #[test]

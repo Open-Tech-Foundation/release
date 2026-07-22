@@ -15,6 +15,47 @@ pub struct JsrAdapter {
     runner: Box<dyn CommandRunner>,
 }
 
+/// The shape of a Deno/JSR repo, read off the root manifest (`deno.json`, `deno.jsonc`, or
+/// `jsr.json`). Settled before anything looks for members, so a single-package repo is never a
+/// workspace whose globs happened to match nothing — the two want different answers, and deciding
+/// by "did we find any members?" cannot tell them apart.
+enum Layout {
+    /// No root manifest at all: nothing to discover. `init` scaffolds one in this case, so this
+    /// is an empty result rather than an error.
+    Absent,
+    /// A root manifest with no `workspace` array: the root is the only package — and only when it
+    /// carries both a `name` and a `version`. A bare deno config (tasks, imports, lint rules) is
+    /// configuration, not a package.
+    Single { root_is_package: bool },
+    /// A root manifest with a `workspace` array: members come from its globs, plus the root when
+    /// it is a package in its own right (`name` + `version`, e.g. a root package that also hosts
+    /// members) rather than a pure workspace config.
+    Workspace {
+        patterns: Vec<String>,
+        root_is_member: bool,
+    },
+}
+
+/// Classify the repo from its root manifest.
+fn layout_of(root: &Path) -> Result<Layout> {
+    let Some((_, json)) = read_manifest(root)? else {
+        return Ok(Layout::Absent);
+    };
+    let is_package = json.get("name").is_some() && json.get("version").is_some();
+    match json.get("workspace").and_then(Value::as_array) {
+        Some(arr) => Ok(Layout::Workspace {
+            patterns: arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
+            root_is_member: is_package,
+        }),
+        None => Ok(Layout::Single {
+            root_is_package: is_package,
+        }),
+    }
+}
+
 impl JsrAdapter {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -29,44 +70,50 @@ impl JsrAdapter {
             runner,
         }
     }
+
+    /// Every package directory in the repo, by [`Layout`]: the root alone for a single-package
+    /// repo, the `workspace` globs (plus the root, when it is a package too) for a workspace.
+    fn member_dirs(&self) -> Result<Vec<PathBuf>> {
+        let (patterns, root_is_member) = match layout_of(&self.root)? {
+            Layout::Absent => return Ok(Vec::new()),
+            Layout::Single { root_is_package } => {
+                return Ok(if root_is_package {
+                    vec![self.root.clone()]
+                } else {
+                    Vec::new()
+                })
+            }
+            Layout::Workspace {
+                patterns,
+                root_is_member,
+            } => (patterns, root_is_member),
+        };
+
+        let mut dirs = BTreeSet::new();
+        if root_is_member {
+            dirs.insert(self.root.clone());
+        }
+        for pat in patterns {
+            let joined = self.root.join(&pat);
+            let glob_str = joined
+                .to_str()
+                .ok_or_else(|| anyhow!("non-UTF-8 path in workspace pattern: {pat}"))?;
+            for entry in glob(glob_str).with_context(|| format!("invalid workspace glob: {pat}"))? {
+                let path = entry?;
+                // A member glob names directories; only those carrying a manifest are packages.
+                if path.is_dir() && read_manifest(&path)?.is_some() {
+                    dirs.insert(path);
+                }
+            }
+        }
+        Ok(dirs.into_iter().collect())
+    }
 }
 
 impl Adapter for JsrAdapter {
     fn discover_packages(&self) -> Result<Vec<Pkg>> {
-        let mut member_dirs = BTreeSet::new();
-        if let Some((_, root_json)) = read_manifest(&self.root)? {
-            if let Some(workspace_val) = root_json.get("workspace") {
-                if let Some(arr) = workspace_val.as_array() {
-                    for pat_val in arr {
-                        if let Some(pat) = pat_val.as_str() {
-                            let joined = self.root.join(pat);
-                            let glob_str = joined.to_str().ok_or_else(|| {
-                                anyhow!("non-UTF-8 path in workspace pattern: {pat}")
-                            })?;
-                            for entry in glob(glob_str)
-                                .with_context(|| format!("invalid workspace glob: {pat}"))?
-                            {
-                                let path = entry?;
-                                if path.is_dir() && read_manifest(&path)?.is_some() {
-                                    member_dirs.insert(path);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if member_dirs.is_empty() {
-            if let Some((_, root_json)) = read_manifest(&self.root)? {
-                if root_json.get("name").is_some() && root_json.get("version").is_some() {
-                    member_dirs.insert(self.root.clone());
-                }
-            }
-        }
-
         let mut members = Vec::new();
-        for dir in member_dirs {
+        for dir in self.member_dirs()? {
             if let Some((manifest_path, json)) = read_manifest(&dir)? {
                 members.push((dir, manifest_path, json));
             }
@@ -524,6 +571,83 @@ mod tests {
         assert_eq!(pkgs[1].name, "@scope/b");
         assert_eq!(pkgs[1].version, "2.0.0");
         assert!(!pkgs[1].publishable);
+    }
+
+    #[test]
+    fn discovers_the_root_package_of_a_single_package_repo() {
+        // No `workspace` array: the root manifest is the one package.
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(
+            &tmp.path().join("deno.json"),
+            r#"{ "name": "@scope/solo", "version": "1.2.3" }"#,
+        );
+
+        let pkgs = JsrAdapter::new(tmp.path()).discover_packages().unwrap();
+        assert_eq!(pkgs.len(), 1, "got: {pkgs:?}");
+        assert_eq!(pkgs[0].name, "@scope/solo");
+        assert_eq!(pkgs[0].version, "1.2.3");
+    }
+
+    #[test]
+    fn bare_deno_config_is_not_a_package() {
+        // A root manifest that only configures Deno — no name/version — is not releasable, and
+        // must not be reported as one just because no members were found.
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(
+            &tmp.path().join("deno.json"),
+            r#"{ "tasks": { "dev": "deno run -A main.ts" } }"#,
+        );
+
+        let pkgs = JsrAdapter::new(tmp.path()).discover_packages().unwrap();
+        assert!(pkgs.is_empty(), "got: {pkgs:?}");
+    }
+
+    #[test]
+    fn workspace_with_no_matching_members_is_empty_not_the_root() {
+        // The case the old `if member_dirs.is_empty()` fallback got wrong: a workspace whose
+        // globs match nothing is an empty workspace, not a single-package repo. Its root is a
+        // package here, so the fallback would have published it as one.
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(
+            &tmp.path().join("deno.json"),
+            r#"{ "name": "@scope/root", "version": "1.0.0", "workspace": ["packages/*"] }"#,
+        );
+
+        let pkgs = JsrAdapter::new(tmp.path()).discover_packages().unwrap();
+        let names: Vec<_> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["@scope/root"],
+            "the root is a member on its own merits"
+        );
+    }
+
+    #[test]
+    fn workspace_root_that_is_itself_a_package_is_a_member() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_file(
+            &root.join("deno.json"),
+            r#"{ "name": "@scope/top", "version": "3.0.0", "workspace": ["packages/*"] }"#,
+        );
+        write_file(
+            &root.join("packages/a/deno.json"),
+            r#"{ "name": "@scope/a", "version": "1.0.0" }"#,
+        );
+
+        let pkgs = JsrAdapter::new(root).discover_packages().unwrap();
+        let names: Vec<_> = pkgs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["@scope/a", "@scope/top"]);
+    }
+
+    #[test]
+    fn no_root_manifest_discovers_nothing() {
+        // `init` calls discovery before scaffolding a jsr.json — an empty result, not an error.
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(JsrAdapter::new(tmp.path())
+            .discover_packages()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

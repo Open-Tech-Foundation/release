@@ -8,6 +8,32 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **adapters — a single-package repo discovered nothing.** The cargo adapter built its crate list
+  purely from `[workspace] members`, and the npm adapter purely from `workspaces`. A plain
+  `Cargo.toml` or `package.json` with no workspace section therefore matched no members and
+  discovered *zero* packages — so `init` skipped the build-step questions without a word and wrote
+  a `release.toml` with no `[[package]]` entries at all, leaving nothing to build or publish. Only a
+  monorepo worked.
+
+  Each adapter now classifies the repo from its root manifest *before* looking for members, rather
+  than inferring the shape from whether a glob happened to match. A root manifest that declares a
+  package and no workspace is a single-package repo, and the root is that package. A workspace takes
+  its members from the globs — plus the root itself when the root manifest declares a package too,
+  which cargo and npm both treat as a member and which was previously dropped on the floor.
+
+  jsr had the inverse bug. It recovered the root package through an `if members.is_empty()` fallback,
+  which cannot distinguish a single-package repo from a workspace whose globs match nothing — so an
+  empty workspace published its own root as a package. It follows the same explicit split now, with
+  a third case for a repo that has no root manifest yet (`init` scaffolds one, so that stays an
+  empty result rather than an error).
+
+- **adapters (cargo)** — A root `Cargo.toml` with neither `[package]` nor `[workspace]` is now a
+  clear error instead of an empty package list.
+
+- **init** — Says so when cargo discovery finds no publishable crates, rather than skipping the
+  build-step questions in silence. Silence read as "this repo has no build step" when it actually
+  meant "discovery came back empty", which is what kept the bug above invisible.
+
 ## [0.27.0] - 2026-07-20
 
 - **workflow/init — supply chain.** Generated workflows no longer track a moving target for their
