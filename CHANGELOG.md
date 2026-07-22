@@ -34,6 +34,25 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   build-step questions in silence. Silence read as "this repo has no build step" when it actually
   meant "discovery came back empty", which is what kept the bug above invisible.
 
+- **init (generic)** — The package picker marks manifests that are private to their registry:
+
+  ```
+  app  (v1.0.0, Node / npm, private)  — apps/web/package.json
+  ```
+
+  The scan lists every manifest carrying a version, and the label showed name, version, ecosystem,
+  and path — nothing to distinguish a package its own manifest says not to publish. Selecting one
+  there makes it a full release package, so the marker is read from `"private": true`
+  (`package.json`), `publish = false` / `publish = []` (`Cargo.toml`), and `"publish": false`
+  (`deno.json`, `jsr.json`). The remaining recognized manifests have no convention worth trusting
+  and report unmarked rather than guess.
+
+  It is a label, not a filter — private candidates are still listed and still selectable. "Private
+  to a registry" is the *normal* state of a generic build-only package: a binary shipped through a
+  GitHub Release never goes to crates.io or npm. Filtering those out would hide the main thing the
+  generic adapter is for. Nothing is pre-selected, so the choice was always opt-in; now it is
+  visibly so.
+
 ## [0.27.0] - 2026-07-20
 
 - **workflow/init — supply chain.** Generated workflows no longer track a moving target for their

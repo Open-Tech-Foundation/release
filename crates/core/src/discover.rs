@@ -60,14 +60,19 @@ pub struct GenericCandidate {
     pub version: String,
     /// A human label for the ecosystem, e.g. `Deno / JSR`.
     pub kind: &'static str,
+    /// The manifest marks the package as private to its registry (npm's `"private": true`, cargo's
+    /// `publish = false`, …). Shown in the picker so the choice is informed — *not* a filter; see
+    /// [`is_private`].
+    pub private: bool,
 }
 
 impl GenericCandidate {
     /// A one-line label for a selection prompt.
     pub fn label(&self) -> String {
+        let private = if self.private { ", private" } else { "" };
         format!(
-            "{}  (v{}, {})  — {}",
-            self.name, self.version, self.kind, self.manifest
+            "{}  (v{}, {}{})  — {}",
+            self.name, self.version, self.kind, private, self.manifest
         )
     }
 }
@@ -132,7 +137,31 @@ fn candidate_from(root: &Path, file: &Path) -> Option<GenericCandidate> {
         version_field: "version".to_string(),
         version,
         kind,
+        private: is_private(fname, &text),
     })
+}
+
+/// Whether a manifest marks its package as private to its registry. Each ecosystem spells this
+/// differently and only three of the recognized manifests have a convention worth trusting —
+/// npm's `"private": true`, cargo's `publish = false` (or `publish = []`), and Deno/JSR's
+/// `"publish": false`. The rest report unmarked rather than guess.
+///
+/// This is a **label, not a filter**. "Private to a registry" is the normal state of a generic
+/// build-only package — a binary shipped through a GitHub Release never goes to crates.io or npm —
+/// so such a package stays selectable. The flag exists because the picker previously showed
+/// nothing to distinguish it, and a private package selected there becomes a full release package.
+fn is_private(manifest_file: &str, text: &str) -> bool {
+    match manifest_file {
+        "package.json" => bare_field(text, "private") == Some("true"),
+        "Cargo.toml" => match bare_field(text, "publish") {
+            Some("false") => true,
+            // `publish = []` — an empty allow-list of registries is cargo's other way to say it.
+            Some(v) => v.starts_with('[') && v[1..].trim_start().starts_with(']'),
+            None => false,
+        },
+        "deno.json" | "deno.jsonc" | "jsr.json" => bare_field(text, "publish") == Some("false"),
+        _ => false,
+    }
 }
 
 /// The name of the directory containing `file` (fallback package name when a manifest carries no
@@ -159,21 +188,56 @@ fn dir_name(file: &Path) -> String {
 /// `field…=…"value"` (TOML/etc). Mirrors the generic adapter's `version_value_span` so discovery
 /// and the adapter agree on what is parseable.
 fn field_value<'a>(text: &'a str, field: &str) -> Option<&'a str> {
+    value_starts(text, field).find_map(|at| {
+        let quote = text[at..].chars().next()?;
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        let open = at + quote.len_utf8();
+        let close = text[open..].find(quote)?;
+        Some(&text[open..open + close])
+    })
+}
+
+/// Read the *unquoted* value of `field` — a bare `true`, `false`, or `[]`, which is how every
+/// manifest spells a boolean or an empty list. Complements [`field_value`], which handles strings.
+fn bare_field<'a>(text: &'a str, field: &str) -> Option<&'a str> {
+    value_starts(text, field).find_map(|at| {
+        let rest = &text[at..];
+        if rest.starts_with('"') || rest.starts_with('\'') {
+            return None; // a string value — `field_value`'s job
+        }
+        let end = rest.find(['\n', ',', '}', '#']).unwrap_or(rest.len());
+        let token = rest[..end].trim();
+        (!token.is_empty()).then_some(token)
+    })
+}
+
+/// Byte offsets where `field`'s value begins, for every place the key appears followed directly by
+/// a separator. It yields more than one when the key name also occurs elsewhere in the file (in
+/// prose, or as another table's key), so callers take the first occurrence whose value has the
+/// shape they want rather than giving up on the first near-match.
+fn value_starts<'a>(text: &'a str, field: &str) -> impl Iterator<Item = usize> + 'a {
+    let field = field.to_string();
+    let bytes = text.as_bytes();
     let mut from = 0;
-    while let Some(rel) = text[from..].find(field) {
-        let at = from + rel;
-        let before_ok =
-            at == 0 || matches!(text.as_bytes()[at - 1], b'"' | b'\'' | b' ' | b'\n' | b'\t');
-        let after = at + field.len();
-        let after_ok = text
-            .as_bytes()
-            .get(after)
-            .is_none_or(|b| matches!(b, b'"' | b'\'' | b' ' | b'\t' | b':' | b'='));
-        if before_ok && after_ok {
-            // The separator must follow the key directly (only an optional closing quote and inline
-            // whitespace between), matching the generic adapter's `version_value_span` so discovery
-            // and the adapter agree on what counts as a real field.
-            let bytes = text.as_bytes();
+    std::iter::from_fn(move || {
+        while let Some(rel) = text[from..].find(&field) {
+            let at = from + rel;
+            let after = at + field.len();
+            from = after;
+            // The bytes around the key must be a quote, whitespace, or the file edge — a cheap
+            // guard against matching the field name inside some other token.
+            let before_ok = at == 0 || matches!(bytes[at - 1], b'"' | b'\'' | b' ' | b'\n' | b'\t');
+            let after_ok = bytes
+                .get(after)
+                .is_none_or(|b| matches!(b, b'"' | b'\'' | b' ' | b'\t' | b':' | b'='));
+            if !before_ok || !after_ok {
+                continue;
+            }
+            // The separator must follow the key directly (only an optional closing quote and
+            // inline whitespace between), matching the generic adapter's `version_value_span` so
+            // discovery and the adapter agree on what counts as a real field.
             let mut p = after;
             if matches!(bytes.get(p), Some(b'"' | b'\'')) {
                 p += 1;
@@ -181,25 +245,17 @@ fn field_value<'a>(text: &'a str, field: &str) -> Option<&'a str> {
             while matches!(bytes.get(p), Some(b' ' | b'\t')) {
                 p += 1;
             }
-            if matches!(bytes.get(p), Some(b':' | b'=')) {
-                let mut v = p + 1;
-                while matches!(bytes.get(v), Some(b' ' | b'\t')) {
-                    v += 1;
-                }
-                if let Some(&quote) = bytes.get(v) {
-                    if quote == b'"' || quote == b'\'' {
-                        let open = v;
-                        let quote = quote as char;
-                        if let Some(close) = text[open + 1..].find(quote) {
-                            return Some(&text[open + 1..open + 1 + close]);
-                        }
-                    }
-                }
+            if !matches!(bytes.get(p), Some(b':' | b'=')) {
+                continue;
             }
+            let mut v = p + 1;
+            while matches!(bytes.get(v), Some(b' ' | b'\t')) {
+                v += 1;
+            }
+            return Some(v);
         }
-        from = after;
-    }
-    None
+        None
+    })
 }
 
 #[cfg(test)]
@@ -220,6 +276,99 @@ mod tests {
         assert_eq!(found[0].version, "1.2.3");
         assert_eq!(found[0].manifest, "deno.json");
         assert_eq!(found[0].kind, "Deno / JSR");
+    }
+
+    #[test]
+    fn marks_private_packages_without_hiding_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (dir, file, text) in [
+            (
+                "app",
+                "package.json",
+                r#"{ "name": "app", "version": "1.0.0", "private": true }"#,
+            ),
+            (
+                "tool",
+                "Cargo.toml",
+                "[package]\nname = \"tool\"\nversion = \"2.0.0\"\npublish = false\n",
+            ),
+            (
+                "restricted",
+                "Cargo.toml",
+                "[package]\nname = \"restricted\"\nversion = \"3.0.0\"\npublish = []\n",
+            ),
+            (
+                "lib",
+                "deno.json",
+                r#"{ "name": "lib", "version": "4.0.0", "publish": false }"#,
+            ),
+            (
+                "open",
+                "package.json",
+                r#"{ "name": "open", "version": "5.0.0" }"#,
+            ),
+        ] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+            fs::write(root.join(dir).join(file), text).unwrap();
+        }
+
+        let found = scan_generic_candidates(root);
+        let marked: Vec<(&str, bool)> =
+            found.iter().map(|c| (c.name.as_str(), c.private)).collect();
+        // Every candidate is still listed — private is a label, not a filter: a package that no
+        // registry accepts is the normal case for a generic build-only release.
+        assert_eq!(
+            marked,
+            vec![
+                ("app", true),
+                ("lib", true),
+                ("open", false),
+                ("restricted", true),
+                ("tool", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn private_shows_in_the_picker_label() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join("package.json"),
+            r#"{ "name": "app", "version": "1.0.0", "private": true }"#,
+        )
+        .unwrap();
+        let found = scan_generic_candidates(tmp.path());
+        assert_eq!(
+            found[0].label(),
+            "app  (v1.0.0, Node / npm, private)  — package.json"
+        );
+    }
+
+    #[test]
+    fn a_public_registry_allow_list_is_not_private() {
+        // `publish = ["crates-io"]` names a registry — only an *empty* list means "nowhere".
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"tool\"\nversion = \"1.0.0\"\npublish = [\"crates-io\"]\n",
+        )
+        .unwrap();
+        let found = scan_generic_candidates(tmp.path());
+        assert!(!found[0].private);
+    }
+
+    #[test]
+    fn a_publish_table_is_not_a_privacy_marker() {
+        // Deno spells file selection as `"publish": { ... }`; only the bare `false` means private.
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join("deno.json"),
+            r#"{ "name": "lib", "version": "1.0.0", "publish": { "exclude": ["tests/"] } }"#,
+        )
+        .unwrap();
+        let found = scan_generic_candidates(tmp.path());
+        assert!(!found[0].private);
     }
 
     #[test]
