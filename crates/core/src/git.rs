@@ -15,6 +15,21 @@ pub trait RepoState {
     /// shipped.
     fn last_tag(&self, pkg_name: &str, tag_formats: &[String]) -> Result<Option<String>>;
 
+    /// The version of the highest **stable** (non-prerelease) tag, or `None` if the package has
+    /// never shipped a stable release.
+    ///
+    /// The stable and prerelease lines advance independently: a package whose manifest sits at
+    /// `1.0.0-beta.3` still has a stable head of `0.13.0` to cut a `0.14.0` from. Defaults to
+    /// `None` so a caller falls back to the manifest version — i.e. the single-line behaviour.
+    fn last_stable_version(
+        &self,
+        pkg_name: &str,
+        tag_formats: &[String],
+    ) -> Result<Option<String>> {
+        let _ = (pkg_name, tag_formats);
+        Ok(None)
+    }
+
     /// Number of commits since `tag` that touched `pkg_dir` (scoped to the package directory,
     /// so shared root files like the lockfile or CI config don't falsely dirty it).
     fn commit_count_since(&self, tag: &str, pkg_dir: &Path) -> Result<usize>;
@@ -61,6 +76,30 @@ impl RepoState for GitRepo {
             })
             .max_by_key(|(sv, is_stable, _)| (*sv, *is_stable))
             .map(|(_, _, tag)| tag);
+        Ok(best)
+    }
+
+    fn last_stable_version(
+        &self,
+        pkg_name: &str,
+        tag_formats: &[String],
+    ) -> Result<Option<String>> {
+        let stdout = run_git(&self.root, &["tag", "--list"])?;
+        let best = stdout
+            .lines()
+            .flat_map(|line| {
+                tag_formats.iter().filter_map(move |format| {
+                    let version = version_from_tag(line, format, pkg_name)?;
+                    // Prerelease tags belong to the other line and must not decide the stable head:
+                    // `1.0.0-beta.3` sorts above `0.13.0` on the semver key, so filter before max.
+                    if version.contains('-') {
+                        return None;
+                    }
+                    parse_semver(version).map(|sv| (sv, version.to_string()))
+                })
+            })
+            .max_by_key(|(sv, _)| *sv)
+            .map(|(_, version)| version);
         Ok(best)
     }
 
@@ -339,6 +378,46 @@ mod tests {
         assert_eq!(
             repo.changed_files_since("a@1.10.0", &pkg_dir).unwrap(),
             vec![PathBuf::from("index.js")]
+        );
+    }
+
+    #[test]
+    fn last_stable_version_ignores_a_higher_prerelease_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        git(root, &["init", "-q"]);
+        write(root.join("packages/a/package.json"), r#"{ "name": "a" }"#);
+        commit_all(root, "init a");
+        git(root, &["tag", "a@0.13.0"]);
+        git(root, &["tag", "a@1.0.0-beta.3"]);
+
+        let repo = GitRepo::new(root);
+        let formats = ["{name}@{version}".to_string()];
+        // `last_tag` tracks the newest tag of either line; the stable head skips the beta.
+        assert_eq!(
+            repo.last_tag("a", &formats).unwrap().as_deref(),
+            Some("a@1.0.0-beta.3")
+        );
+        assert_eq!(
+            repo.last_stable_version("a", &formats).unwrap().as_deref(),
+            Some("0.13.0")
+        );
+    }
+
+    #[test]
+    fn last_stable_version_is_none_when_only_prereleases_shipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        git(root, &["init", "-q"]);
+        write(root.join("packages/a/package.json"), r#"{ "name": "a" }"#);
+        commit_all(root, "init a");
+        git(root, &["tag", "a@1.0.0-beta.0"]);
+
+        let repo = GitRepo::new(root);
+        assert_eq!(
+            repo.last_stable_version("a", &["{name}@{version}".to_string()])
+                .unwrap(),
+            None
         );
     }
 

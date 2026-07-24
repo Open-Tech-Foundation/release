@@ -8,6 +8,20 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **version — a package mid-prerelease could not cut a stable release.** Every bump was computed
+  from the manifest, and a package mid-prerelease holds the *prerelease* there. So a package that
+  had shipped `0.13.0` and was now on `1.0.0-beta.3` offered "Minor" as `1.0.0-beta.3` → `1.1.0`,
+  silently skipping the unreleased `1.0.0` and dropping the beta line — with no way to reach the
+  `0.14.0` that a minor on the stable line actually means.
+
+  The two lines are now tracked independently. A stable bump on a package mid-prerelease reads its
+  stable head from the last stable tag, so `0.13.0` + Minor is `0.14.0`; prerelease bumps still read
+  the manifest, so continuing or graduating the beta is unchanged. Bump rows also render the version
+  they produce (`@scope/pkg  0.13.0 -> 0.14.0  [1.0.0-beta.3 in flight]`) instead of just the
+  current version, so the line being advanced is visible before selecting. A package with no stable
+  tag, or one whose manifest is already stable, keeps reading the manifest — a tag must never pull a
+  version backwards.
+
 ## [0.28.0] - 2026-07-22
 
 - **adapters — a single-package repo discovered nothing.** The cargo adapter built its crate list

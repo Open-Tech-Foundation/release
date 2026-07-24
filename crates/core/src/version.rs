@@ -19,7 +19,7 @@ use crate::forge::{Forge, GhForge};
 use crate::git::{GitOps, GitRepo, RepoState};
 use crate::graph::Graph;
 use crate::preflight;
-use crate::prompt::{Prompt, StdinPrompt};
+use crate::prompt::{Candidate, Prompt, StdinPrompt};
 use crate::summary::{self, Plan, RangeUpdate, VersionChange};
 
 /// Options for a `version` run (wired up by the CLI crate).
@@ -234,8 +234,26 @@ pub fn orchestrate_many(
         Some(branch)
     };
 
-    // 3. Prompt: group pending packages by bump type.
-    let selected = prompt.choose_bumps(&pending)?;
+    // 3. Prompt: group pending packages by bump type. Each candidate carries the head of its stable
+    // line as well as its manifest version, so a package mid-prerelease can cut a stable release
+    // from the last stable tag instead of from the in-flight prerelease.
+    let candidates: Vec<Candidate> = pending
+        .iter()
+        .map(|pkg| {
+            let stable_base = if pkg.version.contains('-') {
+                repo.last_stable_version(&pkg.name, &history_tag_formats)?
+            } else {
+                None
+            };
+            Ok(Candidate { pkg, stable_base })
+        })
+        .collect::<Result<_>>()?;
+    let stable_heads: HashMap<&str, &str> = candidates
+        .iter()
+        .map(|c| (c.pkg.name.as_str(), c.stable_head()))
+        .collect();
+
+    let selected = prompt.choose_bumps(&candidates)?;
     if selected.is_empty() {
         println!("Nothing selected.");
         return Ok(());
@@ -266,7 +284,8 @@ pub fn orchestrate_many(
         reconcile_version_groups(&mut bumps, &ctx.adapter.version_groups()?)?;
         for (name, bump) in &bumps {
             let pkg = by_name[name.as_str()];
-            new_versions.insert(name.clone(), apply_bump(&pkg.version, bump)?);
+            let base = bump_base(pkg, bump, stable_heads.get(name.as_str()).copied());
+            new_versions.insert(name.clone(), apply_bump(base, bump)?);
         }
         adapter_bumps.push(bumps);
     }
@@ -295,7 +314,8 @@ pub fn orchestrate_many(
             }
             VersionChange {
                 name: name.clone(),
-                old_version: pkg.version.clone(),
+                old_version: bump_base(pkg, bump, stable_heads.get(name.as_str()).copied())
+                    .to_string(),
                 new_version: new_versions[name].clone(),
                 selected: is_selected,
                 note,
@@ -492,7 +512,23 @@ fn reconcile_version_groups(
 }
 
 /// Apply a bump to an `x.y.z` version (pre-release/build metadata is dropped unless entering/iterating prerelease).
-fn apply_bump(version: &str, bump: &Bump) -> Result<String> {
+/// The version a bump is computed from.
+///
+/// The stable and prerelease lines advance independently, and only one of them fits in the
+/// manifest. A stable bump on a package mid-prerelease therefore reads the stable head from tags —
+/// `0.13.0` + Minor is `0.14.0`, not the `1.1.0` the in-flight `1.0.0-beta.3` would produce.
+/// Everything else keeps reading the manifest: prerelease bumps advance the line the manifest
+/// holds, and a stable package's manifest may legitimately run ahead of its last tag.
+fn bump_base<'a>(pkg: &'a Pkg, bump: &Bump, stable_head: Option<&'a str>) -> &'a str {
+    match bump {
+        Bump::Major | Bump::Minor | Bump::Patch if pkg.version.contains('-') => {
+            stable_head.unwrap_or(&pkg.version)
+        }
+        _ => &pkg.version,
+    }
+}
+
+pub(crate) fn apply_bump(version: &str, bump: &Bump) -> Result<String> {
     let mut parts = version.split('-');
     let core = parts.next().unwrap();
     let pre = parts.next();
@@ -774,10 +810,10 @@ mod tests {
     struct FakePrompt;
 
     impl Prompt for FakePrompt {
-        fn choose_bumps(&self, pending: &[&Pkg]) -> Result<HashMap<String, Bump>> {
+        fn choose_bumps(&self, pending: &[Candidate]) -> Result<HashMap<String, Bump>> {
             Ok(pending
                 .iter()
-                .map(|pkg| (pkg.name.clone(), Bump::Patch))
+                .map(|c| (c.pkg.name.clone(), Bump::Patch))
                 .collect())
         }
 
@@ -803,7 +839,7 @@ mod tests {
     }
 
     impl Prompt for ScriptedBumpPrompt {
-        fn choose_bumps(&self, _: &[&Pkg]) -> Result<HashMap<String, Bump>> {
+        fn choose_bumps(&self, _: &[Candidate]) -> Result<HashMap<String, Bump>> {
             Ok(self.bumps.clone())
         }
 
@@ -859,6 +895,73 @@ mod tests {
             publishable: true,
             internal_deps: vec![],
         }
+    }
+
+    fn pkg_at(version: &str) -> Pkg {
+        Pkg {
+            name: "@scope/a".to_string(),
+            version: version.to_string(),
+            manifest_path: std::path::PathBuf::from("manifest"),
+            changelog_path: std::path::PathBuf::from("CHANGELOG.md"),
+            publishable: true,
+            internal_deps: vec![],
+        }
+    }
+
+    #[test]
+    fn stable_bumps_on_a_prerelease_package_advance_the_stable_line() {
+        let pkg = pkg_at("1.0.0-beta.3");
+        // The in-flight beta must not decide the number: 0.13.0 + Minor is 0.14.0, not 1.1.0.
+        assert_eq!(bump_base(&pkg, &Bump::Minor, Some("0.13.0")), "0.13.0");
+        assert_eq!(
+            apply_bump(bump_base(&pkg, &Bump::Minor, Some("0.13.0")), &Bump::Minor).unwrap(),
+            "0.14.0"
+        );
+        assert_eq!(
+            apply_bump(bump_base(&pkg, &Bump::Patch, Some("0.13.0")), &Bump::Patch).unwrap(),
+            "0.13.1"
+        );
+    }
+
+    #[test]
+    fn prerelease_bumps_stay_on_the_manifest_line() {
+        let pkg = pkg_at("1.0.0-beta.3");
+        for bump in [
+            Bump::Graduate,
+            Bump::Prerelease("beta".to_string()),
+            Bump::PreMinor("rc".to_string()),
+        ] {
+            assert_eq!(bump_base(&pkg, &bump, Some("0.13.0")), "1.0.0-beta.3");
+        }
+        assert_eq!(
+            apply_bump(
+                bump_base(&pkg, &Bump::Prerelease("beta".to_string()), Some("0.13.0")),
+                &Bump::Prerelease("beta".to_string())
+            )
+            .unwrap(),
+            "1.0.0-beta.4"
+        );
+        assert_eq!(
+            apply_bump(
+                bump_base(&pkg, &Bump::Graduate, Some("0.13.0")),
+                &Bump::Graduate
+            )
+            .unwrap(),
+            "1.0.0"
+        );
+    }
+
+    #[test]
+    fn a_stable_package_keeps_reading_its_manifest() {
+        // Its manifest may legitimately run ahead of the last tag, so the tag must not win.
+        let pkg = pkg_at("1.2.0");
+        assert_eq!(bump_base(&pkg, &Bump::Minor, Some("1.1.0")), "1.2.0");
+    }
+
+    #[test]
+    fn a_prerelease_package_without_a_stable_tag_falls_back_to_the_manifest() {
+        let pkg = pkg_at("1.0.0-beta.3");
+        assert_eq!(bump_base(&pkg, &Bump::Minor, None), "1.0.0-beta.3");
     }
 
     #[test]
@@ -949,7 +1052,7 @@ mod tests {
         struct PanicPrompt;
 
         impl Prompt for PanicPrompt {
-            fn choose_bumps(&self, _: &[&Pkg]) -> Result<HashMap<String, Bump>> {
+            fn choose_bumps(&self, _: &[Candidate]) -> Result<HashMap<String, Bump>> {
                 panic!("prompt should not be reached when the working tree is dirty");
             }
 
@@ -1288,6 +1391,90 @@ mod tests {
                 ("crate-a".to_string(), "2.0.0".to_string()),
                 ("crate-b".to_string(), "2.0.0".to_string()),
             ]
+        );
+    }
+
+    /// A repo whose package shipped 0.13.0 on the stable line and is now mid-1.0 beta.
+    struct TwoLineRepo;
+
+    impl RepoState for TwoLineRepo {
+        fn last_tag(&self, pkg_name: &str, _: &[String]) -> Result<Option<String>> {
+            Ok(Some(format!("{pkg_name}@1.0.0-beta.3")))
+        }
+
+        fn last_stable_version(&self, _: &str, _: &[String]) -> Result<Option<String>> {
+            Ok(Some("0.13.0".to_string()))
+        }
+
+        fn commit_count_since(&self, _: &str, _: &Path) -> Result<usize> {
+            Ok(0)
+        }
+
+        fn changed_files_since(&self, _: &str, _: &Path) -> Result<Vec<std::path::PathBuf>> {
+            Ok(Vec::new())
+        }
+
+        fn commits_since(&self, _: Option<&str>, _: &Path) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    fn run_two_line_release(bump: Bump) -> Vec<(String, String)> {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mut pkg = test_pkg(root, "std");
+        pkg.version = "1.0.0-beta.3".to_string();
+        let adapter = FakeVersionAdapter::with_packages(vec![pkg]);
+        let git = FakeGit::new();
+        let forge = FakeForge {
+            prs: RefCell::new(Vec::new()),
+        };
+        let prompt = ScriptedBumpPrompt {
+            bumps: HashMap::from([("std".to_string(), bump)]),
+        };
+        let config = crate::config::ReleaseConfig {
+            otf_release_version: None,
+            changelog_strategy: crate::config::ChangelogStrategy::Curated,
+            ..Default::default()
+        };
+
+        orchestrate_many(
+            &[&adapter],
+            &TwoLineRepo,
+            &git,
+            &forge,
+            &prompt,
+            root,
+            "2026-07-25",
+            &VersionOptions::default(),
+            &config,
+            &crate::hooks::fakes::FakeHookRunner::new(),
+        )
+        .unwrap();
+
+        let writes = adapter.writes.borrow().clone();
+        writes
+    }
+
+    #[test]
+    fn a_minor_on_a_beta_package_cuts_from_the_stable_tag() {
+        // 0.13.0 + minor, not the 1.1.0 the in-flight 1.0.0-beta.3 would have produced.
+        assert_eq!(
+            run_two_line_release(Bump::Minor),
+            [("std".to_string(), "0.14.0".to_string())]
+        );
+    }
+
+    #[test]
+    fn graduating_a_beta_package_still_uses_its_prerelease() {
+        // The other line is untouched by the stable head: beta.3 graduates to 1.0.0.
+        assert_eq!(
+            run_two_line_release(Bump::Graduate),
+            [("std".to_string(), "1.0.0".to_string())]
+        );
+        assert_eq!(
+            run_two_line_release(Bump::Prerelease("beta".to_string())),
+            [("std".to_string(), "1.0.0-beta.4".to_string())]
         );
     }
 }

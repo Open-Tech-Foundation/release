@@ -20,7 +20,10 @@ Implemented in `crates/core/src/version.rs`.
 3. **Parse `[Unreleased]`** from the configured changelog scope; flag packages with content as
    *pending*.
 4. **Prompt** — group pending packages by bump type: major, minor, then patch. Each group includes
-   a select-all option for the remaining packages.
+   a select-all option for the remaining packages, and each row shows the version the bump
+   produces. Anything left unpicked falls through to an open-ended group that asks per package —
+   for one already on a prerelease, whether to continue the channel, switch it, or graduate.
+   See [stable and prerelease lines](#stable-and-prerelease-lines).
 5. **Cascade** — for each bumped package, walk its dependents. Each dependent's bump is
    `adapter.dependent_bump(dep_bump, kind)`. This is **transitive** (every newly bumped
    dependent is re-fed into the walk) and takes the **max** bump when a package is reached by
@@ -73,6 +76,26 @@ Changed Files:
 
 Three blocks: explicitly **selected** packages, **auto-bumped** dependents (with the reason),
 and **internal range updates** (private apps flagged "range updated, NOT published").
+
+## Stable and prerelease lines
+
+A package's stable and prerelease lines advance independently, but only one of them fits in the
+manifest. So while a package is mid-prerelease, the manifest holds the prerelease head and the
+**stable head is read from the last stable tag** — prerelease tags are skipped when resolving it.
+
+For a package whose manifest is `1.0.0-beta.3` with a last stable tag of `0.13.0`:
+
+| Group picked in            | Base       | Result          |
+| -------------------------- | ---------- | --------------- |
+| Minor                      | `0.13.0`   | `0.14.0`        |
+| Patch                      | `0.13.0`   | `0.13.1`        |
+| Other → continue `beta`    | manifest   | `1.0.0-beta.4`  |
+| Other → graduate to stable | manifest   | `1.0.0`         |
+
+The Minor row renders as `@scope/pkg  0.13.0 -> 0.14.0  [1.0.0-beta.3 in flight]` so the line being
+advanced is unambiguous. Two cases keep reading the manifest instead of a tag: a package with no
+stable tag yet (nothing to cut from), and any package whose manifest is already stable — its
+manifest may legitimately run ahead of its last tag, and a tag must never pull a version backwards.
 
 ## Invariants
 

@@ -12,11 +12,11 @@ use std::process::Command;
 use anyhow::Result;
 
 use otf_release_adapters::npm::{CommandOutput, CommandRunner, NpmAdapter};
-use otf_release_core::adapter::{Bump, Pkg};
+use otf_release_core::adapter::Bump;
 use otf_release_core::config::ReleaseConfig;
 use otf_release_core::forge::Forge;
 use otf_release_core::git::GitRepo;
-use otf_release_core::prompt::Prompt;
+use otf_release_core::prompt::{Candidate, Prompt};
 use otf_release_core::version::{orchestrate, VersionOptions};
 
 /// Every `npm` invocation "succeeds" (the version flow only calls `update_lockfile`).
@@ -37,7 +37,7 @@ struct ScriptedPrompt {
     confirmations: RefCell<Vec<String>>,
 }
 impl Prompt for ScriptedPrompt {
-    fn choose_bumps(&self, _pending: &[&Pkg]) -> Result<HashMap<String, Bump>> {
+    fn choose_bumps(&self, _pending: &[Candidate]) -> Result<HashMap<String, Bump>> {
         Ok(self
             .selected
             .iter()
