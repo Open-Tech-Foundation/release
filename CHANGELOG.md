@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-07-24
+
 - **version — a package mid-prerelease could not cut a stable release.** Every bump was computed
   from the manifest, and a package mid-prerelease holds the *prerelease* there. So a package that
   had shipped `0.13.0` and was now on `1.0.0-beta.3` offered "Minor" as `1.0.0-beta.3` → `1.1.0`,
