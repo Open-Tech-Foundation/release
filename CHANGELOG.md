@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-07-29
+
 - **npm — a dependency pinned to a URL, path, or git ref was corrupted by `version`.** Internal
   range rewriting split the old range at its first digit and appended the new version, which is
   right for `^1.2.3` but destroys anything else that merely *contains* a digit. A website pinning
