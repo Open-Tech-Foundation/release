@@ -88,10 +88,10 @@ pub fn render(plan: &Plan) -> String {
                     r.old_range.clone(),
                     "→".to_string(),
                     r.new_range.clone(),
-                    if r.consumer_private {
-                        "private app, not published".to_string()
-                    } else {
-                        "published package".to_string()
+                    match (r.new_range == r.old_range, r.consumer_private) {
+                        (true, _) => "pinned spec, left unchanged".to_string(),
+                        (false, true) => "private app, not published".to_string(),
+                        (false, false) => "published package".to_string(),
                     },
                 ]
             })

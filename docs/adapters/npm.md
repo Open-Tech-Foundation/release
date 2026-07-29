@@ -103,6 +103,33 @@ to `npm install --package-lock-only`.
 1.2.3  →  ^1.2.3
 ```
 
+### What gets rewritten (`update_dep_range`)
+
+When an internal dependency is bumped, every consumer's declared range is rewritten — including
+consumers marked `private: true`, which are never versioned or published but still have to resolve
+against the workspace.
+
+Rewriting preserves the existing operator and only touches a **simple range**: one comparator
+(`^`, `~`, `>=`, `<=`, `>`, `<`, `=`, or none) followed by a complete `x.y.z` version.
+
+```
+^1.2.3            →  ^2.0.0
+>=1.2.3           →  >=2.0.0
+workspace:^       →  workspace:^     (resolved at publish, not here)
+*  latest  1.x    →  unchanged       (nothing to replace)
+https://…/pkg-1.2.3.tgz              →  unchanged
+file:../packages/pkg                 →  unchanged
+git+ssh://git@github.com/o/r#v1.2.3  →  unchanged
+npm:@scope/other@^1.2.3              →  unchanged
+>=1.0.0 <2.0.0                       →  unchanged
+```
+
+Anything pinned by hand is left exactly as written. A tarball URL or git ref names a version that
+exists *now*; the version being bumped to is not published until the `publish` step, so moving the
+pin would break `install` — and the lockfile refresh runs before publish. The plan marks those rows
+`pinned spec, left unchanged`. Repointing a pin at the new release is a manual follow-up, or a
+`post_version` hook.
+
 ## No `private:true` guard — and why
 
 The current pre-tool workflow sets `private: true` on asset packages purely to **hide them

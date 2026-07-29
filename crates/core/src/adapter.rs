@@ -138,6 +138,14 @@ pub trait Adapter {
     /// Render a version into the ecosystem's range syntax (e.g. `1.2.3` -> `^1.2.3`).
     fn format_range(&self, version: &str) -> String;
 
+    /// What [`update_dep_range`](Adapter::update_dep_range) would write over `old_range`, without
+    /// touching the manifest — so the plan shows the real edit rather than a canonical guess.
+    /// Returning `old_range` unchanged means the range is pinned by hand (a tarball URL, a git
+    /// ref, a `file:` path) and the run must leave it alone.
+    fn preview_range(&self, _old_range: &str, new_version: &str) -> String {
+        self.format_range(new_version)
+    }
+
     /// Replace workspace links (e.g. `workspace:*`) with concrete published versions
     /// immediately before publishing. Some ecosystems (npm) do not do this automatically.
     fn resolve_workspace_links(&self, pkg: &Pkg) -> Result<()>;

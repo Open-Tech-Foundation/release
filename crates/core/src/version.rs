@@ -335,7 +335,7 @@ pub fn orchestrate_many(
                         dep: dep.name.clone(),
                         kind: dep.kind.clone(),
                         old_range: dep.range.clone(),
-                        new_range: ctx.adapter.format_range(new_dep_ver),
+                        new_range: ctx.adapter.preview_range(&dep.range, new_dep_ver),
                         consumer_private: !p.publishable,
                     });
                     apply_ranges.push((idx, p.name.clone(), dep.name.clone()));

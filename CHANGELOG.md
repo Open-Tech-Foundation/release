@@ -8,6 +8,23 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **npm — a dependency pinned to a URL, path, or git ref was corrupted by `version`.** Internal
+  range rewriting split the old range at its first digit and appended the new version, which is
+  right for `^1.2.3` but destroys anything else that merely *contains* a digit. A website pinning
+  a workspace package to its published tarball
+  (`https://registry.npmjs.org/@scope/pkg/-/pkg-0.14.1.tgz` — the usual shape when the deploy has
+  no access to the workspace `dist`) became
+  `https://registry.npmjs.org/@scope/pkg/-/pkg-0.15.0`: `.tgz` lopped off, and pointing at a
+  version that is not published until *after* the run. The lockfile refresh then failed and took
+  the whole `version` command with it. `file:` paths, `git+ssh://…#v1.2.3`, `github:owner/repo#tag`,
+  `npm:` aliases and compound ranges (`>=1.0.0 <2.0.0`) were mangled the same way.
+
+  Only a single comparator followed by a complete `x.y.z` version is rewritten now; every other
+  spec is left exactly as written, so it keeps resolving to the version it already names. The plan
+  marks those rows `pinned spec, left unchanged` rather than showing an edit that will not happen —
+  and range rows in general now preview the *actual* rewrite, so a `~` or `>=` range no longer
+  displays as `^`.
+
 ## [0.29.0] - 2026-07-24
 
 - **version — a package mid-prerelease could not cut a stable release.** Every bump was computed

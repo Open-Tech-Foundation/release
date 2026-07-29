@@ -199,6 +199,10 @@ impl Adapter for NpmAdapter {
         format!("^{version}")
     }
 
+    fn preview_range(&self, old_range: &str, new_version: &str) -> String {
+        reformat_range(old_range, new_version)
+    }
+
     fn resolve_workspace_links(&self, pkg: &Pkg) -> Result<()> {
         // Map every internal package to its current concrete version.
         let versions: HashMap<String, String> = self
@@ -399,16 +403,51 @@ fn workspace_patterns(root_json: &Value) -> Vec<String> {
 }
 
 /// Rewrite a concrete range while preserving its leading operator (`^`, `~`, `>=`, exact, …).
-/// `workspace:` ranges and pure tags (`*`, `latest`) are left untouched.
+///
+/// Only a *simple* range — one comparator operator followed by a full `x.y.z` version — is
+/// rewritable. Everything else is returned untouched, because there is no way to move it to the
+/// new version without either corrupting it or breaking the install:
+///
+/// - `workspace:` protocol ranges (resolved later, at publish time)
+/// - tags and partial ranges with no full version to replace (`*`, `latest`, `1.x`, `^1`)
+/// - specs that merely *contain* digits: tarball URLs, `file:` paths, `git+ssh://…#v1.2.3`,
+///   `github:user/repo#tag`, `npm:` aliases. Splitting these at the first digit produced garbage
+///   like `https://registry.npmjs.org/@scope/pkg/-/pkg-0.2.0` — a URL with the `.tgz` lopped off,
+///   pointing at a version that is not published until *after* this run.
+/// - compound ranges (`>=1.0.0 <2.0.0`, `1.x || 2.x`), where replacing one version silently drops
+///   the rest of the constraint.
+///
+/// A pinned dep left alone here keeps resolving to the version it already names, so the lockfile
+/// refresh still succeeds. Moving it is the author's call, once the new version is published.
 fn reformat_range(old: &str, new_version: &str) -> String {
     let trimmed = old.trim();
-    if trimmed.starts_with("workspace:") {
-        return old.to_string();
+    match split_comparator(trimmed) {
+        Some((op, version)) if is_exact_version(version) => format!("{op}{new_version}"),
+        _ => old.to_string(),
     }
-    match trimmed.find(|c: char| c.is_ascii_digit()) {
-        None => old.to_string(), // no version component (e.g. "*", "latest")
-        Some(prefix_len) => format!("{}{new_version}", &trimmed[..prefix_len]),
+}
+
+/// Split a simple range into its leading comparator and the rest, longest operator first.
+/// `None` for anything that is not a bare version or a single-comparator range.
+fn split_comparator(range: &str) -> Option<(&str, &str)> {
+    for op in [">=", "<=", "=", "^", "~", ">", "<", ""] {
+        if let Some(rest) = range.strip_prefix(op) {
+            return Some((op, rest));
+        }
     }
+    None
+}
+
+/// A complete `x.y.z` version, optionally with a `-prerelease` and/or `+build` suffix.
+/// Partial versions (`1`, `1.2`, `1.x`) are rejected: there is nothing to rewrite in them.
+fn is_exact_version(v: &str) -> bool {
+    let core = v.split(['-', '+']).next().unwrap_or(v);
+    let mut parts = core.split('.');
+    let numeric = |p: Option<&str>| matches!(p, Some(s) if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()));
+    numeric(parts.next())
+        && numeric(parts.next())
+        && numeric(parts.next())
+        && parts.next().is_none()
 }
 
 /// Resolve a `workspace:` protocol range against the dependency's concrete version:
@@ -879,6 +918,34 @@ mod tests {
         assert_eq!(reformat_range(">=1.0.0", "2.0.0"), ">=2.0.0");
         assert_eq!(reformat_range("*", "2.0.0"), "*");
         assert_eq!(reformat_range("workspace:^", "2.0.0"), "workspace:^");
+        assert_eq!(reformat_range("<=1.0.0", "2.0.0"), "<=2.0.0");
+        assert_eq!(reformat_range("^1.0.0-rc.1", "2.0.0-rc.2"), "^2.0.0-rc.2");
+    }
+
+    /// A dep pinned to something that is not a plain semver range must survive untouched. These
+    /// all contain digits, and the old first-digit split turned them into garbage — a mangled
+    /// tarball URL that no registry can serve, which then failed the lockfile refresh.
+    #[test]
+    fn reformat_range_leaves_non_semver_specs_alone() {
+        for spec in [
+            "https://registry.npmjs.org/@scope/pkg/-/pkg-0.14.1.tgz",
+            "file:../packages/pkg",
+            "git+ssh://git@github.com/o/r.git#v1.2.3",
+            "github:owner/repo#v1.2.3",
+            "npm:@scope/other@^1.2.3",
+            "latest",
+            "1.x",
+            "^1",
+            ">=1.0.0 <2.0.0",
+            "1.x || 2.x",
+            ">= 1.0.0",
+        ] {
+            assert_eq!(
+                reformat_range(spec, "0.2.0"),
+                spec,
+                "must not rewrite {spec}"
+            );
+        }
     }
 
     #[test]
