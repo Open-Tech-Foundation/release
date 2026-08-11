@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-11
+
 - **npm — a polyglot monorepo could not release its JS packages at all.** Discovery read the
   member list from one place only: the root `package.json`'s `workspaces` globs. A repo whose root
   belongs to another ecosystem has no root `package.json` to put them in, so adding `"npm"` to
