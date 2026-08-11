@@ -67,6 +67,15 @@ pub struct GenericCandidate {
 }
 
 impl GenericCandidate {
+    /// The package's directory relative to the repo root — what a `[discovery]` pattern names.
+    /// A manifest at the root has no directory component and is spelled `.`.
+    pub fn dir(&self) -> String {
+        match self.manifest.rsplit_once('/') {
+            Some((dir, _)) => dir.to_string(),
+            None => ".".to_string(),
+        }
+    }
+
     /// A one-line label for a selection prompt.
     pub fn label(&self) -> String {
         let private = if self.private { ", private" } else { "" };
@@ -83,6 +92,46 @@ pub fn scan_generic_candidates(root: &Path) -> Vec<GenericCandidate> {
     walk(root, root, 0, &mut out);
     out.sort_by(|a, b| a.manifest.cmp(&b.manifest));
     out
+}
+
+/// The `kind` label the scanner gives an npm manifest.
+pub const NPM_KIND: &str = "Node / npm";
+
+/// Scan `root` for npm packages, publishable ones first.
+///
+/// This is a *suggestion* engine for `init`/`config`, never a release-time input: the packages it
+/// finds are shown for confirmation and the confirmed set is written to `release.toml`'s
+/// `[discovery]` table. Guessing at release time is the thing to avoid — a repo-walk happily finds
+/// test fixtures and scaffolding templates, and a false positive there means a published package
+/// or a pushed tag. A human filters the list once; every run afterwards reads the declaration.
+///
+/// Private packages are included and flagged rather than dropped, so a private package that other
+/// members depend on can still be pulled into the dependency graph deliberately.
+pub fn scan_npm_candidates(root: &Path) -> Vec<GenericCandidate> {
+    let mut found: Vec<GenericCandidate> = scan_generic_candidates(root)
+        .into_iter()
+        .filter(|c| c.kind == NPM_KIND)
+        .collect();
+    found.sort_by(|a, b| a.private.cmp(&b.private).then(a.manifest.cmp(&b.manifest)));
+    found
+}
+
+/// Whether the repo declares its npm members itself, in the root `package.json`'s `workspaces`.
+///
+/// When it does, that declaration stays the source of truth and nothing is written to
+/// `[discovery]` — two declarations of the same thing would be one more place to drift. This only
+/// asks whether the key is present; which members it resolves to is the npm adapter's business.
+pub fn declares_npm_workspaces(root: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(root.join("package.json")) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    matches!(
+        json.get("workspaces"),
+        Some(serde_json::Value::Array(_)) | Some(serde_json::Value::Object(_))
+    )
 }
 
 fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<GenericCandidate>) {
@@ -454,6 +503,89 @@ mod tests {
             .into_owned();
         assert_eq!(dir_name(Path::new("Cargo.toml")), expected);
         assert_ne!(dir_name(Path::new("Cargo.toml")), "package");
+    }
+
+    #[test]
+    fn npm_scan_lists_publishable_packages_first_and_flags_private_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        for (dir, file, text) in [
+            (
+                "packages/redis",
+                "package.json",
+                r#"{"name":"@x/redis","version":"0.0.1"}"#,
+            ),
+            (
+                "types",
+                "package.json",
+                r#"{"name":"@x/types","version":"0.1.0"}"#,
+            ),
+            (
+                "website",
+                "package.json",
+                r#"{"name":"website","version":"0.1.0","private":true}"#,
+            ),
+            // A Rust crate is not an npm candidate, however plainly the scanner can read it.
+            (
+                "crates/engine",
+                "Cargo.toml",
+                "[package]\nname=\"engine\"\nversion=\"1.0.0\"\n",
+            ),
+        ] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+            fs::write(root.join(dir).join(file), text).unwrap();
+        }
+
+        let found = scan_npm_candidates(root);
+        let listed: Vec<(&str, bool)> =
+            found.iter().map(|c| (c.name.as_str(), c.private)).collect();
+        // Publishable first, private last — the order the picker checks boxes in.
+        assert_eq!(
+            listed,
+            vec![("@x/redis", false), ("@x/types", false), ("website", true)]
+        );
+        assert_eq!(found[0].dir(), "packages/redis");
+        assert_eq!(found[1].dir(), "types");
+    }
+
+    #[test]
+    fn a_root_manifest_scans_to_the_repo_root_as_its_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join("package.json"),
+            r#"{"name":"solo","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(scan_npm_candidates(tmp.path())[0].dir(), ".");
+    }
+
+    #[test]
+    fn only_a_real_workspaces_key_counts_as_a_native_declaration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // No root manifest at all.
+        assert!(!declares_npm_workspaces(root));
+        // A root manifest that is not a workspace — the packages live elsewhere, undeclared.
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","private":true}"#,
+        )
+        .unwrap();
+        assert!(!declares_npm_workspaces(root));
+        // The real thing, in both spellings npm accepts.
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        assert!(declares_npm_workspaces(root));
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","workspaces":{"packages":["packages/*"]}}"#,
+        )
+        .unwrap();
+        assert!(declares_npm_workspaces(root));
     }
 
     #[test]

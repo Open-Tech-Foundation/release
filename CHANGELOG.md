@@ -8,6 +8,38 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+- **npm — a polyglot monorepo could not release its JS packages at all.** Discovery read the
+  member list from one place only: the root `package.json`'s `workspaces` globs. A repo whose root
+  belongs to another ecosystem has no root `package.json` to put them in, so adding `"npm"` to
+  `adapters` made `init`, `check`, `version`, and `publish` all fail with
+  `reading manifest ./package.json: No such file or directory` — taking the repo's *working*
+  crates.io release down with them. Adding a bare root `package.json` recovered the commands and
+  still discovered nothing, silently, which reads as "npm is enabled and working".
+
+  A missing root manifest is now an empty result rather than an error, so enabling npm can never
+  break another adapter. And package locations can be declared in `release.toml` instead of in
+  npm's own manifest:
+
+  ```toml
+  [discovery]
+  npm = ["packages/*", "types"]
+  ```
+
+  `init` and `config` → *Ecosystems* write that list: they scan the repo, show every `package.json`
+  with a `name` and a `version`, pre-check the publishable ones, and save what you confirm. The
+  scan is a suggestion engine for setup only — release-time discovery stays declaration-driven,
+  because a repo walk finds test fixtures and scaffolding templates just as happily as real
+  packages. Repos that declare `workspaces` themselves are untouched: that declaration stays the
+  single source of truth and no `[discovery]` table is written.
+
+  This exists because the alternative is not a neutral edit. A root `workspaces` key is acted on
+  by npm, pnpm, and bun — it hoists every member into one root `node_modules` behind a single
+  lockfile — so a repo with independent per-package installs would have had to restructure how it
+  installs, builds, and tests just to be discoverable.
+
+  The lockfile refresh after a version bump is skipped when the root has neither a lockfile nor a
+  `package.json`: there is no root install to run, and no root lockfile that could have gone stale.
+
 ## [0.30.0] - 2026-07-29
 
 - **npm — a dependency pinned to a URL, path, or git ref was corrupted by `version`.** Internal

@@ -56,6 +56,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         fs::write(tmp.path().join("bun.lock"), "").unwrap();
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             adapters: vec![Ecosystem::Npm],
             skip_publish: Vec::new(),
@@ -108,6 +109,7 @@ mod tests {
         // dropped Windows install steps just by running `otf-release upgrade`.
         let tmp = tempfile::tempdir().unwrap();
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             adapters: vec![Ecosystem::Npm],
             skip_publish: Vec::new(),

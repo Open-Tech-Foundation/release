@@ -508,6 +508,34 @@ pub struct PublishConfig {
     pub ignore_paths: HashMap<String, Vec<String>>,
 }
 
+/// Where an ecosystem's packages live, when the repo does not declare that natively.
+///
+/// npm discovery normally reads the root `package.json`'s `workspaces` globs. A polyglot repo
+/// often has no root `package.json` at all — the root belongs to another ecosystem (a Cargo
+/// workspace, say) and the JS packages are independent projects with their own lockfiles. Adding
+/// a root `workspaces` declaration purely to satisfy this tool is not a neutral edit: npm, pnpm,
+/// and bun all *act* on it, hoisting every member into one root `node_modules` behind a single
+/// lockfile. So the declaration lives here instead — same determinism, no effect on how the repo
+/// installs.
+///
+/// Entries are globs relative to the repo root naming package *directories* (`packages/*`,
+/// `types`), not manifest files. `init` and `config` write them from what the repo scan found and
+/// you confirmed; discovery never guesses at release time.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Discovery {
+    /// Explicit npm package directories. Non-empty ⇒ these *are* the members, and the root
+    /// `package.json` is not consulted for `workspaces`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub npm: Vec<String>,
+}
+
+impl Discovery {
+    /// Nothing declared for any ecosystem — the table is omitted from `release.toml` entirely.
+    pub fn is_empty(&self) -> bool {
+        self.npm.is_empty()
+    }
+}
+
 /// The whole `release.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseConfig {
@@ -530,6 +558,10 @@ pub struct ReleaseConfig {
     /// Publish path-ignore policy keyed by package name.
     #[serde(default)]
     pub publish: PublishConfig,
+    /// Explicit package locations for ecosystems whose members this repo does not declare
+    /// natively. Empty for a repo whose root manifest already declares them.
+    #[serde(default, skip_serializing_if = "Discovery::is_empty")]
+    pub discovery: Discovery,
     /// Packages with an explicit build step. Packages absent here are published as-is by their
     /// adapter (no build), in `publish` mode.
     #[serde(default, rename = "package")]
@@ -602,6 +634,7 @@ impl Default for ReleaseConfig {
             skip_publish: Vec::new(),
             hooks: Hooks::default(),
             publish: PublishConfig::default(),
+            discovery: Discovery::default(),
             packages: Vec::new(),
             snapshot_tag: None,
             tag_format: default_tag_format(),
@@ -803,6 +836,7 @@ mod tests {
     #[test]
     fn round_trips_through_toml() {
         let cfg = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: DEFAULT_TAG_FORMAT.to_string(),
@@ -915,6 +949,7 @@ mod tests {
     fn save_and_load_via_disk() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: DEFAULT_TAG_FORMAT.to_string(),

@@ -20,11 +20,13 @@ use inquire::{MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{
-    ArchiveFormat, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode,
-    PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_TAG_FORMAT,
+    ArchiveFormat, ChangelogScope, ChangelogStrategy, Discovery, Ecosystem, GithubReleaseNotes,
+    Mode, PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_TAG_FORMAT,
     DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
 };
-use crate::discover::{scan_generic_candidates, GenericCandidate};
+use crate::discover::{
+    declares_npm_workspaces, scan_generic_candidates, scan_npm_candidates, GenericCandidate,
+};
 
 /// The git tag of the `otf-release` that generated a workflow. Generated jobs pin to this rather
 /// than tracking `main`/`latest`, so what runs in a consumer's CI changes only when they merge a
@@ -146,8 +148,19 @@ pub struct InitOptions {
 pub trait AdapterFactory {
     fn make(&self, ecosystem: Ecosystem) -> Box<dyn Adapter>;
 
+    /// Build an adapter that takes its package locations from `discovery` rather than from the
+    /// repo's own root manifest. `init` decides the declaration and the adapter must honour it in
+    /// the same run, before `release.toml` exists to be read back.
+    ///
+    /// Defaults to [`AdapterFactory::make`], which is correct for every ecosystem that has no
+    /// declaration to honour.
+    fn make_with_discovery(&self, ecosystem: Ecosystem, discovery: &Discovery) -> Box<dyn Adapter> {
+        let _ = discovery;
+        self.make(ecosystem)
+    }
+
     /// Human-readable notes from adapter-specific discovery, such as skipped workspace manifests.
-    fn discovery_notes(&self, _: Ecosystem) -> Result<Vec<String>> {
+    fn discovery_notes(&self, _: Ecosystem, _: &Discovery) -> Result<Vec<String>> {
         Ok(Vec::new())
     }
 }
@@ -171,6 +184,10 @@ pub trait InitPrompt {
     /// version); the user imports from those and/or adds more by hand. Asked only when the generic
     /// adapter is enabled.
     fn generic_packages(&self, found: &[GenericCandidate]) -> Result<Vec<PackageEntry>>;
+    /// Confirm which scanned npm packages this repo releases, returning indices into `found`.
+    /// Asked only when npm is enabled and the repo declares no `workspaces` of its own — the
+    /// answer becomes `release.toml`'s `[discovery] npm` list.
+    fn select_npm_packages(&self, found: &[GenericCandidate]) -> Result<Vec<usize>>;
     /// Which discovered packages should be excluded from registry publish. Asked only when the
     /// repo looks binary-distribution-shaped: some package is `build-only` while other discovered
     /// crates would still be pushed to a registry. Returns the names to record in `skip_publish`.
@@ -329,6 +346,43 @@ fn detect_jsr_exports_default(dir: &Path) -> &'static str {
     "./src/index.ts"
 }
 
+/// Settle where each enabled ecosystem's packages live, before any adapter is asked to discover.
+///
+/// Only npm needs this today, and only when the repo declares no `workspaces` of its own: without
+/// a declaration the adapter has nothing to read, so a repo whose root belongs to another
+/// ecosystem would report zero JS packages. The repo scan proposes what it found, the user
+/// confirms, and the confirmed set is what both this run and `release.toml` use.
+pub(crate) fn resolve_discovery(
+    prompt: &dyn InitPrompt,
+    root: &Path,
+    enabled: &[Ecosystem],
+) -> Result<Discovery> {
+    let mut discovery = Discovery::default();
+    if !enabled.contains(&Ecosystem::Npm) || declares_npm_workspaces(root) {
+        return Ok(discovery);
+    }
+
+    let found = scan_npm_candidates(root);
+    if found.is_empty() {
+        println!(
+            "No package.json with a name and a version found — npm will discover no packages.              Add the package directories to `[discovery] npm` in release.toml, or declare              `workspaces` in a root package.json."
+        );
+        return Ok(discovery);
+    }
+
+    println!("\nFound {} npm package(s) in this repo:", found.len());
+    for c in &found {
+        println!("  {}", c.label());
+    }
+    let chosen = prompt.select_npm_packages(&found)?;
+    discovery.npm = chosen
+        .into_iter()
+        .filter_map(|i| found.get(i))
+        .map(GenericCandidate::dir)
+        .collect();
+    Ok(discovery)
+}
+
 /// The testable core of `init`.
 pub fn orchestrate(
     factory: &dyn AdapterFactory,
@@ -341,6 +395,9 @@ pub fn orchestrate(
         bail!("No adapters selected — nothing to configure.");
     }
 
+    // Settle where each ecosystem's packages live before asking any adapter what it can find.
+    let discovery = resolve_discovery(prompt, root, &enabled)?;
+
     // Discover publishable packages across every *discoverable* ecosystem (npm/cargo read
     // manifests). The generic adapter has nothing to discover — its packages are entered below.
     let mut publishable: Vec<Pkg> = Vec::new();
@@ -348,7 +405,7 @@ pub fn orchestrate(
     let mut npm_publishable: Vec<Pkg> = Vec::new();
     let mut jsr_publishable: Vec<Pkg> = Vec::new();
     for &eco in enabled.iter().filter(|e| **e != Ecosystem::Generic) {
-        let adapter = factory.make(eco);
+        let adapter = factory.make_with_discovery(eco, &discovery);
         for pkg in adapter.discover_packages()? {
             if pkg.publishable {
                 match eco {
@@ -360,13 +417,13 @@ pub fn orchestrate(
                 publishable.push(pkg);
             }
         }
-        for note in factory.discovery_notes(eco)? {
+        for note in factory.discovery_notes(eco, &discovery)? {
             println!("{note}");
         }
     }
 
     if enabled.contains(&Ecosystem::Jsr) && jsr_publishable.is_empty() {
-        let jsr_adapter = factory.make(Ecosystem::Jsr);
+        let jsr_adapter = factory.make_with_discovery(Ecosystem::Jsr, &discovery);
         let jsr_pkgs = if !npm_publishable.is_empty() {
             let mut created_any = false;
             for npm_pkg in &npm_publishable {
@@ -458,7 +515,7 @@ pub fn orchestrate(
     // build job or artifact staging), and strip npm's pack/publish lifecycle hooks so npm can't
     // silently re-run a build behind the release pipeline.
     if !npm_publishable.is_empty() {
-        let npm = factory.make(Ecosystem::Npm);
+        let npm = factory.make_with_discovery(Ecosystem::Npm, &discovery);
         for pkg in &npm_publishable {
             let removed = npm.strip_publish_hooks(pkg)?;
             if !removed.is_empty() {
@@ -494,7 +551,7 @@ pub fn orchestrate(
     }
 
     if !jsr_publishable.is_empty() {
-        let jsr = factory.make(Ecosystem::Jsr);
+        let jsr = factory.make_with_discovery(Ecosystem::Jsr, &discovery);
         for pkg in &jsr_publishable {
             let command = jsr.build_command(pkg)?.unwrap_or_default();
             packages.push(PackageEntry {
@@ -555,6 +612,7 @@ pub fn orchestrate(
         publish: crate::config::PublishConfig {
             ignore_paths: publish_ignore_paths_seed(&publishable, &packages),
         },
+        discovery,
         adapters: enabled,
         skip_publish,
         packages,
@@ -1582,6 +1640,9 @@ const MODE_HELP: &str =
     "publish → push to the registry  ·  build-only → standalone binaries on a GitHub Release (no registry)";
 const MATRIX_HELP: &str =
     "Yes → cross-compile one binary per OS/arch (Rust, Go, …), staged per platform  ·  No → a single build";
+const NPM_PKGS_HELP: &str =
+    "written to release.toml as [discovery] npm, so every later run reads the same set — \
+     leave out fixtures, examples, and anything you never publish";
 const BIN_NAME_HELP: &str =
     "the compiled executable's base name; staged at bin/<platform>-<arch>/<name> inside the package";
 const COMMAND_HELP: &str =
@@ -1621,6 +1682,24 @@ impl InitPrompt for StdinInitPrompt {
             .with_default(default_exports)
             .prompt()?;
         Ok((name, exports))
+    }
+
+    fn select_npm_packages(&self, found: &[GenericCandidate]) -> Result<Vec<usize>> {
+        let labels: Vec<String> = found.iter().map(GenericCandidate::label).collect();
+        // Private packages are offered but not pre-checked: a private package is normally an app
+        // or a fixture, yet it can legitimately be an internal dependency of a released one, and
+        // leaving it out would break that edge in the dependency graph.
+        let defaults: Vec<usize> = found
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !c.private)
+            .map(|(i, _)| i)
+            .collect();
+        let chosen = MultiSelect::new("Which of these does this repo release?", labels)
+            .with_default(&defaults)
+            .with_help_message(NPM_PKGS_HELP)
+            .raw_prompt()?;
+        Ok(chosen.iter().map(|o| o.index).collect())
     }
 
     fn select_build_packages(&self, publishable: &[&Pkg]) -> Result<Vec<String>> {
@@ -2021,6 +2100,15 @@ pub(crate) mod tests {
         fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
             Ok(self.adapters.clone())
         }
+        fn select_npm_packages(&self, found: &[GenericCandidate]) -> Result<Vec<usize>> {
+            // Mirrors the real prompt's default: publishable packages checked, private ones not.
+            Ok(found
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| !c.private)
+                .map(|(i, _)| i)
+                .collect())
+        }
         fn prompt_jsr_scaffold(
             &self,
             default_name: &str,
@@ -2229,6 +2317,7 @@ pub(crate) mod tests {
     #[test]
     fn npm_only_renders_publish_job_no_release() {
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
@@ -2263,6 +2352,7 @@ pub(crate) mod tests {
     #[test]
     fn ubuntu_only_workflow_has_no_dead_windows_install_step_and_serializes_releases() {
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
@@ -2293,6 +2383,7 @@ pub(crate) mod tests {
         // (web-compiler) must not publish until that job succeeds — or the pin dangles on the
         // registry pointing at a version that does not exist yet (or never will).
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
@@ -2341,6 +2432,7 @@ pub(crate) mod tests {
     #[test]
     fn jsr_only_renders_publish_job_no_release() {
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
@@ -2411,6 +2503,7 @@ pub(crate) mod tests {
     #[test]
     fn npm_workflow_uses_detected_bun_lockfile() {
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
@@ -2456,6 +2549,7 @@ pub(crate) mod tests {
     #[test]
     fn pnpm_and_yarn_workflows_do_not_use_corepack() {
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
@@ -2489,6 +2583,7 @@ pub(crate) mod tests {
     #[test]
     fn cargo_build_only_renders_github_release_no_registry() {
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
@@ -2553,6 +2648,7 @@ pub(crate) mod tests {
         // build-only is meaningless for an npm matrix package: its per-platform binaries ship
         // inside the npm tarball, not as GitHub Release assets. So it must route to publish.
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "v{version}".to_string(),
@@ -2605,6 +2701,7 @@ pub(crate) mod tests {
     /// A cargo build-only matrix package over `targets` — the shape that exercises VM codegen.
     pub(crate) fn matrix_config(targets: Vec<Target>) -> ReleaseConfig {
         ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "v{version}".to_string(),
@@ -2719,6 +2816,7 @@ pub(crate) mod tests {
     #[test]
     fn npm_matrix_publish_stages_binaries_under_node_platform_dirs() {
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
@@ -2810,6 +2908,7 @@ pub(crate) mod tests {
             GithubReleaseNotes::AutoGenerate,
         ] {
             let config = ReleaseConfig {
+                discovery: Default::default(),
                 otf_release_version: None,
                 snapshot_tag: None,
                 tag_format: "{name}@{version}".to_string(),
@@ -2841,6 +2940,7 @@ pub(crate) mod tests {
     #[test]
     fn generic_build_only_renders_no_toolchain_and_manifest_version() {
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
@@ -2874,6 +2974,7 @@ pub(crate) mod tests {
     #[test]
     fn multiple_build_only_packages_get_package_scoped_releases() {
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
@@ -2906,6 +3007,7 @@ pub(crate) mod tests {
     #[test]
     fn generic_publish_renders_publish_job_with_edit_me_toolchain() {
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),
@@ -2938,6 +3040,7 @@ pub(crate) mod tests {
     #[test]
     fn polyglot_renders_one_publish_job_and_release() {
         let config = ReleaseConfig {
+            discovery: Default::default(),
             otf_release_version: None,
             snapshot_tag: None,
             tag_format: "{name}@{version}".to_string(),

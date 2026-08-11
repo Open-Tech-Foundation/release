@@ -13,6 +13,37 @@ fixture, benchmark, and tool-only folders from aborting setup.
 Malformed JSON still fails discovery. That is a broken workspace manifest, not a non-release
 package.
 
+A repo with **no root `package.json` at all** declares no npm packages there, which is an empty
+result rather than an error — a polyglot repo's root routinely belongs to another ecosystem, and
+failing would take `check`/`version`/`publish` down for every other enabled adapter too.
+
+### Repos that declare no npm workspace
+
+A polyglot monorepo often has no root `package.json` to put `workspaces` in: the root is a Cargo
+workspace, and the JS packages are independent projects with their own lockfiles. Adding a root
+`workspaces` key just to be discoverable is not a neutral edit — npm, pnpm, and bun all act on it,
+hoisting every member into one root `node_modules` behind a single lockfile.
+
+So the declaration can live in `release.toml` instead:
+
+```toml
+[discovery]
+npm = ["packages/*", "types"]
+```
+
+Globs are relative to the repo root and name package **directories**, not manifest files. When the
+list is non-empty it *is* the member set and the root `package.json` is never consulted — so it can
+also narrow a repo to a subset of what its package manager treats as members.
+
+`init` and `otf-release config` → *Ecosystems* write this list: they scan the repo, show every
+`package.json` carrying a `name` and a `version`, pre-check the publishable ones, and save what you
+confirm. The scan is a suggestion engine only. Discovery never walks the tree at release time,
+because a walk finds test fixtures and scaffolding templates just as happily as real packages, and
+a false positive there means a published package or a pushed tag.
+
+Repos that *do* declare `workspaces` are left alone — `[discovery]` stays absent, and npm's own
+declaration remains the single source of truth.
+
 ## Cascade rule (`dependent_bump`)
 
 ```
@@ -96,6 +127,10 @@ This runs in the **same commit** as the version changes (see
 lockfile to choose the install command: Bun, pnpm, Yarn, or npm. The local version flow uses the
 same lockfile detection when refreshing the lockfile, so Bun/pnpm/Yarn workspaces do not fall back
 to `npm install --package-lock-only`.
+
+When the root has **neither** a lockfile nor a `package.json`, the refresh is skipped: that is the
+`[discovery]` layout, where each package is its own install with its own lockfile beside it, so a
+root install would just fail and no root lockfile exists to have gone stale.
 
 ## Range syntax (`format_range`)
 

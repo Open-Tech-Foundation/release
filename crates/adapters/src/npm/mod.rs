@@ -33,6 +33,9 @@ use manifest::{Manifest, DEP_SECTIONS};
 pub struct NpmAdapter {
     pub root: PathBuf,
     runner: Box<dyn CommandRunner>,
+    /// Explicit member directory globs from `release.toml`'s `[discovery] npm`. Non-empty ⇒ they
+    /// *are* the member set and the root `package.json` is never consulted for `workspaces`.
+    packages: Vec<String>,
 }
 
 /// A workspace manifest that npm discovery intentionally ignored.
@@ -62,6 +65,7 @@ impl NpmAdapter {
         Self {
             root: root.into(),
             runner: Box::new(SystemRunner),
+            packages: Vec::new(),
         }
     }
 
@@ -70,27 +74,23 @@ impl NpmAdapter {
         Self {
             root: root.into(),
             runner,
+            packages: Vec::new(),
         }
     }
 
-    /// Every package directory in the repo, by [`Layout`]: the root alone for a single-package
-    /// repo, the `workspaces` globs (plus the root, when it is a package too) for a workspace.
-    fn member_dirs(&self) -> Result<Vec<PathBuf>> {
-        let root_manifest = Manifest::read(&self.root.join("package.json"))?;
-        let (patterns, root_is_member) = match layout_of(&root_manifest)? {
-            Layout::Single => return Ok(vec![self.root.clone()]),
-            Layout::Workspace {
-                patterns,
-                root_is_member,
-            } => (patterns, root_is_member),
-        };
+    /// Take the member directories from an explicit declaration (`[discovery] npm`) instead of the
+    /// root `package.json`. For a repo whose root belongs to another ecosystem, this is the only
+    /// way to name the JS packages without restructuring how the repo installs.
+    pub fn with_packages(mut self, packages: Vec<String>) -> Self {
+        self.packages = packages;
+        self
+    }
 
+    /// Directories of every `package.json` matched by `patterns` (each pattern names a directory).
+    fn dirs_matching(&self, patterns: &[String]) -> Result<BTreeSet<PathBuf>> {
         let mut dirs = BTreeSet::new();
-        if root_is_member {
-            dirs.insert(self.root.clone());
-        }
         for pattern in patterns {
-            let joined = self.root.join(&pattern).join("package.json");
+            let joined = self.root.join(pattern).join("package.json");
             let glob_str = joined
                 .to_str()
                 .ok_or_else(|| anyhow!("non-UTF-8 path in workspace pattern: {pattern}"))?;
@@ -102,6 +102,40 @@ impl NpmAdapter {
                     dirs.insert(dir.to_path_buf());
                 }
             }
+        }
+        Ok(dirs)
+    }
+
+    /// Every package directory in the repo: the explicitly declared globs when `release.toml`
+    /// carries them, otherwise by [`Layout`] — the root alone for a single-package repo, the
+    /// `workspaces` globs (plus the root, when it is a package too) for a workspace.
+    fn member_dirs(&self) -> Result<Vec<PathBuf>> {
+        // An explicit declaration wins outright. It exists precisely for repos with no root
+        // `package.json`, so falling back to reading one would defeat it.
+        if !self.packages.is_empty() {
+            return Ok(self.dirs_matching(&self.packages)?.into_iter().collect());
+        }
+
+        // No root manifest means this repo declares no npm packages here — not a failure. A
+        // polyglot repo's root routinely belongs to another ecosystem, and erroring would take
+        // `check`/`version`/`publish` down for every *other* enabled adapter along with it.
+        let root_manifest_path = self.root.join("package.json");
+        if !root_manifest_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let root_manifest = Manifest::read(&root_manifest_path)?;
+        let (patterns, root_is_member) = match layout_of(&root_manifest)? {
+            Layout::Single => return Ok(vec![self.root.clone()]),
+            Layout::Workspace {
+                patterns,
+                root_is_member,
+            } => (patterns, root_is_member),
+        };
+
+        let mut dirs = self.dirs_matching(&patterns)?;
+        if root_is_member {
+            dirs.insert(self.root.clone());
         }
         Ok(dirs.into_iter().collect())
     }
@@ -232,6 +266,12 @@ impl Adapter for NpmAdapter {
     }
 
     fn update_lockfile(&self, root: &Path) -> Result<()> {
+        // Nothing at the root to refresh: no lockfile *and* no manifest to install from. That is
+        // the explicitly-declared layout, where each package is its own install with its own
+        // lockfile beside it — running a root install there fails outright.
+        if !has_root_lockfile(root) && !root.join("package.json").exists() {
+            return Ok(());
+        }
         let (program, args) = lockfile_update_command(root);
         let out = self.runner.run(program, &args, root)?;
         if !out.success {
@@ -341,6 +381,19 @@ fn skip_reason(manifest: &Manifest) -> Result<Option<String>> {
         (false, true) => Some("missing \"version\"".to_string()),
         (false, false) => None,
     })
+}
+
+/// Whether the root carries any package manager's lockfile.
+fn has_root_lockfile(root: &Path) -> bool {
+    [
+        "bun.lock",
+        "bun.lockb",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "package-lock.json",
+    ]
+    .iter()
+    .any(|f| root.join(f).exists())
 }
 
 fn lockfile_update_command(root: &Path) -> (&'static str, Vec<&'static str>) {
@@ -852,8 +905,92 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_root_manifest_discovers_nothing_rather_than_failing() {
+        // A Cargo-rooted polyglot repo has no root package.json. Erroring here used to abort
+        // `init`/`check`/`version`/`publish` outright — taking down the *other* enabled adapters
+        // with it — the moment npm was added to `release.toml`.
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let adapter = NpmAdapter::new(tmp.path());
+        assert!(adapter.discover_packages().unwrap().is_empty());
+        assert!(adapter.skipped_workspace_manifests().unwrap().is_empty());
+    }
+
+    #[test]
+    fn declared_packages_are_found_without_any_root_manifest() {
+        // The ES-Runtime shape: root is a virtual Cargo workspace, the JS packages are independent
+        // projects elsewhere in the tree, and `[discovery] npm` is what names them.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        for (dir, json) in [
+            ("packages/redis", r#"{"name":"@x/redis","version":"0.0.1"}"#),
+            (
+                "packages/postgres",
+                r#"{"name":"@x/postgres","version":"0.0.1"}"#,
+            ),
+            ("types", r#"{"name":"@x/types","version":"0.1.0"}"#),
+            (
+                "website",
+                r#"{"name":"website","version":"0.1.0","private":true}"#,
+            ),
+        ] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+            fs::write(root.join(dir).join("package.json"), json).unwrap();
+        }
+
+        let adapter = NpmAdapter::new(root)
+            .with_packages(vec!["packages/*".to_string(), "types".to_string()]);
+        let names: Vec<String> = adapter
+            .discover_packages()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        // `website` is outside the declaration, so it is not a member at all — not even a skipped
+        // one. Only what was declared is released.
+        assert_eq!(names, ["@x/postgres", "@x/redis", "@x/types"]);
+    }
+
+    #[test]
+    fn a_declaration_overrides_the_root_workspaces_field() {
+        // Both present: the declaration is the deliberate, tool-local answer and wins, so a repo
+        // can release a subset of what its package manager treats as members.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","private":true,"workspaces":["apps/*"]}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("apps/a")).unwrap();
+        fs::write(
+            root.join("apps/a/package.json"),
+            r#"{"name":"a","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("libs/b")).unwrap();
+        fs::write(
+            root.join("libs/b/package.json"),
+            r#"{"name":"b","version":"2.0.0"}"#,
+        )
+        .unwrap();
+
+        let adapter = NpmAdapter::new(root).with_packages(vec!["libs/*".to_string()]);
+        let names: Vec<String> = adapter
+            .discover_packages()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["b"]);
+    }
+
+    #[test]
     fn update_lockfile_defaults_to_npm_without_a_known_lockfile() {
         let tmp = tempfile::tempdir().unwrap();
+        // A root package.json with no lockfile beside it yet — npm is the right default.
+        fs::write(tmp.path().join("package.json"), "{}").unwrap();
         let fake = FakeRunner::new(true, "", "");
         let adapter = NpmAdapter::with_runner(tmp.path(), Box::new(fake.clone()));
 
@@ -863,6 +1000,21 @@ mod tests {
         assert_eq!(calls[0].0, "npm");
         assert_eq!(calls[0].1, ["install", "--package-lock-only"]);
         assert_eq!(calls[0].2, tmp.path());
+    }
+
+    #[test]
+    fn update_lockfile_is_a_noop_when_the_root_has_nothing_to_install() {
+        // The explicitly-declared layout: the root belongs to another ecosystem, and each package
+        // is its own install with its own lockfile beside it. `npm install` here would fail, and
+        // there is no root lockfile that could have gone stale.
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let fake = FakeRunner::new(true, "", "");
+        let adapter = NpmAdapter::with_runner(tmp.path(), Box::new(fake.clone()));
+
+        adapter.update_lockfile(tmp.path()).unwrap();
+
+        assert!(fake.calls.lock().unwrap().is_empty());
     }
 
     #[test]

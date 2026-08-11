@@ -41,6 +41,17 @@ impl InitPrompt for NpmOnlyPrompt {
     fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
         Ok(vec![Ecosystem::Npm])
     }
+    fn select_npm_packages(
+        &self,
+        found: &[otf_release_core::discover::GenericCandidate],
+    ) -> Result<Vec<usize>> {
+        Ok(found
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !c.private)
+            .map(|(i, _)| i)
+            .collect())
+    }
     fn prompt_jsr_scaffold(
         &self,
         default_name: &str,

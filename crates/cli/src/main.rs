@@ -14,7 +14,7 @@ use clap::{Parser, Subcommand};
 use otf_release_adapters::generic::{GenericAdapter, GenericPkg};
 use otf_release_adapters::npm::NpmAdapter;
 use otf_release_core::adapter::Adapter;
-use otf_release_core::config::{Ecosystem, ReleaseConfig, DEFAULT_VERSION_FIELD};
+use otf_release_core::config::{Discovery, Ecosystem, ReleaseConfig, DEFAULT_VERSION_FIELD};
 use otf_release_core::init::AdapterFactory;
 use otf_release_core::{init, publish, upgrade, version};
 
@@ -25,12 +25,22 @@ mod self_update;
 struct CliAdapterFactory {
     root: PathBuf,
     generic: Vec<GenericPkg>,
+    /// `release.toml`'s `[discovery]` table — where an ecosystem's packages live when the repo
+    /// does not declare that itself. Empty for `init`, which settles it mid-run and then goes
+    /// through [`AdapterFactory::make_with_discovery`].
+    discovery: Discovery,
+}
+
+impl CliAdapterFactory {
+    fn npm(&self, discovery: &Discovery) -> Box<dyn Adapter> {
+        Box::new(NpmAdapter::new(self.root.clone()).with_packages(discovery.npm.clone()))
+    }
 }
 
 impl AdapterFactory for CliAdapterFactory {
     fn make(&self, ecosystem: Ecosystem) -> Box<dyn Adapter> {
         match ecosystem {
-            Ecosystem::Npm => Box::new(NpmAdapter::new(self.root.clone())),
+            Ecosystem::Npm => self.npm(&self.discovery),
             Ecosystem::Cargo => Box::new(otf_release_adapters::cargo::CargoAdapter::new(
                 self.root.clone(),
             )),
@@ -43,10 +53,18 @@ impl AdapterFactory for CliAdapterFactory {
         }
     }
 
-    fn discovery_notes(&self, ecosystem: Ecosystem) -> Result<Vec<String>> {
+    fn make_with_discovery(&self, ecosystem: Ecosystem, discovery: &Discovery) -> Box<dyn Adapter> {
+        match ecosystem {
+            Ecosystem::Npm => self.npm(discovery),
+            other => self.make(other),
+        }
+    }
+
+    fn discovery_notes(&self, ecosystem: Ecosystem, discovery: &Discovery) -> Result<Vec<String>> {
         match ecosystem {
             Ecosystem::Npm => {
-                let adapter = NpmAdapter::new(self.root.clone());
+                let adapter =
+                    NpmAdapter::new(self.root.clone()).with_packages(discovery.npm.clone());
                 Ok(adapter
                     .skipped_workspace_manifests()?
                     .into_iter()
@@ -215,6 +233,9 @@ fn run() -> Result<()> {
             let factory = CliAdapterFactory {
                 root: root.clone(),
                 generic: Vec::new(),
+                // `init` has no config to read yet; it settles discovery mid-run and passes it
+                // explicitly through `make_with_discovery`.
+                discovery: Discovery::default(),
             };
             init::run(&factory, &root, &init::InitOptions { force })
         }
@@ -252,6 +273,7 @@ fn run() -> Result<()> {
             let factory = CliAdapterFactory {
                 root: root.clone(),
                 generic: generic_pkgs(&config),
+                discovery: config.discovery.clone(),
             };
             let adapters: Vec<Box<dyn Adapter>> = config
                 .adapters
@@ -277,6 +299,7 @@ fn run() -> Result<()> {
             let factory = CliAdapterFactory {
                 root: root.clone(),
                 generic: generic_pkgs(&config),
+                discovery: config.discovery.clone(),
             };
             for eco in &config.adapters {
                 let adapter = factory.make(*eco);
@@ -295,6 +318,7 @@ fn run() -> Result<()> {
             let factory = CliAdapterFactory {
                 root: root.clone(),
                 generic: generic_pkgs(&config),
+                discovery: config.discovery.clone(),
             };
             let opts = version::VersionOptions {
                 dry_run,
@@ -319,6 +343,7 @@ fn run() -> Result<()> {
             let factory = CliAdapterFactory {
                 root: root.clone(),
                 generic: generic_pkgs(&config),
+                discovery: config.discovery.clone(),
             };
             let adapters: Vec<Box<dyn Adapter>> = config
                 .adapters
@@ -348,6 +373,7 @@ fn run() -> Result<()> {
             let factory = CliAdapterFactory {
                 root: root.clone(),
                 generic: generic_pkgs(&config),
+                discovery: config.discovery.clone(),
             };
             // build-only packages ship via the GitHub Release the workflow creates, never a
             // registry — so `publish` skips them.

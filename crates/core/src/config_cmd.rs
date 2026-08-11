@@ -7,6 +7,7 @@ use crate::config::{
     format_tag, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode,
     PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_VERSION_FIELD,
 };
+use crate::discover::{declares_npm_workspaces, scan_npm_candidates, GenericCandidate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigAction {
@@ -58,6 +59,9 @@ pub trait ConfigPrompt {
     fn action(&self) -> Result<ConfigAction>;
     fn hook_stage(&self) -> Result<HookStage>;
     fn ecosystems(&self, current: &[Ecosystem]) -> Result<Vec<Ecosystem>>;
+    /// Confirm which scanned npm packages this repo releases, returning indices into `found`.
+    /// `defaults` are the ones to start checked.
+    fn npm_packages(&self, found: &[GenericCandidate], defaults: &[usize]) -> Result<Vec<usize>>;
     fn package<'a>(&self, packages: &'a [PackageEntry]) -> Result<Option<&'a str>>;
     fn package_field(&self, package: &PackageEntry) -> Result<PackageField>;
     fn mode(&self, current: Mode) -> Result<Mode>;
@@ -93,6 +97,18 @@ impl ConfigPrompt for StdinConfigPrompt {
                 _ => ConfigAction::Exit,
             },
         )
+    }
+
+    fn npm_packages(&self, found: &[GenericCandidate], defaults: &[usize]) -> Result<Vec<usize>> {
+        let labels: Vec<String> = found.iter().map(GenericCandidate::label).collect();
+        let chosen = MultiSelect::new("Which of these does this repo release?", labels)
+            .with_default(defaults)
+            .with_help_message(
+                "saved as [discovery] npm in release.toml, so version/check/publish all read the \
+                 same set — leave out fixtures, examples, and anything you never publish",
+            )
+            .raw_prompt()?;
+        Ok(chosen.iter().map(|o| o.index).collect())
     }
 
     fn hook_stage(&self) -> Result<HookStage> {
@@ -340,6 +356,7 @@ pub fn orchestrate_with_prompt(root: &Path, prompt: &dyn ConfigPrompt) -> Result
             ConfigAction::LifecycleHooks => edit_hooks(root, prompt, &mut config)?,
             ConfigAction::Ecosystems => {
                 config.adapters = prompt.ecosystems(&config.adapters)?;
+                edit_npm_discovery(root, prompt, &mut config)?;
                 save(root, &config)?;
             }
             ConfigAction::Packages => edit_package(root, prompt, &mut config)?,
@@ -348,6 +365,70 @@ pub fn orchestrate_with_prompt(root: &Path, prompt: &dyn ConfigPrompt) -> Result
         }
     }
 
+    Ok(())
+}
+
+/// Settle where npm's packages live, right after npm is enabled.
+///
+/// Skipped entirely when the repo declares `workspaces` in a root `package.json` — that
+/// declaration already answers the question, and a second one here would only drift from it. When
+/// there is none (a Cargo-rooted repo whose JS packages are independent projects, say), the repo
+/// scan proposes what it found and the confirmed set is written to `[discovery] npm`. Re-running
+/// this re-scans and starts from what is already declared, so a package added later shows up.
+fn edit_npm_discovery(
+    root: &Path,
+    prompt: &dyn ConfigPrompt,
+    config: &mut ReleaseConfig,
+) -> Result<()> {
+    if !config.adapters.contains(&Ecosystem::Npm) {
+        config.discovery.npm.clear();
+        return Ok(());
+    }
+    if declares_npm_workspaces(root) {
+        println!(
+            "npm packages come from the `workspaces` globs in the root package.json — nothing to \
+             configure here."
+        );
+        return Ok(());
+    }
+
+    let found = scan_npm_candidates(root);
+    if found.is_empty() {
+        println!(
+            "No package.json with a name and a version found — npm will discover no packages. \
+             Add the package directories to `[discovery] npm` in release.toml by hand, or declare \
+             `workspaces` in a root package.json."
+        );
+        return Ok(());
+    }
+
+    println!("\nFound {} npm package(s) in this repo:", found.len());
+    for c in &found {
+        println!("  {}", c.label());
+    }
+
+    // Start from what is already declared; on a first run nothing is, so the publishable ones are
+    // checked and the private ones (apps, fixtures) are not.
+    let declared = &config.discovery.npm;
+    let defaults: Vec<usize> = found
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            if declared.is_empty() {
+                !c.private
+            } else {
+                declared.contains(&c.dir())
+            }
+        })
+        .map(|(i, _)| i)
+        .collect();
+
+    let chosen = prompt.npm_packages(&found, &defaults)?;
+    config.discovery.npm = chosen
+        .into_iter()
+        .filter_map(|i| found.get(i))
+        .map(GenericCandidate::dir)
+        .collect();
     Ok(())
 }
 
@@ -631,6 +712,14 @@ mod tests {
             Ok(HookStage::Back)
         }
 
+        fn npm_packages(
+            &self,
+            _found: &[GenericCandidate],
+            defaults: &[usize],
+        ) -> Result<Vec<usize>> {
+            Ok(defaults.to_vec())
+        }
+
         fn ecosystems(&self, _current: &[Ecosystem]) -> Result<Vec<Ecosystem>> {
             Ok(vec![Ecosystem::Npm, Ecosystem::Generic])
         }
@@ -716,6 +805,147 @@ mod tests {
         let text = std::fs::read_to_string(ReleaseConfig::path(tmp.path())).unwrap();
         assert!(text.contains("checksums = true"), "{text}");
         assert!(text.contains("attest = true"), "{text}");
+    }
+
+    /// The ES-Runtime shape: a Cargo workspace at the root, JS packages scattered beneath it, and
+    /// no root package.json anywhere. Enabling npm has to surface them.
+    fn polyglot_repo(root: &std::path::Path) -> Vec<&'static str> {
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        let files = [
+            ("packages/redis", r#"{"name":"@x/redis","version":"0.0.1"}"#),
+            (
+                "packages/postgres",
+                r#"{"name":"@x/postgres","version":"0.0.1"}"#,
+            ),
+            ("types", r#"{"name":"@x/types","version":"0.1.0"}"#),
+            (
+                "website",
+                r#"{"name":"website","version":"0.1.0","private":true}"#,
+            ),
+        ];
+        for (dir, json) in files {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("package.json"), json).unwrap();
+        }
+        files.iter().map(|(d, _)| *d).collect()
+    }
+
+    fn ecosystems_prompt() -> FakePrompt {
+        FakePrompt {
+            actions: RefCell::new(vec![ConfigAction::Ecosystems, ConfigAction::Exit]),
+            ..FakePrompt::default()
+        }
+    }
+
+    #[test]
+    fn enabling_npm_lists_and_records_the_repos_js_packages() {
+        let tmp = tempfile::tempdir().unwrap();
+        polyglot_repo(tmp.path());
+        let mut base = config();
+        base.adapters = vec![Ecosystem::Generic];
+        base.save(tmp.path()).unwrap();
+
+        orchestrate_with_prompt(tmp.path(), &ecosystems_prompt()).unwrap();
+
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        // The publishable ones, recorded as directories. `website` is private, so it is offered
+        // but starts unchecked — and the fake prompt takes the defaults.
+        assert_eq!(
+            cfg.discovery.npm,
+            ["packages/postgres", "packages/redis", "types"]
+        );
+
+        let text = std::fs::read_to_string(ReleaseConfig::path(tmp.path())).unwrap();
+        assert!(text.contains("[discovery]"), "{text}");
+        for dir in ["packages/postgres", "packages/redis", "types"] {
+            assert!(text.contains(&format!("\"{dir}\"")), "{text}");
+        }
+        assert!(!text.contains("website"), "{text}");
+    }
+
+    #[test]
+    fn a_repo_that_declares_workspaces_itself_gets_no_discovery_table() {
+        let tmp = tempfile::tempdir().unwrap();
+        polyglot_repo(tmp.path());
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        config().save(tmp.path()).unwrap();
+
+        orchestrate_with_prompt(tmp.path(), &ecosystems_prompt()).unwrap();
+
+        // npm's own declaration stays the single source of truth; duplicating it here would be one
+        // more place to drift.
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert!(cfg.discovery.npm.is_empty());
+        let text = std::fs::read_to_string(ReleaseConfig::path(tmp.path())).unwrap();
+        assert!(!text.contains("[discovery]"), "{text}");
+    }
+
+    #[test]
+    fn disabling_npm_drops_the_declaration() {
+        let tmp = tempfile::tempdir().unwrap();
+        polyglot_repo(tmp.path());
+        let mut base = config();
+        base.discovery.npm = vec!["types".to_string()];
+        base.save(tmp.path()).unwrap();
+
+        // The fake prompt returns npm + generic, so keep npm out by asking for generic only.
+        struct GenericOnly;
+        impl ConfigPrompt for GenericOnly {
+            fn ecosystems(&self, _: &[Ecosystem]) -> Result<Vec<Ecosystem>> {
+                Ok(vec![Ecosystem::Generic])
+            }
+            fn action(&self) -> Result<ConfigAction> {
+                Ok(ConfigAction::Exit)
+            }
+            fn npm_packages(&self, _: &[GenericCandidate], _: &[usize]) -> Result<Vec<usize>> {
+                panic!("npm is disabled — nothing to ask about");
+            }
+            fn hook_stage(&self) -> Result<HookStage> {
+                unreachable!()
+            }
+            fn package<'a>(&self, _: &'a [PackageEntry]) -> Result<Option<&'a str>> {
+                unreachable!()
+            }
+            fn package_field(&self, _: &PackageEntry) -> Result<PackageField> {
+                unreachable!()
+            }
+            fn mode(&self, _: Mode) -> Result<Mode> {
+                unreachable!()
+            }
+            fn global_field(&self) -> Result<GlobalField> {
+                unreachable!()
+            }
+            fn changelog_scope(&self, _: &ChangelogScope) -> Result<ChangelogScope> {
+                unreachable!()
+            }
+            fn changelog_strategy(&self, _: &ChangelogStrategy) -> Result<ChangelogStrategy> {
+                unreachable!()
+            }
+            fn github_release_notes(&self, _: &GithubReleaseNotes) -> Result<GithubReleaseNotes> {
+                unreachable!()
+            }
+            fn tag_format(&self, _: &str) -> Result<String> {
+                unreachable!()
+            }
+            fn targets(&self, _: &[Target]) -> Result<Vec<Target>> {
+                unreachable!()
+            }
+            fn toggle(&self, _: &str, _: &str, _: bool) -> Result<bool> {
+                unreachable!()
+            }
+            fn text(&self, _: &str, _: &str) -> Result<String> {
+                unreachable!()
+            }
+        }
+
+        let mut config = ReleaseConfig::load(tmp.path()).unwrap();
+        config.adapters = vec![Ecosystem::Generic];
+        edit_npm_discovery(tmp.path(), &GenericOnly, &mut config).unwrap();
+        assert!(config.discovery.npm.is_empty());
     }
 
     fn config() -> ReleaseConfig {
