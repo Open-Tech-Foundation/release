@@ -13,11 +13,20 @@ fixture, benchmark, and tool-only folders from aborting setup.
 Malformed JSON still fails discovery. That is a broken workspace manifest, not a non-release
 package.
 
+pnpm is the exception: it keeps its member list in `pnpm-workspace.yaml`'s `packages` key and
+ignores `workspaces` entirely, so that file is read first and wins when it declares members — it is
+what actually installs the repo. A `pnpm-workspace.yaml` holding only a `catalog:` declares no
+members and falls through to `package.json`. Negated patterns (`!packages/private-app`), which npm,
+pnpm, and bun all accept, exclude a directory the other patterns matched.
+
 A repo with **no root `package.json` at all** declares no npm packages there, which is an empty
 result rather than an error — a polyglot repo's root routinely belongs to another ecosystem, and
 failing would take `check`/`version`/`publish` down for every other enabled adapter too.
 
 ### Repos that declare no npm workspace
+
+This is only for repos that declare their members *nowhere* — if `pnpm-workspace.yaml` or a root
+`workspaces` field exists, that is used and `[discovery]` stays out of it.
 
 A polyglot monorepo often has no root `package.json` to put `workspaces` in: the root is a Cargo
 workspace, and the JS packages are independent projects with their own lockfiles. Adding a root
@@ -41,8 +50,8 @@ confirm. The scan is a suggestion engine only. Discovery never walks the tree at
 because a walk finds test fixtures and scaffolding templates just as happily as real packages, and
 a false positive there means a published package or a pushed tag.
 
-Repos that *do* declare `workspaces` are left alone — `[discovery]` stays absent, and npm's own
-declaration remains the single source of truth.
+Repos that *do* declare their members — `workspaces` or `pnpm-workspace.yaml` — are left alone:
+`[discovery]` stays absent, and the repo's own declaration remains the single source of truth.
 
 ## Cascade rule (`dependent_bump`)
 

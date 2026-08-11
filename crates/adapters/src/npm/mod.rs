@@ -23,6 +23,7 @@ use glob::glob;
 use serde_json::Value;
 
 use otf_release_core::adapter::{Adapter, Bump, DepKind, InternalDep, Pkg};
+use otf_release_core::discover::pnpm_workspace_patterns;
 
 // Re-exported so existing `otf_release_adapters::npm::{CommandRunner, ...}` paths still work.
 pub use crate::command::{CommandOutput, CommandRunner, SystemRunner};
@@ -86,21 +87,46 @@ impl NpmAdapter {
         self
     }
 
+    /// Whether the repo root is itself a package (a `package.json` with a `name` and a `version`),
+    /// as opposed to a private container for the members.
+    fn root_is_package(&self) -> Result<bool> {
+        let path = self.root.join("package.json");
+        if !path.exists() {
+            return Ok(false);
+        }
+        Ok(skip_reason(&Manifest::read(&path)?)?.is_none())
+    }
+
     /// Directories of every `package.json` matched by `patterns` (each pattern names a directory).
+    ///
+    /// A pattern starting with `!` is an exclusion, which npm, pnpm, and bun all accept — it must
+    /// remove a directory the other patterns matched rather than being globbed as a literal path,
+    /// or a member the repo deliberately excluded would be released. Exclusions are resolved by
+    /// globbing them the same way as the includes and subtracting: matching a pattern string
+    /// against an already-globbed path instead would compare two different spellings of the same
+    /// directory (`./packages/x` vs `packages/x`) whenever the root is relative.
     fn dirs_matching(&self, patterns: &[String]) -> Result<BTreeSet<PathBuf>> {
-        let mut dirs = BTreeSet::new();
+        let mut included = BTreeSet::new();
+        let mut excluded = BTreeSet::new();
         for pattern in patterns {
-            let joined = self.root.join(pattern).join("package.json");
-            let glob_str = joined
-                .to_str()
-                .ok_or_else(|| anyhow!("non-UTF-8 path in workspace pattern: {pattern}"))?;
-            for entry in
-                glob(glob_str).with_context(|| format!("invalid workspace glob: {pattern}"))?
-            {
-                let manifest_path = entry?;
-                if let Some(dir) = manifest_path.parent() {
-                    dirs.insert(dir.to_path_buf());
-                }
+            match pattern.strip_prefix('!') {
+                Some(negated) => excluded.extend(self.glob_dirs(negated)?),
+                None => included.extend(self.glob_dirs(pattern)?),
+            }
+        }
+        Ok(included.difference(&excluded).cloned().collect())
+    }
+
+    /// Directories under `root` holding a `package.json` whose path matches `pattern`.
+    fn glob_dirs(&self, pattern: &str) -> Result<BTreeSet<PathBuf>> {
+        let joined = self.root.join(pattern).join("package.json");
+        let glob_str = joined
+            .to_str()
+            .ok_or_else(|| anyhow!("non-UTF-8 path in workspace pattern: {pattern}"))?;
+        let mut dirs = BTreeSet::new();
+        for entry in glob(glob_str).with_context(|| format!("invalid workspace glob: {pattern}"))? {
+            if let Some(dir) = entry?.parent() {
+                dirs.insert(dir.to_path_buf());
             }
         }
         Ok(dirs)
@@ -114,6 +140,17 @@ impl NpmAdapter {
         // `package.json`, so falling back to reading one would defeat it.
         if !self.packages.is_empty() {
             return Ok(self.dirs_matching(&self.packages)?.into_iter().collect());
+        }
+
+        // pnpm keeps its member list in `pnpm-workspace.yaml`, not in package.json, and ignores a
+        // `workspaces` field entirely — so when that file declares packages it is what actually
+        // installs the repo, and it wins here for the same reason.
+        if let Some(patterns) = pnpm_workspace_patterns(&self.root)? {
+            let mut dirs = self.dirs_matching(&patterns)?;
+            if self.root_is_package()? {
+                dirs.insert(self.root.clone());
+            }
+            return Ok(dirs.into_iter().collect());
         }
 
         // No root manifest means this repo declares no npm packages here — not a failure. A
@@ -950,6 +987,103 @@ mod tests {
         // `website` is outside the declaration, so it is not a member at all — not even a skipped
         // one. Only what was declared is released.
         assert_eq!(names, ["@x/postgres", "@x/redis", "@x/types"]);
+    }
+
+    #[test]
+    fn a_pnpm_workspace_declares_its_members() {
+        // pnpm does not use package.json's `workspaces` field, so this repo used to look like a
+        // single-package one whose private root was then skipped: zero packages, silently.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","private":true}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'packages/*'\n  - apps/web\n",
+        )
+        .unwrap();
+        for dir in ["packages/a", "packages/b", "apps/web"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+            let name = dir.rsplit('/').next().unwrap();
+            fs::write(
+                root.join(dir).join("package.json"),
+                format!(r#"{{"name":"{name}","version":"1.0.0"}}"#),
+            )
+            .unwrap();
+        }
+
+        let names: Vec<String> = NpmAdapter::new(root)
+            .discover_packages()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["a", "b", "web"]);
+    }
+
+    #[test]
+    fn a_pnpm_workspace_without_packages_falls_through() {
+        // A pnpm-workspace.yaml carrying only a `catalog:` declares no members. Reading that as
+        // "the member list is empty" would blank discovery for a repo that is really a plain
+        // single-package one.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"solo","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "catalog:\n  react: ^19.0.0\n",
+        )
+        .unwrap();
+
+        let names: Vec<String> = NpmAdapter::new(root)
+            .discover_packages()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["solo"]);
+    }
+
+    #[test]
+    fn a_negated_pattern_excludes_a_member() {
+        // `!` exclusions are accepted by npm, pnpm, and bun alike. Globbed as a literal path they
+        // matched nothing and silently did nothing, so an excluded package still got released.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","private":true}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'packages/*'\n  - '!packages/private-app'\n",
+        )
+        .unwrap();
+        for dir in ["packages/lib", "packages/private-app"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+            let name = dir.rsplit('/').next().unwrap();
+            fs::write(
+                root.join(dir).join("package.json"),
+                format!(r#"{{"name":"{name}","version":"1.0.0"}}"#),
+            )
+            .unwrap();
+        }
+
+        let names: Vec<String> = NpmAdapter::new(root)
+            .discover_packages()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["lib"]);
     }
 
     #[test]

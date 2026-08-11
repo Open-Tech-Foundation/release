@@ -40,6 +40,24 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   The lockfile refresh after a version bump is skipped when the root has neither a lockfile nor a
   `package.json`: there is no root install to run, and no root lockfile that could have gone stale.
 
+- **npm — a pnpm monorepo discovered zero packages, silently.** pnpm is the one package manager
+  that does not use `package.json`'s `workspaces` field, keeping its member list in
+  `pnpm-workspace.yaml` instead. Discovery never read that file, so the repo looked like a
+  single-package one whose private root was then skipped: no packages, no error, no note. Its
+  `packages` key is now read and wins when present, since it is what actually installs the repo. A
+  `pnpm-workspace.yaml` holding only a `catalog:` declares no members and falls through to
+  `package.json` as before.
+
+- **npm — a negated workspace pattern was ignored.** `!packages/private-app`, which npm, pnpm, and
+  bun all accept, was globbed as a literal path, matched nothing, and silently excluded nothing —
+  so a package the repo deliberately kept out of its workspace was still discovered and released.
+  Exclusions now remove directories the other patterns matched.
+
+- **crates.io — the same missing-root-manifest failure as npm.** A repo with no root `Cargo.toml`
+  (crates under `rust/`, with the root belonging to another ecosystem) failed with
+  `reading manifest ./Cargo.toml: No such file or directory` as soon as `"crates.io"` was enabled,
+  taking every other adapter's release down with it. It is now an empty result.
+
 ## [0.30.0] - 2026-07-29
 
 - **npm — a dependency pinned to a URL, path, or git ref was corrupted by `version`.** Internal

@@ -24,12 +24,13 @@ to regenerate `.github/workflows/release.yml`. See [upgrade.md](./upgrade.md).
 - global settings: provider, snapshot tag, skip-publish packages, publish ignore paths, tag
   format, changelog scope/strategy, and GitHub Release notes.
 
-Enabling **npm** for a repo that declares no `workspaces` of its own scans for `package.json` files
+Enabling **npm** for a repo that declares its members nowhere — neither a root `workspaces` field
+nor `pnpm-workspace.yaml` — scans for `package.json` files
 carrying a `name` and a `version`, lists them, and saves the ones you confirm to `[discovery] npm`
 in `release.toml` — publishable packages start checked, private ones (apps, fixtures) do not.
 Re-running it re-scans and starts from what is already declared, so a package added later shows up.
-Repos whose root `package.json` already declares `workspaces` skip this: that declaration stays the
-single source of truth. See the [npm adapter](../adapters/npm.md#repos-that-declare-no-npm-workspace).
+Repos that already declare their members skip this: that declaration stays the single source of
+truth. See the [npm adapter](../adapters/npm.md#repos-that-declare-no-npm-workspace).
 
 Tag format editing offers the common patterns `v{version}`, `{version}`, `{name}@{version}`, and
 `{name}@v{version}`, plus custom input.

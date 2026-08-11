@@ -5,6 +5,16 @@ The Rust adapter. Implemented in `crates/adapters/src/cargo.rs`, mirroring the
 It supports both independent (concrete-version) crates and **lockstep workspaces** (see
 [versioning](#versioning--lockstep)).
 
+## Workspace discovery
+
+Members come from the root `Cargo.toml`'s `[workspace] members` globs, plus the root crate when the
+root manifest declares a `[package]`.
+
+A repo with **no root `Cargo.toml` at all** declares no crates there, which is an empty result
+rather than an error — the mirror of the [npm case](./npm.md#workspace-discovery). A polyglot repo
+whose root belongs to another ecosystem (crates under `rust/`, say) would otherwise abort every
+command the moment `"crates.io"` was added to `adapters`, taking the working adapters down with it.
+
 ## Cascade rule (`dependent_bump`)
 
 Cargo has **no peerDep concept**, so every internal dependent simply needs to pick up the new

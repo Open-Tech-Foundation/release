@@ -22,7 +22,7 @@ flate2.workspace = true
 tar.workspace = true
 zip.workspace = true
 sha2.workspace = true
+yaml-rust2.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
-yaml-rust2 = "0.11.0"

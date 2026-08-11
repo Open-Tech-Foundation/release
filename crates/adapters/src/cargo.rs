@@ -291,11 +291,25 @@ impl CargoAdapter {
         }
     }
 
+    /// The root `Cargo.toml`, or `None` when this repo has none.
+    fn root_manifest(&self) -> Result<Option<CargoManifest>> {
+        let path = self.root.join("Cargo.toml");
+        if !path.exists() {
+            return Ok(None);
+        }
+        CargoManifest::read(&path).map(Some)
+    }
+
     /// Every crate directory in the repo, by [`Layout`]: the root alone for a single-crate repo,
     /// the `members` globs (plus the root crate, when the root manifest declares one) for a
     /// workspace.
     fn member_dirs(&self) -> Result<Vec<PathBuf>> {
-        let root = CargoManifest::read(&self.root.join("Cargo.toml"))?;
+        // No root manifest means this repo declares no crates here — not a failure. The mirror of
+        // the npm case: a polyglot repo's root routinely belongs to another ecosystem, and erroring
+        // would take `check`/`version`/`publish` down for every *other* enabled adapter too.
+        let Some(root) = self.root_manifest()? else {
+            return Ok(Vec::new());
+        };
         let root_is_member = match root.layout()? {
             Layout::Single => return Ok(vec![self.root.clone()]),
             Layout::Workspace { root_is_member } => root_is_member,
@@ -324,7 +338,9 @@ impl CargoAdapter {
 
 impl Adapter for CargoAdapter {
     fn discover_packages(&self) -> Result<Vec<Pkg>> {
-        let root = CargoManifest::read(&self.root.join("Cargo.toml"))?;
+        let Some(root) = self.root_manifest()? else {
+            return Ok(Vec::new());
+        };
         let workspace_version = root.workspace_version();
         // A workspace that declares a shared `[workspace.package] version` versions its
         // inheriting crates in lockstep against a single root CHANGELOG.md.
@@ -630,6 +646,30 @@ mod tests {
 
         let c = pkgs.iter().find(|p| p.name == "c").unwrap();
         assert!(!c.publishable, "publish = false => not publishable");
+    }
+
+    #[test]
+    fn a_missing_root_manifest_discovers_nothing_rather_than_failing() {
+        // The mirror of the npm case: a repo rooted in another ecosystem, with its crates in a
+        // subdirectory. Erroring here aborted every command the moment "crates.io" was enabled.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("rust/mycrate")).unwrap();
+        fs::write(
+            root.join("rust/mycrate/Cargo.toml"),
+            "[package]\nname = \"mycrate\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        assert!(CargoAdapter::new(root)
+            .discover_packages()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

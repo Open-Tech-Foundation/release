@@ -15,6 +15,8 @@
 use std::fs;
 use std::path::Path;
 
+use anyhow::{Context, Result};
+
 /// A manifest the scanner recognizes: `(filename, human label)`. Every entry stores its version
 /// as a quoted string under a `version` field — matching what the generic adapter can parse. The
 /// list spans *all* project types, not just ones without a native adapter: generic is about
@@ -116,12 +118,51 @@ pub fn scan_npm_candidates(root: &Path) -> Vec<GenericCandidate> {
     found
 }
 
-/// Whether the repo declares its npm members itself, in the root `package.json`'s `workspaces`.
+/// The `packages:` list from `pnpm-workspace.yaml`, or `None` when the repo has no such
+/// declaration.
+///
+/// pnpm is the one package manager that does not use package.json's `workspaces` field, so a pnpm
+/// monorepo used to discover nothing at all: the npm adapter saw no `workspaces`, called the repo
+/// a single-package one, and the private root was then skipped — zero packages, no error, no note.
+///
+/// An empty or absent `packages:` key reads as no declaration, so a `pnpm-workspace.yaml` holding
+/// only a `catalog:` falls through to the package.json path rather than blanking discovery.
+///
+/// Lives here rather than in the npm adapter because `init`/`config` need the same answer to know
+/// whether the repo declares its members already — one parse, one behaviour.
+pub fn pnpm_workspace_patterns(root: &Path) -> Result<Option<Vec<String>>> {
+    let path = ["pnpm-workspace.yaml", "pnpm-workspace.yml"]
+        .iter()
+        .map(|f| root.join(f))
+        .find(|p| p.exists());
+    let Some(path) = path else {
+        return Ok(None);
+    };
+
+    let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let docs = yaml_rust2::YamlLoader::load_from_str(&text)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    let patterns: Vec<String> = docs
+        .first()
+        .and_then(|doc| doc["packages"].as_vec().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+
+    Ok((!patterns.is_empty()).then_some(patterns))
+}
+
+/// Whether the repo declares its npm members itself — the root `package.json`'s `workspaces`
+/// (npm, Yarn, bun) or `pnpm-workspace.yaml`'s `packages` (pnpm).
 ///
 /// When it does, that declaration stays the source of truth and nothing is written to
 /// `[discovery]` — two declarations of the same thing would be one more place to drift. This only
-/// asks whether the key is present; which members it resolves to is the npm adapter's business.
+/// asks whether one is present; which members it resolves to is the npm adapter's business.
 pub fn declares_npm_workspaces(root: &Path) -> bool {
+    if matches!(pnpm_workspace_patterns(root), Ok(Some(_))) {
+        return true;
+    }
     let Ok(text) = fs::read_to_string(root.join("package.json")) else {
         return false;
     };
@@ -558,6 +599,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(scan_npm_candidates(tmp.path())[0].dir(), ".");
+    }
+
+    #[test]
+    fn a_pnpm_workspace_counts_as_a_native_declaration() {
+        // pnpm keeps its members in its own file, so a pnpm monorepo must not be offered a
+        // `[discovery]` list that would duplicate — and then drift from — pnpm-workspace.yaml.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","private":true}"#,
+        )
+        .unwrap();
+        assert!(!declares_npm_workspaces(root));
+
+        fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        assert!(declares_npm_workspaces(root));
+        assert_eq!(
+            pnpm_workspace_patterns(root).unwrap(),
+            Some(vec!["packages/*".to_string()])
+        );
+
+        // Only a `catalog:` — no members declared, so it is not a declaration.
+        fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "catalog:\n  react: ^19.0.0\n",
+        )
+        .unwrap();
+        assert!(!declares_npm_workspaces(root));
+        assert_eq!(pnpm_workspace_patterns(root).unwrap(), None);
     }
 
     #[test]
