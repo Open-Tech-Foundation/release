@@ -13,6 +13,8 @@ polyglot monorepos.
 - **New to the tool?** Read the root [`README.md`](../README.md) for the elevator pitch, then
   [`architecture.md`](./architecture.md).
 - **Setting up a repo?** [`commands/init.md`](./commands/init.md) → [`configuration.md`](./configuration.md) → [`ci-workflow.md`](./ci-workflow.md).
+- **Something not shipping?** [`commands/doctor.md`](./commands/doctor.md) — it audits the setup
+  against what the adapters discover on disk.
 - **Cutting a release?** [`commands/version.md`](./commands/version.md) (local) then
   [`commands/publish.md`](./commands/publish.md) (CI).
 - **Writing a new adapter?** [`adapters/overview.md`](./adapters/overview.md).
@@ -29,6 +31,7 @@ polyglot monorepos.
 | [commands/matrix-build.md](./commands/matrix-build.md) | The `matrix` / `build` CI helpers for cross-compiled binary packages. |
 | [commands/init.md](./commands/init.md) | Interactive setup: writes `release.toml`, generates `release.yml`. |
 | [commands/config.md](./commands/config.md) | Interactive editor for `release.toml`. |
+| [commands/doctor.md](./commands/doctor.md) | Read-only audit of the release setup — errors, warnings, suggestions. |
 | [commands/upgrade.md](./commands/upgrade.md) | Regenerate `release.yml` from `release.toml`. |
 | [commands/snapshot.md](./commands/snapshot.md) | Experimental hash-based CI snapshot releases. |
 | [commands/self-update.md](./commands/self-update.md) | Update the installed CLI from GitHub Releases. |

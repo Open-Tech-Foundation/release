@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Added
+
+- **`otf-release doctor` — a read-only audit of the release setup.** Every other command acts at
+  one moment, and the failures that hurt most are the ones none of them can see there: a
+  `release.toml` that parses, generates a workflow, and runs green while quietly shipping nothing.
+  `doctor` inspects the committed setup against what the adapters discover on disk and reports
+  errors, warnings, suggestions, and the resolved facts — every package, its tag, and how it ships.
+  Each finding names what breaks and the edit that fixes it.
+
+  It catches the silent ones: packages sharing a `{name}`-less tag format (whose second GitHub
+  Release is skipped as already-shipped, with no assets and no error), a package whose manifest
+  declares a build but whose block configures none (publishing an empty `dist/`), a `[discovery]`
+  entry matching nothing (dropping a package from the release entirely), and a block for a package
+  no adapter finds. Exits non-zero on any error, so it works as a CI gate; `--strict` fails on
+  warnings too. See [docs/commands/doctor.md](./docs/commands/doctor.md).
+
 ### Fixed
 
 - **`config` could enable an ecosystem and leave a repo it could not release from.** `[discovery]`

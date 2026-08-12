@@ -162,6 +162,13 @@ enum Command {
     },
     /// Edit release.toml interactively.
     Config,
+    /// Audit the release setup against what the adapters discover on disk, and report errors,
+    /// warnings, suggestions, and the resolved facts. Read-only; exits non-zero on any error.
+    Doctor {
+        /// Exit non-zero on warnings as well as errors, for a stricter CI gate.
+        #[arg(long)]
+        strict: bool,
+    },
     /// CI: print the GitHub Actions build matrix (JSON) for a matrix package from release.toml.
     Matrix {
         /// Which matrix package to emit for (required when more than one exists).
@@ -241,6 +248,32 @@ fn run() -> Result<()> {
         }
         Command::Upgrade { force } => {
             upgrade::orchestrate(&root, &upgrade::UpgradeOptions { force })?;
+            Ok(())
+        }
+        Command::Doctor { strict } => {
+            let config = ReleaseConfig::load(&root)?;
+            let factory = CliAdapterFactory {
+                root: root.clone(),
+                generic: generic_pkgs(&config),
+                discovery: config.discovery.clone(),
+            };
+            let adapters: Vec<(Ecosystem, Box<dyn Adapter>)> = config
+                .adapters
+                .iter()
+                .map(|eco| (*eco, factory.make(*eco)))
+                .collect();
+            let adapter_refs: Vec<(Ecosystem, &dyn Adapter)> = adapters
+                .iter()
+                .map(|(eco, adapter)| (*eco, adapter.as_ref()))
+                .collect();
+            let report = otf_release_core::doctor::run(&adapter_refs, &root, &config)?;
+            print!("{}", otf_release_core::doctor::render(&report));
+            // A non-zero exit makes `doctor` usable as a CI gate, not just a human report.
+            let failed = report.has_errors()
+                || (strict && report.count(otf_release_core::doctor::Severity::Warning) > 0);
+            if failed {
+                std::process::exit(1);
+            }
             Ok(())
         }
         Command::Config => {

@@ -10,6 +10,7 @@
 //! - [`graph`]    — internal dependency graph, topological sort, and the bump cascade engine.
 //! - [`changelog`]— Keep a Changelog parser/rewriter (`[Unreleased]` → dated section).
 //! - [`preflight`]— strict tag/changelog compliance gate (all-or-nothing).
+//! - [`doctor`]   — read-only audit of the release setup (errors, warnings, suggestions).
 //! - [`summary`]  — confirmation / dry-run rendering.
 //! - [`version`]  — the interactive `version` command (local; produces a release PR).
 //! - [`publish`]  — the non-interactive `publish` command (CI; stateless, resumable).
@@ -25,6 +26,7 @@ pub mod config;
 pub mod config_cmd;
 pub mod date;
 pub mod discover;
+pub mod doctor;
 pub mod forge;
 pub mod git;
 pub mod github_release;
