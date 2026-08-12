@@ -38,6 +38,9 @@ Severity is about **consequence**, not confidence.
 | `missing-changelog` | warning | A released package has no changelog file. Under the curated strategy its `[Unreleased]` is empty by definition, so it is never offered for release. |
 | `shared-changelog` | warning | Packages at different versions all write notes into one file, interleaving them under a single heading. A lockstep group sharing one changelog is *not* flagged — that is the point of lockstep. |
 | `matrix-without-targets` | warning | A `matrix = true` package has no `[[package.targets]]`, so its build fans out to nothing. |
+| `inert-tool-pin` | error | `otf_release_version` predates `v0.26.0`, the first release whose installer reads `OTF_RELEASE_VERSION`. The workflow fetches that older script, which always downloads the *latest* release — so CI does not build with the pinned version at all. |
+| `unparseable-tool-pin` | warning | `otf_release_version` is not a version tag. |
+| `old-tool-pin` | suggestion | CI builds with an older tool than the binary you are running locally. |
 | `no-checksums` | suggestion | A build-only package ships assets with no `checksums.txt`, so a download cannot be verified as intact. |
 | `no-attestation` | suggestion | A build-only package ships assets with no signed provenance. A checksum can be replaced by whoever replaced the asset; an attestation cannot. |
 | `empty-ignore-paths` | suggestion | A `publish.ignore_paths` entry has an empty glob list and does nothing. |

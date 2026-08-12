@@ -148,6 +148,7 @@ pub fn audit(config: &ReleaseConfig, discovered: &[Discovered], root: &Path) -> 
     empty_discovery_globs(config, discovered, &mut findings);
     changelog_files(config, &released, root, &mut findings);
     matrix_targets(config, &mut findings);
+    tool_pin(config, &mut findings);
     supply_chain(config, &mut findings);
     facts(config, &released, &mut findings);
 
@@ -452,6 +453,66 @@ fn matrix_targets(config: &ReleaseConfig, out: &mut Vec<Finding>) {
                 )
                 .about(&entry.name)
                 .fix("add targets, or set `matrix = false`"),
+            );
+        }
+    }
+}
+
+/// The first release whose `install.sh` reads `OTF_RELEASE_VERSION`. Pin anything older and the
+/// generated workflow fetches a script that hardcodes `releases/latest/download`, so CI silently
+/// installs whatever shipped most recently instead of the version the repo pinned.
+const PIN_HONOURED_FROM: (u64, u64, u64) = (0, 26, 0);
+
+/// `otf_release_version` decides which tool builds every release, so a pin that has quietly stopped
+/// meaning what it says is worth naming.
+fn tool_pin(config: &ReleaseConfig, out: &mut Vec<Finding>) {
+    let Some(pin) = &config.otf_release_version else {
+        return; // unset means "the version that generated the workflow", which is fine
+    };
+    let Some(pinned) = crate::git::parse_semver(pin.trim_start_matches('v')) else {
+        out.push(
+            Finding::new(
+                Severity::Warning,
+                "unparseable-tool-pin",
+                format!("`otf_release_version = \"{pin}\"` is not a version tag."),
+            )
+            .fix("use a released tag, e.g. `v0.32.0`"),
+        );
+        return;
+    };
+
+    if pinned < PIN_HONOURED_FROM {
+        let (major, minor, patch) = PIN_HONOURED_FROM;
+        out.push(
+            Finding::new(
+                Severity::Error,
+                "inert-tool-pin",
+                format!(
+                    "`otf_release_version = \"{pin}\"` predates v{major}.{minor}.{patch}, whose \
+                     installer was the first to read `OTF_RELEASE_VERSION`. The workflow fetches \
+                     that older script, which always downloads the *latest* release — so CI does \
+                     not build with the pinned version at all, and silently follows whatever ships \
+                     next."
+                ),
+            )
+            .fix("raise the pin to a released version, then run `otf-release upgrade --force`"),
+        );
+        return;
+    }
+
+    let running = env!("CARGO_PKG_VERSION");
+    if let Some(current) = crate::git::parse_semver(running) {
+        if pinned < current {
+            out.push(
+                Finding::new(
+                    Severity::Suggestion,
+                    "old-tool-pin",
+                    format!(
+                        "CI builds releases with `{pin}` while this binary is v{running}, so a \
+                         release cut here uses a different tool than the one you tested with."
+                    ),
+                )
+                .fix("raise `otf_release_version`, then run `otf-release upgrade --force`"),
             );
         }
     }
@@ -920,6 +981,48 @@ mod tests {
         let suggestions = codes(&report, Severity::Suggestion);
         assert!(suggestions.contains(&"no-checksums"), "{report:?}");
         assert!(suggestions.contains(&"no-attestation"), "{report:?}");
+    }
+
+    #[test]
+    fn flags_a_pin_too_old_to_be_honoured_by_its_own_installer() {
+        let config = ReleaseConfig {
+            tag_format: "{name}@{version}".to_string(),
+            otf_release_version: Some("v0.25.0".to_string()),
+            ..ReleaseConfig::default()
+        };
+        let report = audit(&config, &[], Path::new("/repo"));
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.code == "inert-tool-pin")
+            .expect("a pin the installer ignores must be an error");
+        assert_eq!(finding.severity, Severity::Error);
+
+        // A pin from the era that reads the env var is honoured; at most it is merely behind.
+        let honoured = ReleaseConfig {
+            otf_release_version: Some("v0.26.0".to_string()),
+            ..config.clone()
+        };
+        let report = audit(&honoured, &[], Path::new("/repo"));
+        assert!(
+            !codes(&report, Severity::Error).contains(&"inert-tool-pin"),
+            "{report:?}"
+        );
+        assert!(
+            codes(&report, Severity::Suggestion).contains(&"old-tool-pin"),
+            "{report:?}"
+        );
+
+        // No pin at all is the default and says nothing.
+        let unpinned = ReleaseConfig {
+            otf_release_version: None,
+            ..config
+        };
+        let report = audit(&unpinned, &[], Path::new("/repo"));
+        assert!(
+            !report.findings.iter().any(|f| f.code.ends_with("tool-pin")),
+            "{report:?}"
+        );
     }
 
     #[test]

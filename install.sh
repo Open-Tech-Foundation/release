@@ -69,16 +69,29 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# A multi-megabyte download from a CI runner gets its connection reset often enough to matter:
+# curl's own reconnect gives up with exit 56 and the whole job fails on a blip. Retry the *canonical*
+# asset name — the one every current release publishes — with backoff. The legacy names after it
+# exist only for old releases and are expected to 404, so they fail fast instead: `--retry-all-errors`
+# is a sledgehammer that retries a 404 too, which would turn each absent name into a 10-second wait.
+CURL_RETRY_FIRST="--retry 5 --retry-delay 2"
+if curl --help all 2>/dev/null | grep -q -- '--retry-all-errors'; then
+    # Plain `--retry` treats only timeouts and 5xx as transient; a reset connection needs this.
+    CURL_RETRY_FIRST="$CURL_RETRY_FIRST --retry-all-errors"
+fi
+
 downloaded=false
 ASSET_USED=""
+CURL_RETRY="$CURL_RETRY_FIRST"
 for candidate in $CANDIDATES; do
     DOWNLOAD_URL="$RELEASE_BASE/$candidate"
     echo "Downloading from $DOWNLOAD_URL..."
-    if curl -fL -o "$TMP_FILE" "$DOWNLOAD_URL"; then
+    if curl -fL $CURL_RETRY -o "$TMP_FILE" "$DOWNLOAD_URL"; then
         downloaded=true
         ASSET_USED="$candidate"
         break
     fi
+    CURL_RETRY=""
 done
 if [ "$downloaded" != true ]; then
     echo "Error: download failed for all known $OS/$ARCH asset names." >&2

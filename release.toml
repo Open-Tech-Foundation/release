@@ -5,7 +5,12 @@ tag_format = "v{version}"
 # generating binary's version) would point at a tag that does not exist yet and the release could
 # never install its own tooling. Pin to the newest *released* version instead, and bump it after a
 # release when you want CI to pick up newer tooling.
-otf_release_version = "v0.25.0"
+#
+# Keep this at or above v0.26.0: that is the first release whose install.sh reads
+# OTF_RELEASE_VERSION. An older pin fetches a script that hardcodes `releases/latest/download`, so
+# CI ignores the pin entirely and silently tracks whatever shipped most recently. `otf-release
+# doctor` reports that as `inert-tool-pin`.
+otf_release_version = "v0.32.0"
 provider = "github"
 changelog_strategy = "curated"
 changelog_scope = "root"

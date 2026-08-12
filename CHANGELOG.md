@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Fixed
+
+- **This repo's own workflow ignored its `otf_release_version` pin.** It pinned `v0.25.0`, and that
+  release's `install.sh` predates `OTF_RELEASE_VERSION` support — it hardcodes
+  `releases/latest/download`, so every CI run installed whatever had shipped most recently rather
+  than the pinned build. Visible in a run's log as a script fetched from `.../v0.25.0/install.sh`
+  downloading from `.../releases/latest/download/...`. The pin is raised to `v0.32.0`, and `doctor`
+  now reports any pin below `v0.26.0` as `inert-tool-pin`.
+
+- **`install.sh` failed the whole job on a reset connection.** Downloading a multi-megabyte asset
+  from a CI runner dies often enough to matter; curl's own reconnect gives up with exit 56 and the
+  install aborted. The canonical asset name is now fetched with `--retry 5 --retry-delay 2`, plus
+  `--retry-all-errors` where curl supports it, since plain `--retry` treats only timeouts and 5xx
+  as transient. The legacy fallback names still fail fast — they are expected to 404, and retrying
+  those would add ten seconds each.
+
 ## [0.33.0] - 2026-08-12
 
 ### Added
