@@ -76,6 +76,8 @@ mod tests {
             checksums: false,
             attest: false,
             executable: None,
+            tag_format: None,
+            changelog: None,
             include: Vec::new(),
         }
     }

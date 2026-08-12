@@ -70,11 +70,11 @@ pub fn run(adapter: &dyn Adapter, root: &Path, config: &ReleaseConfig) -> Result
             exclude_packages: Vec::new(),
             artifacts_dir: None,
             dry_run: false,
-            tag_format: config.tag_format.clone(),
+            tags: config.tag_formats(),
             skip,
             // The snapshot flow has no build-matrix stage, so it stages no binaries to require.
             require_staged: Vec::new(),
-            changelog_scope: config.changelog_scope.clone(),
+            changelog: config.changelog_layout(),
         },
         &config.hooks,
     )?;

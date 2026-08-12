@@ -15,7 +15,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::adapter::{Adapter, Pkg};
-use crate::config::{format_tag, ReleaseConfig};
+use crate::config::{ReleaseConfig, TagFormats};
 use crate::git::{GitOps, GitRepo};
 
 /// The version a package carries before its first release — checking it out is not a release.
@@ -47,7 +47,7 @@ pub fn run_many_for_package(
         discovered.retain(|pkg| !exclude_packages.contains(&pkg.name));
         packages.extend(discovered);
     }
-    any_pending(&packages, &config.tag_format, |tag| repo.tag_exists(tag))
+    any_pending(&packages, &config.tag_formats(), |tag| repo.tag_exists(tag))
 }
 
 /// The pure gate decision: `true` when at least one publishable package has a real version whose
@@ -56,14 +56,14 @@ pub fn run_many_for_package(
 /// this is unit-testable without a live repo, and so `run_many` owns the one git dependency.
 pub fn any_pending(
     packages: &[Pkg],
-    tag_format: &str,
+    tags: &TagFormats,
     tag_exists: impl Fn(&str) -> Result<bool>,
 ) -> Result<bool> {
     for pkg in packages {
         if !pkg.publishable || pkg.version == UNRELEASED_VERSION {
             continue;
         }
-        let tag = format_tag(tag_format, &pkg.name, &pkg.version)?;
+        let tag = tags.tag_for(&pkg.name, &pkg.version)?;
         if !tag_exists(&tag)? {
             return Ok(true);
         }
@@ -98,7 +98,12 @@ mod tests {
             pkg("@x/web", "0.7.0", true),          // bumped, tag missing
             pkg("@x/web-compiler", "0.2.0", true), // unchanged, tag exists
         ];
-        assert!(any_pending(&pkgs, "{name}@{version}", tags(&["@x/web-compiler@0.2.0"])).unwrap());
+        assert!(any_pending(
+            &pkgs,
+            &TagFormats::global("{name}@{version}"),
+            tags(&["@x/web-compiler@0.2.0"])
+        )
+        .unwrap());
     }
 
     #[test]
@@ -108,7 +113,7 @@ mod tests {
             pkg("@x/web-compiler", "0.2.0", true),
         ];
         let existing = tags(&["@x/web@0.7.0", "@x/web-compiler@0.2.0"]);
-        assert!(!any_pending(&pkgs, "{name}@{version}", existing).unwrap());
+        assert!(!any_pending(&pkgs, &TagFormats::global("{name}@{version}"), existing).unwrap());
     }
 
     #[test]
@@ -119,7 +124,7 @@ mod tests {
             pkg("@x/create-web", "0.0.0", true),   // sentinel: never released
             pkg("@x/private-app", "9.9.9", false), // private / skip_publish
         ];
-        assert!(!any_pending(&pkgs, "{name}@{version}", tags(&[])).unwrap());
+        assert!(!any_pending(&pkgs, &TagFormats::global("{name}@{version}"), tags(&[])).unwrap());
     }
 
     #[test]
@@ -127,6 +132,6 @@ mod tests {
         // A cargo CLI shipped via GitHub Release is publishable in `Pkg` terms; `publish` skips it
         // but the gate must not — a release where only it bumped still needs to run.
         let pkgs = vec![pkg("otf-release", "0.15.0", true)];
-        assert!(any_pending(&pkgs, "{name}@{version}", tags(&[])).unwrap());
+        assert!(any_pending(&pkgs, &TagFormats::global("{name}@{version}"), tags(&[])).unwrap());
     }
 }

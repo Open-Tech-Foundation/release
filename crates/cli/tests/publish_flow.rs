@@ -13,6 +13,7 @@ use anyhow::Result;
 
 use otf_release_adapters::npm::{CommandOutput, CommandRunner, NpmAdapter};
 use otf_release_core::adapter::{Adapter, Bump, DepKind, Pkg};
+use otf_release_core::config::TagFormats;
 use otf_release_core::forge::Forge;
 use otf_release_core::git::GitOps;
 use otf_release_core::publish::{orchestrate, orchestrate_many, PublishOptions};
@@ -152,7 +153,7 @@ struct FakeForge {
 
 fn package_tag_options() -> PublishOptions {
     PublishOptions {
-        tag_format: "{name}@{version}".to_string(),
+        tags: TagFormats::global("{name}@{version}"),
         ..PublishOptions::default()
     }
 }
@@ -521,7 +522,7 @@ fn matrix_package_without_staged_binaries_is_refused() {
     fs::create_dir_all(&artifacts).unwrap();
 
     let opts = PublishOptions {
-        tag_format: "{name}@{version}".to_string(),
+        tags: TagFormats::global("{name}@{version}"),
         artifacts_dir: Some(artifacts),
         require_staged: vec!["@x/wc".to_string()],
         ..PublishOptions::default()

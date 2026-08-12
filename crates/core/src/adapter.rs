@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::config::ChangelogScope;
+use crate::config::ChangelogLayout;
 
 /// A semantic-version bump level.
 ///
@@ -112,11 +112,14 @@ pub struct Pkg {
 }
 
 /// Apply the configured changelog layout after adapter discovery.
-pub fn apply_changelog_scope(root: &Path, scope: &ChangelogScope, packages: &mut [Pkg]) {
-    if *scope == ChangelogScope::Root {
-        let root_changelog = root.join("CHANGELOG.md");
-        for pkg in packages {
-            pkg.changelog_path = root_changelog.clone();
+///
+/// The layout only ever *replaces* a discovered path: where it has nothing to say (package scope
+/// with no override) the adapter's own answer stands, which is what keeps a lockstep Cargo
+/// workspace's inheriting crates on the root `CHANGELOG.md` without any configuration.
+pub fn apply_changelog_layout(root: &Path, layout: &ChangelogLayout, packages: &mut [Pkg]) {
+    for pkg in packages {
+        if let Some(path) = layout.path_for(root, &pkg.name) {
+            pkg.changelog_path = path;
         }
     }
 }

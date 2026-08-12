@@ -313,6 +313,8 @@ mod tests {
             command: "exit 17".into(), // would fail the run if it were ever executed
             artifacts: "target/{triple}/release/{bin}{ext}".into(),
             bin_name: Some("esrun".into()),
+            tag_format: None,
+            changelog: None,
             compress: None,
             manifest: None,
             version_field: None,

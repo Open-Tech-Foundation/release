@@ -393,10 +393,10 @@ fn run() -> Result<()> {
                 &publish::PublishOptions {
                     artifacts_dir,
                     dry_run,
-                    tag_format: config.tag_format.clone(),
+                    tags: config.tag_formats(),
                     skip,
                     require_staged,
-                    changelog_scope: config.changelog_scope.clone(),
+                    changelog: config.changelog_layout(),
                     package,
                     exclude_packages,
                 },

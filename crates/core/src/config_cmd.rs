@@ -35,6 +35,8 @@ pub enum PackageField {
     Targets,
     Checksums,
     Attest,
+    TagFormat,
+    Changelog,
     GenericManifest,
     GenericVersionField,
     GenericPublishCommand,
@@ -476,7 +478,13 @@ fn edit_package(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConf
         return Ok(());
     }
 
+    // Read the repo-wide defaults before borrowing the entry mutably — the per-package prompts name
+    // them, so "blank" visibly means "whatever the repo does".
+    let tag_format = config.tag_format.clone();
+    let scope = scope_label(&config.changelog_scope);
     let package = &mut config.packages[idx];
+    let name = package.name.clone();
+    let name = name.as_str();
     match field {
         PackageField::Mode => package.mode = prompt.mode(package.mode)?,
         PackageField::Command => {
@@ -509,6 +517,28 @@ fn edit_package(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConf
                 // step to the workflow, which only `upgrade` can write.
                 println!("Run `otf-release upgrade` to regenerate the workflow with attestation.");
             }
+        }
+        PackageField::TagFormat => {
+            let current = package.tag_format.as_deref().unwrap_or("");
+            let edited = optional_text(prompt.text(
+                &format!("Tag format for {name} (blank = the repo's `{tag_format}`):"),
+                current,
+            )?);
+            if let Some(format) = &edited {
+                format_tag(format, name, "1.2.3")?;
+            }
+            package.tag_format = edited;
+        }
+        PackageField::Changelog => {
+            let current = package.changelog.as_deref().unwrap_or("");
+            let edited = optional_text(prompt.text(
+                &format!(
+                    "Changelog for {name}, relative to the repo root (blank = {scope} scope):"
+                ),
+                current,
+            )?);
+            package.changelog = edited;
+            package.validate_release_identity()?;
         }
         PackageField::GenericManifest => {
             let current = package.manifest.as_deref().unwrap_or("");
@@ -637,6 +667,13 @@ fn optional_text(text: String) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+fn scope_label(scope: &ChangelogScope) -> &'static str {
+    match scope {
+        ChangelogScope::Root => "root",
+        ChangelogScope::Package => "package",
+    }
+}
+
 fn publish_ignore_path_packages(config: &ReleaseConfig) -> Vec<PackageEntry> {
     let mut names: Vec<String> = config.publish.ignore_paths.keys().cloned().collect();
     names.extend(config.packages.iter().map(|pkg| pkg.name.clone()));
@@ -662,6 +699,8 @@ fn publish_ignore_path_packages(config: &ReleaseConfig) -> Vec<PackageEntry> {
             attest: false,
             executable: None,
             include: Vec::new(),
+            tag_format: None,
+            changelog: None,
         })
         .collect()
 }
@@ -670,6 +709,7 @@ fn publish_ignore_path_packages(config: &ReleaseConfig) -> Vec<PackageEntry> {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::path::Path;
 
     struct FakePrompt {
         actions: RefCell<Vec<ConfigAction>>,
@@ -975,6 +1015,8 @@ mod tests {
                 attest: false,
                 executable: None,
                 include: Vec::new(),
+                tag_format: None,
+                changelog: None,
             }],
             ..Default::default()
         }
@@ -1074,6 +1116,91 @@ mod tests {
             Some("pkg.version")
         );
         assert_eq!(cfg.packages[0].publish.as_deref(), Some("npx jsr publish"));
+    }
+
+    #[test]
+    fn scopes_and_clears_a_packages_tag_format_and_changelog() {
+        let tmp = tempfile::tempdir().unwrap();
+        config().save(tmp.path()).unwrap();
+
+        orchestrate_with_prompt(
+            tmp.path(),
+            &package_prompt(PackageField::TagFormat, vec!["{name}@{version}"]),
+        )
+        .unwrap();
+        orchestrate_with_prompt(
+            tmp.path(),
+            &package_prompt(PackageField::Changelog, vec!["crates/dev-cli/CHANGELOG.md"]),
+        )
+        .unwrap();
+
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        let pkg = cfg.package("pkg").unwrap();
+        assert_eq!(pkg.tag_format.as_deref(), Some("{name}@{version}"));
+        assert_eq!(
+            pkg.changelog.as_deref(),
+            Some("crates/dev-cli/CHANGELOG.md")
+        );
+        // The resolvers, not just the file, reflect it.
+        assert_eq!(
+            cfg.tag_formats().tag_for("pkg", "0.24.0").unwrap(),
+            "pkg@0.24.0"
+        );
+        assert_eq!(
+            cfg.changelog_layout().path_for(Path::new("/repo"), "pkg"),
+            Some(Path::new("/repo/crates/dev-cli/CHANGELOG.md").to_path_buf())
+        );
+
+        // Blank clears the field back to the repo-wide setting.
+        orchestrate_with_prompt(
+            tmp.path(),
+            &package_prompt(PackageField::TagFormat, vec![""]),
+        )
+        .unwrap();
+        orchestrate_with_prompt(
+            tmp.path(),
+            &package_prompt(PackageField::Changelog, vec!["  "]),
+        )
+        .unwrap();
+
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        let pkg = cfg.package("pkg").unwrap();
+        assert!(pkg.tag_format.is_none());
+        assert!(pkg.changelog.is_none());
+    }
+
+    #[test]
+    fn rejects_a_package_tag_format_that_cannot_produce_a_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        config().save(tmp.path()).unwrap();
+
+        let err = orchestrate_with_prompt(
+            tmp.path(),
+            &package_prompt(PackageField::TagFormat, vec!["latest"]),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("tag_format"), "{err:#}");
+
+        // Nothing was written.
+        assert!(ReleaseConfig::load(tmp.path())
+            .unwrap()
+            .package("pkg")
+            .unwrap()
+            .tag_format
+            .is_none());
+    }
+
+    #[test]
+    fn rejects_a_package_changelog_outside_the_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        config().save(tmp.path()).unwrap();
+
+        let err = orchestrate_with_prompt(
+            tmp.path(),
+            &package_prompt(PackageField::Changelog, vec!["../elsewhere/CHANGELOG.md"]),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("inside the repo"), "{err:#}");
     }
 
     #[test]

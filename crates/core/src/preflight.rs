@@ -38,8 +38,8 @@ pub struct Report {
 /// Preflight behavior switches supplied by the caller.
 #[derive(Debug, Clone)]
 pub struct CheckOptions {
-    /// Configured git tag formats used to find prior releases.
-    pub tag_formats: Vec<String>,
+    /// Configured git tag formats used to find prior releases, per package.
+    pub tag_formats: crate::config::TagFormats,
     /// Per-package glob patterns that should be ignored when classifying path-scoped changes.
     pub ignore_paths: std::collections::HashMap<String, Vec<String>>,
 }
@@ -47,7 +47,7 @@ pub struct CheckOptions {
 impl Default for CheckOptions {
     fn default() -> Self {
         Self {
-            tag_formats: vec![crate::config::DEFAULT_TAG_FORMAT.to_string()],
+            tag_formats: crate::config::TagFormats::global(crate::config::DEFAULT_TAG_FORMAT),
             ignore_paths: std::collections::HashMap::new(),
         }
     }
@@ -82,7 +82,7 @@ pub fn check_with_options(
         let selected_for_bump = selected.iter().any(|name| name == &pkg.name);
         let pkg_dir = pkg.manifest_path.parent().unwrap_or_else(|| Path::new("."));
 
-        let violation = match repo.last_tag(&pkg.name, &opts.tag_formats)? {
+        let violation = match repo.last_tag(&pkg.name, &opts.tag_formats.history_for(&pkg.name))? {
             None if empty => Some("first release but [Unreleased] is empty".to_string()),
             None => None,
             Some(tag) => {
@@ -277,7 +277,7 @@ mod tests {
             &packages,
             &selected,
             CheckOptions {
-                tag_formats: vec![crate::config::DEFAULT_TAG_FORMAT.to_string()],
+                tag_formats: crate::config::TagFormats::global(crate::config::DEFAULT_TAG_FORMAT),
                 ignore_paths: HashMap::from([(
                     "core".into(),
                     vec!["docs/**".into(), "**/*.test.ts".into()],

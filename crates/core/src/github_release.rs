@@ -23,9 +23,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::adapter::{apply_changelog_scope, Adapter, Pkg};
+use crate::adapter::{apply_changelog_layout, Adapter, Pkg};
 use crate::changelog;
-use crate::config::{format_tag, ChangelogScope, GithubReleaseNotes, PackageEntry, ReleaseConfig};
+use crate::config::{GithubReleaseNotes, PackageEntry, ReleaseConfig, TagFormats};
 use crate::forge::{Forge, GhForge, ReleaseNotes};
 use crate::git::{GitRepo, RepoState};
 
@@ -107,7 +107,8 @@ pub fn orchestrate(
     for adapter in adapters {
         discovered.append(&mut adapter.discover_packages()?);
     }
-    apply_changelog_scope(root, &config.changelog_scope, &mut discovered);
+    apply_changelog_layout(root, &config.changelog_layout(), &mut discovered);
+    let tag_formats = config.tag_formats();
 
     for entry in selected {
         let pkg = discovered
@@ -120,13 +121,12 @@ pub fn orchestrate(
                 )
             })?;
 
-        let tag = format_tag(&config.tag_format, &pkg.name, &pkg.version)?;
+        let tag = tag_formats.tag_for(&pkg.name, &pkg.version)?;
 
         let notes = release_notes(
             &config.github_release_notes,
-            &config.changelog_scope,
+            &tag_formats,
             pkg,
-            config,
             history,
             root,
         )?;
@@ -166,19 +166,18 @@ pub fn orchestrate(
 /// falls back to GitHub-generated notes rather than shipping an empty release body.
 fn release_notes(
     source: &GithubReleaseNotes,
-    scope: &ChangelogScope,
+    tag_formats: &TagFormats,
     pkg: &Pkg,
-    config: &ReleaseConfig,
     history: &dyn RepoState,
     root: &Path,
 ) -> Result<ReleaseNotes> {
     match source {
         GithubReleaseNotes::AutoGenerate => Ok(ReleaseNotes::Generate),
         GithubReleaseNotes::CuratedChangelog => {
-            // In root scope `apply_changelog_scope` already pointed every package at the root
-            // CHANGELOG.md; in package scope it is the package's own file. Either way the notes are
-            // this package's own dated section — no cross-package aggregation.
-            let _ = scope;
+            // `apply_changelog_layout` already resolved the file: the root CHANGELOG.md in root
+            // scope, an explicit `overrides.<pkg>.changelog` when set, otherwise the package's own
+            // discovered file. Either way the notes are this package's own dated section — no
+            // cross-package aggregation.
             match changelog::dated_section_notes(&pkg.changelog_path, &pkg.version)? {
                 Some(body) if !body.trim().is_empty() => Ok(ReleaseNotes::Body(body)),
                 _ => Ok(ReleaseNotes::Generate),
@@ -187,7 +186,7 @@ fn release_notes(
         GithubReleaseNotes::SemanticCommits => {
             // Commits since the package's previous matching tag (the current tag doesn't exist yet),
             // scoped to the whole repo to mirror the previous inline behavior.
-            let previous = history.last_tag(&pkg.name, &config.history_tag_formats())?;
+            let previous = history.last_tag(&pkg.name, &tag_formats.history_for(&pkg.name))?;
             let commits = history.commits_since(previous.as_deref(), root)?;
             if commits.trim().is_empty() {
                 Ok(ReleaseNotes::Generate)
@@ -624,7 +623,10 @@ mod tests {
             Ok(())
         }
         fn release_exists(&self, tag: &str) -> Result<bool> {
-            Ok(self.existing.iter().any(|t| t == tag))
+            // A release this run just created counts as existing, the same as on the real forge —
+            // otherwise a test could not observe two packages colliding on one tag.
+            Ok(self.existing.iter().any(|t| t == tag)
+                || self.created.borrow().iter().any(|r| r.tag == tag))
         }
         fn create_release_with_assets(
             &self,
@@ -728,6 +730,8 @@ mod tests {
             attest: false,
             executable: None,
             include: Vec::new(),
+            tag_format: None,
+            changelog: None,
         }
     }
 
@@ -781,6 +785,78 @@ mod tests {
         match &created[0].notes {
             ReleaseNotes::Body(body) => assert!(body.contains("Added a thing")),
             other => panic!("expected curated body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_second_binary_at_the_same_version_gets_its_own_release_via_a_tag_override() {
+        // Two binaries out of one lockstep workspace both format to `v0.24.0` under a name-less
+        // tag_format, and the second `github-release` call then sees the first one's release and
+        // skips — shipping nothing. A per-package tag override is what separates them.
+        let tmp = tempfile::tempdir().unwrap();
+        let root_changelog = tmp.path().join("CHANGELOG.md");
+        std::fs::write(
+            &root_changelog,
+            "# Changelog\n\n## [0.24.0] - 2026-01-01\n\n- runtime change\n",
+        )
+        .unwrap();
+        let dev_changelog = tmp.path().join("crates/dev-cli/CHANGELOG.md");
+        std::fs::create_dir_all(dev_changelog.parent().unwrap()).unwrap();
+        std::fs::write(
+            &dev_changelog,
+            "# Changelog\n\n## [0.24.0] - 2026-01-01\n\n- dev tool change\n",
+        )
+        .unwrap();
+
+        // Both crates inherit the workspace version, so the cargo adapter puts both on the root
+        // CHANGELOG.md; only the override moves the second one to its own file.
+        let adapter = FakeAdapter {
+            packages: vec![
+                pkg("es-runtime-cli", "0.24.0", root_changelog),
+                pkg("es-dev-cli", "0.24.0", tmp.path().join("CHANGELOG.md")),
+            ],
+        };
+        let history = FakeHistory {
+            last: None,
+            commits: String::new(),
+        };
+        let forge = FakeForge::new();
+        let mut config = config_with(
+            build_only_entry("es-runtime-cli", "esrun"),
+            GithubReleaseNotes::CuratedChangelog,
+        );
+        config.packages.push(PackageEntry {
+            tag_format: Some("{name}@{version}".to_string()),
+            changelog: Some("crates/dev-cli/CHANGELOG.md".to_string()),
+            ..build_only_entry("es-dev-cli", "esdev")
+        });
+
+        // Exactly how CI drives it: one invocation per build-only package.
+        for name in ["es-runtime-cli", "es-dev-cli"] {
+            orchestrate(
+                &[&adapter],
+                &history,
+                &forge,
+                tmp.path(),
+                &GithubReleaseOptions {
+                    package: Some(name.to_string()),
+                    ..GithubReleaseOptions::default()
+                },
+                &config,
+            )
+            .unwrap();
+        }
+
+        let created = forge.created.borrow();
+        let tags: Vec<&str> = created.iter().map(|r| r.tag.as_str()).collect();
+        assert_eq!(tags, vec!["v0.24.0", "es-dev-cli@0.24.0"]);
+        // And each release carries its own notes, not the other's.
+        match (&created[0].notes, &created[1].notes) {
+            (ReleaseNotes::Body(runtime), ReleaseNotes::Body(dev)) => {
+                assert!(runtime.contains("runtime change"), "{runtime}");
+                assert!(dev.contains("dev tool change"), "{dev}");
+            }
+            other => panic!("expected curated bodies, got {other:?}"),
         }
     }
 

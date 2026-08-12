@@ -40,3 +40,10 @@ Tag format editing offers the common patterns `v{version}`, `{version}`, `{name}
 
 `publish.ignore_paths` is edited package-by-package from the global settings menu; the prompt stores
 comma-separated glob patterns for the selected package without requiring manual TOML edits.
+
+Under *Packages*, alongside the build fields, each package has a **Tag format** and a **Changelog**
+of its own — for a package that must not share the repo's tag line or changelog scope. Every
+publishable package has a `[[package]]` block, so all of them are reachable here, including ones
+with no build step. Each prompt names the repo-wide value it would otherwise inherit, so leaving it
+blank visibly means "whatever the repo does"; answers are validated before saving. See
+[configuration.md](../configuration.md#scoped-release-identity).

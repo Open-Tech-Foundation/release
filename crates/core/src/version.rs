@@ -12,7 +12,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::adapter::{apply_changelog_scope, Adapter, Bump, DepKind, Pkg};
+use crate::adapter::{apply_changelog_layout, Adapter, Bump, DepKind, Pkg};
 use crate::changelog;
 use crate::date;
 use crate::forge::{Forge, GhForge};
@@ -147,7 +147,7 @@ pub fn orchestrate_many(
     let mut seen = HashSet::new();
     for adapter in adapters {
         let mut packages = adapter.discover_packages()?;
-        apply_changelog_scope(root, &config.changelog_scope, &mut packages);
+        apply_changelog_layout(root, &config.changelog_layout(), &mut packages);
         config.apply_publish_skips(&mut packages);
         for pkg in &packages {
             if !seen.insert(pkg.name.clone()) {
@@ -168,13 +168,13 @@ pub fn orchestrate_many(
         .iter()
         .flat_map(|ctx| ctx.packages.iter().cloned())
         .collect();
-    let history_tag_formats = config.history_tag_formats();
+    let tag_formats = config.tag_formats();
     let report = preflight::check_with_options(
         repo,
         &all_packages,
         &[],
         preflight::CheckOptions {
-            tag_formats: history_tag_formats.clone(),
+            tag_formats: tag_formats.clone(),
             ignore_paths: all_packages
                 .iter()
                 .filter_map(|pkg| {
@@ -199,7 +199,7 @@ pub fn orchestrate_many(
 
     for p in &all_packages {
         if is_generated {
-            let last = repo.last_tag(&p.name, &history_tag_formats)?;
+            let last = repo.last_tag(&p.name, &tag_formats.history_for(&p.name))?;
             let notes = repo.commits_since(last.as_deref(), p.manifest_path.parent().unwrap())?;
             generated_notes.insert(p.name.as_str(), notes.clone());
             empties.insert(p.name.as_str(), notes.is_empty());
@@ -241,7 +241,7 @@ pub fn orchestrate_many(
         .iter()
         .map(|pkg| {
             let stable_base = if pkg.version.contains('-') {
-                repo.last_stable_version(&pkg.name, &history_tag_formats)?
+                repo.last_stable_version(&pkg.name, &tag_formats.history_for(&pkg.name))?
             } else {
                 None
             };

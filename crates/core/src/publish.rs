@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
-use crate::adapter::{apply_changelog_scope, Adapter};
+use crate::adapter::{apply_changelog_layout, Adapter};
 use crate::changelog;
-use crate::config::{format_tag, ChangelogScope, DEFAULT_TAG_FORMAT};
+use crate::config::{ChangelogLayout, TagFormats, DEFAULT_TAG_FORMAT};
 use crate::forge::{Forge, GhForge};
 use crate::git::{GitOps, GitRepo};
 use crate::graph::Graph;
@@ -26,8 +26,8 @@ pub struct PublishOptions {
     pub artifacts_dir: Option<PathBuf>,
     /// Resolve the plan and print it, but do not publish or push tags.
     pub dry_run: bool,
-    /// Git tag format for releases.
-    pub tag_format: String,
+    /// Git tag formats for releases: the repo's format plus any per-package overrides.
+    pub tags: TagFormats,
     /// Package names to skip — `build-only` packages from `release.toml`. They ship via the
     /// GitHub Release the workflow creates, never through a registry, so `publish` leaves them
     /// alone even though their manifests look publishable.
@@ -37,8 +37,8 @@ pub struct PublishOptions {
     /// broken package on the registry. This is the invariant that replaced the old `private:true`
     /// guard: such a package is published **only** when its staged binaries are present.
     pub require_staged: Vec<String>,
-    /// Configured changelog layout.
-    pub changelog_scope: ChangelogScope,
+    /// Configured changelog layout: scope plus any per-package overrides.
+    pub changelog: ChangelogLayout,
 }
 
 /// Wire up the real git/forge and run the flow.
@@ -58,10 +58,10 @@ impl Default for PublishOptions {
             exclude_packages: Vec::new(),
             artifacts_dir: None,
             dry_run: false,
-            tag_format: DEFAULT_TAG_FORMAT.to_string(),
+            tags: TagFormats::global(DEFAULT_TAG_FORMAT),
             skip: Vec::new(),
             require_staged: Vec::new(),
-            changelog_scope: ChangelogScope::Package,
+            changelog: ChangelogLayout::default(),
         }
     }
 }
@@ -131,7 +131,7 @@ pub fn orchestrate_many(
         // publish. An excluded/pinned dependency then resolves normally and its dependent publishes
         // with the dep intact.
         let mut packages = adapter.discover_packages()?;
-        apply_changelog_scope(root, &opts.changelog_scope, &mut packages);
+        apply_changelog_layout(root, &opts.changelog, &mut packages);
         let graph = Graph::build(&packages)?;
 
         // Dependencies before dependents; keep publishable packages that still need any work and
@@ -152,7 +152,7 @@ pub fn orchestrate_many(
             if opts.skip.iter().any(|n| n == &pkg.name) {
                 continue; // build-only: ships via GitHub Release, not a registry
             }
-            let tag = format_tag(&opts.tag_format, &pkg.name, &pkg.version)?;
+            let tag = opts.tags.tag_for(&pkg.name, &pkg.version)?;
             let published = adapter.is_published(pkg, &pkg.version)?;
             let tagged = git.tag_exists(&tag)?;
             // A package is fully shipped only when the registry has it AND its tag exists. If it

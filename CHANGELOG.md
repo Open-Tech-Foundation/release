@@ -8,6 +8,55 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Added
+
+- **A package can now scope its own `tag_format` and `changelog`.** Both were repo-wide, which a
+  polyglot monorepo cannot always satisfy — a Rust workspace shipping a CLI under `v{version}` (the
+  tag its installer and self-updater read) alongside independently versioned npm packages had no way
+  to keep the two apart. Two packages formatting to the same tag was not a warning either:
+  `github-release` treats an existing release as already shipped, so **a second build-only binary at
+  the same workspace version silently attached no assets at all**. The rule is now: a repo-wide
+  setting applies unless the package's own `[[package]]` block sets its own value.
+
+  ```toml
+  [[package]]
+  name       = "es-dev-cli"
+  adapter    = "crates.io"
+  mode       = "build-only"
+  command    = "cargo build --release --target {triple}"
+  tag_format = "{name}@{version}"               # off the repo's product tag line
+  changelog  = "crates/dev-cli/CHANGELOG.md"    # with notes of its own
+  ```
+
+  Both fields are optional and independent, so every existing `release.toml` behaves as before. A
+  package that scopes its format deliberately does *not* fall back to the global one when reading
+  its history — that is the tag line it was moved out of. Editable from `otf-release config` →
+  *Packages*, and validated on load, so a format with no `{version}` or a changelog path outside
+  the repo fails at parse time rather than mid-release.
+
+- **`init` writes a `[[package]]` block for every package the repo releases**, not only those with
+  a build step. A package its adapter publishes as-is (an npm package with no `build` script, a
+  crate pushed straight to crates.io) gets a block carrying only its identity and an empty
+  `command` — so there is always one place to configure a package, and per-package settings have
+  somewhere to live. Packages in `skip_publish` get no block: the blocks describe what ships.
+
+### Fixed
+
+- **A package with a `[[package]]` block but no build step was gated out of every release path.**
+  The generated `check-release` job emitted a `release_<pkg>` output and an `--exclude-package` for
+  *every* block, but build and publish jobs are only generated for a package that has a build
+  command. A block without one — a JSR or generic package whose publish needs no build — was
+  therefore removed from the catch-all `should_release` gate while having no job of its own to
+  release it, so it never shipped. Both are now emitted only for packages that actually get their
+  own jobs.
+
+- **A cargo/JSR/generic repo that publishes packages with no build step generated no publish job
+  at all.** The workflow decided which ecosystems to set up by looking for `[[package]]` blocks,
+  and those repos had none, so `release.yml` came out with no `publish` job, no toolchain, and no
+  registry token. Now that every released package has a block, the catch-all publish job is
+  generated with the right toolchain and `CARGO_REGISTRY_TOKEN`/`NODE_AUTH_TOKEN` wiring.
+  Existing repos pick this up by re-running `otf-release init`.
+
 ## [0.31.0] - 2026-08-11
 
 - **npm — a polyglot monorepo could not release its JS packages at all.** Discovery read the

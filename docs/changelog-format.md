@@ -31,6 +31,28 @@ All notable changes to this package are documented here.
 - `changelog_scope = "package"` uses each package's adapter-discovered `CHANGELOG.md`
   (`Pkg.changelog_path`).
 
+In package scope the adapter decides, and what it decides follows from how the package is
+*versioned*. A Cargo workspace with a shared `[workspace.package] version` is the case worth
+knowing: crates that inherit it (`version.workspace = true`) move in lockstep and therefore share
+the **root** `CHANGELOG.md`, while a crate carrying its own concrete version gets
+`crates/<name>/CHANGELOG.md`. npm packages always get their own. So a repo whose Rust crates
+release as one product and whose npm packages release independently already gets both behaviours
+from `changelog_scope = "package"` — no per-package configuration.
+
+When that inference is not what you want — a second binary that inherits the lockstep version but
+should keep release notes of its own — name the file explicitly:
+
+```toml
+[[package]]
+name      = "my-dev-cli"
+adapter   = "crates.io"
+mode      = "build-only"
+changelog = "crates/dev-cli/CHANGELOG.md"
+```
+
+A package's own `changelog` wins over both scopes. See
+[configuration.md](./configuration.md#scoped-release-identity).
+
 ## How `version` rewrites it
 
 When a release is applied ([version step 9](./commands/version.md)), for each affected package:

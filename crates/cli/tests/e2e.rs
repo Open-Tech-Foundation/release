@@ -15,7 +15,7 @@ use anyhow::Result;
 
 use otf_release_adapters::npm::{CommandOutput, CommandRunner, NpmAdapter};
 use otf_release_core::adapter::Bump;
-use otf_release_core::config::ReleaseConfig;
+use otf_release_core::config::{ReleaseConfig, TagFormats};
 use otf_release_core::forge::Forge;
 use otf_release_core::git::GitRepo;
 use otf_release_core::prompt::{Candidate, Prompt};
@@ -212,7 +212,7 @@ fn version_then_publish_ships_exactly_the_computed_bumps() {
         &forge,
         root,
         &PublishOptions {
-            tag_format: "{name}@{version}".to_string(),
+            tags: TagFormats::global("{name}@{version}"),
             ..PublishOptions::default()
         },
         &hooks,

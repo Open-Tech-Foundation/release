@@ -545,6 +545,8 @@ pub fn orchestrate(
                     attest: false,
                     executable: None,
                     include: Vec::new(),
+                    tag_format: None,
+                    changelog: None,
                 });
             }
         }
@@ -572,6 +574,8 @@ pub fn orchestrate(
                 attest: false,
                 executable: None,
                 include: Vec::new(),
+                tag_format: None,
+                changelog: None,
             });
         }
     }
@@ -583,23 +587,62 @@ pub fn orchestrate(
         packages.extend(prompt.generic_packages(&found)?);
     }
 
+    // Which adapter found each package, so a block can name its own ecosystem.
+    let ecosystem_of: HashMap<&str, Ecosystem> = cargo_publishable
+        .iter()
+        .map(|p| (p.name.as_str(), Ecosystem::Cargo))
+        .chain(
+            npm_publishable
+                .iter()
+                .map(|p| (p.name.as_str(), Ecosystem::Npm)),
+        )
+        .chain(
+            jsr_publishable
+                .iter()
+                .map(|p| (p.name.as_str(), Ecosystem::Jsr)),
+        )
+        .collect();
+
+    // Everything configured so far needed a decision — a build step, a generic publish command.
+    // What remains are packages the adapter publishes as-is, which until now got no `[[package]]`
+    // block at all. They get one anyway, carrying nothing but their identity: it is where a
+    // per-package `tag_format` or `changelog` goes, and where later per-package settings will go.
+    // These blocks are inert for workflow codegen, which keys every job off a non-empty `command`.
+    let decided: HashSet<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+    let mut published_as_is: Vec<&Pkg> = publishable
+        .iter()
+        .filter(|p| !decided.contains(p.name.as_str()))
+        .collect();
+    published_as_is.sort_by(|a, b| a.name.cmp(&b.name));
+
     // A repo that configured a build-only package but still has other discovered crates is
     // binary-distribution shaped: those leftovers would be pushed to a registry nobody asked for.
     // (A Cargo workspace's library crates are the usual case — they carry no `publish = false`,
-    // so nothing else stops them.) Offer to record them in `skip_publish`.
+    // so nothing else stops them.) Offer to record them in `skip_publish`. The candidates are
+    // exactly the publish-as-is set: a package the user configured a build step for is one they
+    // clearly mean to release.
     let skip_publish = {
-        let configured: HashSet<&str> = packages.iter().map(|p| p.name.as_str()).collect();
         let any_build_only = packages.iter().any(|p| p.is_build_only());
-        let leftovers: Vec<&Pkg> = publishable
-            .iter()
-            .filter(|p| !configured.contains(p.name.as_str()))
-            .collect();
-        if any_build_only && !leftovers.is_empty() {
-            prompt.select_skip_publish(&leftovers)?
+        if any_build_only && !published_as_is.is_empty() {
+            prompt.select_skip_publish(&published_as_is)?
         } else {
             Vec::new()
         }
     };
+
+    // A skipped package is never versioned or published, so it gets no block — the blocks describe
+    // what this repo releases.
+    for pkg in published_as_is {
+        if skip_publish.iter().any(|name| name == &pkg.name) {
+            continue;
+        }
+        let adapter = ecosystem_of
+            .get(pkg.name.as_str())
+            .copied()
+            .unwrap_or(Ecosystem::Generic);
+        packages.push(publish_as_is_entry(pkg, adapter, root));
+    }
+    packages.sort_by(|a, b| a.name.cmp(&b.name));
 
     let tag_suggestion = suggest_tag_format(root, publishable.len());
     let tag_format = prompt.tag_format(&tag_suggestion)?;
@@ -725,13 +768,25 @@ fn select_targets(prompt: &str) -> Result<Vec<Target>> {
 }
 
 /// The preliminary job that checks if a release is needed, guarding the expensive build steps.
+/// Whether an entry gets release jobs of its own, rather than riding the catch-all publish job.
+///
+/// This is what a per-package `release_<pkg>` output and the matching `--exclude-package` on the
+/// catch-all gate are *for*: they hand the package to its own job. An entry with neither a build
+/// command nor build-only mode has no such job — it is a block that exists to carry settings — so
+/// excluding it from `should_release` would take it out of the only gate that releases it.
+fn has_own_jobs(entry: &PackageEntry) -> bool {
+    !entry.command.trim().is_empty() || entry.is_build_only()
+}
+
 fn render_check_release_job(s: &mut String, config: &ReleaseConfig) {
     let pin = workflow_pin(config);
+    let scheduled: Vec<&PackageEntry> =
+        config.packages.iter().filter(|p| has_own_jobs(p)).collect();
     s.push_str("  check-release:\n");
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    outputs:\n");
     s.push_str("      should_release: ${{ steps.check.outputs.should_release }}\n");
-    for entry in &config.packages {
+    for entry in &scheduled {
         s.push_str(&format!(
             "      {}: ${{{{ steps.check.outputs.{} }}}}\n",
             release_output(&entry.name),
@@ -751,11 +806,11 @@ fn render_check_release_job(s: &mut String, config: &ReleaseConfig) {
     s.push_str("      - id: check\n");
     s.push_str("        run: |\n");
     s.push_str("          echo \"should_release=$(otf-release check");
-    for entry in &config.packages {
+    for entry in &scheduled {
         s.push_str(&format!(" --exclude-package {}", entry.name));
     }
     s.push_str(")\" >> \"$GITHUB_OUTPUT\"\n");
-    for entry in &config.packages {
+    for entry in &scheduled {
         s.push_str(&format!(
             "          echo \"{}=$(otf-release check --package {})\" >> \"$GITHUB_OUTPUT\"\n",
             release_output(&entry.name),
@@ -1299,6 +1354,39 @@ fn render_publish_job(
     s.push('\n');
 }
 
+/// The `[[package]]` block for a package its adapter publishes as-is — no build step, nothing to
+/// stage. It carries only identity: name, owning ecosystem, `publish` mode, and where its manifest
+/// is. `command` is deliberately empty, which is what keeps the block inert for workflow codegen —
+/// build jobs, dedicated publish jobs, and the catch-all's `--exclude-package` list are all gated
+/// on a non-empty command, so this package keeps publishing through the catch-all job exactly as it
+/// did when it had no block at all.
+///
+/// It exists so that *every* package this repo releases has one place to configure it — today a
+/// per-package `tag_format` or `changelog`, tomorrow whatever else turns out to need scoping.
+fn publish_as_is_entry(pkg: &Pkg, adapter: Ecosystem, root: &Path) -> PackageEntry {
+    PackageEntry {
+        name: pkg.name.clone(),
+        adapter,
+        mode: Mode::Publish,
+        matrix: false,
+        targets: Vec::new(),
+        command: String::new(),
+        artifacts: String::new(),
+        bin_name: None,
+        compress: None,
+        manifest: Some(rel_path(root, &pkg.manifest_path)),
+        version_field: None,
+        publish: None,
+        archive: None,
+        checksums: false,
+        attest: false,
+        include: Vec::new(),
+        executable: None,
+        tag_format: None,
+        changelog: None,
+    }
+}
+
 /// The package subdirectory (relative to the repo root) a package's build should run in, derived
 /// from its manifest path. `None` for a root manifest (`package.json`), where no `working-directory`
 /// is needed.
@@ -1614,6 +1702,8 @@ fn configure_generic(
         attest,
         include,
         executable: None,
+        tag_format: None,
+        changelog: None,
     })
 }
 
@@ -1853,6 +1943,8 @@ impl InitPrompt for StdinInitPrompt {
             attest: false,
             executable: None,
             include: Vec::new(),
+            tag_format: None,
+            changelog: None,
         })
     }
 
@@ -2256,6 +2348,8 @@ pub(crate) mod tests {
             attest: false,
             executable: None,
             include: Vec::new(),
+            tag_format: None,
+            changelog: None,
         }
     }
 
@@ -2278,6 +2372,8 @@ pub(crate) mod tests {
             attest: false,
             executable: None,
             include: Vec::new(),
+            tag_format: None,
+            changelog: None,
         }
     }
 
@@ -2304,6 +2400,8 @@ pub(crate) mod tests {
             attest: false,
             executable: None,
             include: Vec::new(),
+            tag_format: None,
+            changelog: None,
         }
     }
 
@@ -2415,6 +2513,8 @@ pub(crate) mod tests {
                 attest: false,
                 executable: None,
                 include: Vec::new(),
+                tag_format: None,
+                changelog: None,
             }],
         };
         let out = render_workflow(&config);
@@ -2465,6 +2565,8 @@ pub(crate) mod tests {
                     attest: false,
                     executable: None,
                     include: Vec::new(),
+                    tag_format: None,
+                    changelog: None,
                 },
                 PackageEntry {
                     name: "jsr-no-build".to_string(),
@@ -2484,6 +2586,8 @@ pub(crate) mod tests {
                     attest: false,
                     executable: None,
                     include: Vec::new(),
+                    tag_format: None,
+                    changelog: None,
                 },
             ],
         };
@@ -2680,6 +2784,8 @@ pub(crate) mod tests {
                 attest: false,
                 executable: None,
                 include: Vec::new(),
+                tag_format: None,
+                changelog: None,
             }],
         };
         let out = render_workflow(&config);
@@ -2733,6 +2839,8 @@ pub(crate) mod tests {
                 attest: false,
                 executable: None,
                 include: Vec::new(),
+                tag_format: None,
+                changelog: None,
             }],
         }
     }
@@ -2851,6 +2959,8 @@ pub(crate) mod tests {
                 attest: false,
                 executable: None,
                 include: Vec::new(),
+                tag_format: None,
+                changelog: None,
             }],
         };
         let out = render_workflow(&config);
@@ -3224,6 +3334,76 @@ pub(crate) mod tests {
             installs, pins,
             "every install step needs a version pin; {installs} steps, {pins} pins:\n{out}"
         );
+    }
+
+    /// Every package this repo releases gets a `[[package]]` block, including the ones the adapter
+    /// publishes as-is — that block is where a per-package `tag_format` or `changelog` lives, so a
+    /// package without one would have nowhere to put it.
+    #[test]
+    fn every_released_package_gets_a_block_and_skipped_ones_do_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let factory = FakeFactory {
+            packages: vec![
+                pkg("es-runtime-cli", true),
+                pkg("es-runtime-common", true),
+                pkg("es-dev-cli", true),
+                pkg("private-app", false),
+            ],
+        };
+        let prompt = FakePrompt {
+            adapters: vec![Ecosystem::Cargo],
+            build_names: vec!["es-runtime-cli".into()],
+            entries: vec![cargo_build_only("es-runtime-cli")],
+            skip_publish: vec!["es-runtime-common".into()],
+            ..FakePrompt::default()
+        };
+        orchestrate(&factory, &prompt, tmp.path(), &InitOptions { force: true }).unwrap();
+
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        let names: Vec<&str> = cfg.packages.iter().map(|p| p.name.as_str()).collect();
+        // The build-only binary and the crate published as-is, but neither the skipped crate nor
+        // the private app — the blocks describe what this repo releases.
+        assert_eq!(names, vec!["es-dev-cli", "es-runtime-cli"]);
+
+        // The as-is block carries identity only: no command, which is what keeps codegen unchanged.
+        let as_is = cfg.package("es-dev-cli").unwrap();
+        assert_eq!(as_is.adapter, Ecosystem::Cargo);
+        assert_eq!(as_is.mode, Mode::Publish);
+        assert!(as_is.command.is_empty());
+        assert!(as_is.tag_format.is_none() && as_is.changelog.is_none());
+
+        // And it is immediately usable as the place to scope this package's release identity.
+        let mut scoped = cfg.clone();
+        scoped.packages.iter_mut().for_each(|p| {
+            if p.name == "es-dev-cli" {
+                p.tag_format = Some("{name}@{version}".to_string());
+            }
+        });
+        assert_eq!(
+            scoped
+                .tag_formats()
+                .tag_for("es-dev-cli", "0.24.0")
+                .unwrap(),
+            "es-dev-cli@0.24.0"
+        );
+
+        let workflow =
+            std::fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
+        // No build job and no dedicated publish job for the command-less block …
+        assert!(!workflow.contains("build-es-dev-cli:"), "{workflow}");
+        assert!(!workflow.contains("publish-es-dev-cli:"), "{workflow}");
+        assert!(
+            !workflow.contains("--exclude-package es-dev-cli"),
+            "{workflow}"
+        );
+        // … but the catch-all publish job now knows this repo pushes a crate, so it sets up the
+        // toolchain and token that a registry push needs.
+        assert!(workflow.contains("  publish:\n"), "{workflow}");
+        assert!(
+            workflow.contains("dtolnay/rust-toolchain@stable"),
+            "{workflow}"
+        );
+        assert!(workflow.contains("CARGO_REGISTRY_TOKEN"), "{workflow}");
     }
 
     /// The prompt is a cost, so it must not fire for an ordinary publish-everything repo.

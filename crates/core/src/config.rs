@@ -352,7 +352,7 @@ fn non_empty(s: &str) -> Option<String> {
 }
 
 /// A package that needs a build step before it is published or released.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PackageEntry {
     /// The package name (as the adapter discovers it, or the generic project name).
     pub name: String,
@@ -426,6 +426,24 @@ pub struct PackageEntry {
     /// file), `true` for a program the inference would otherwise skip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executable: Option<bool>,
+
+    // --- release identity: what this package overrides from the repo-wide settings ---
+    /// Tag format for this package alone, replacing the repo's `tag_format`. Same placeholders, and
+    /// it likewise governs both the tag written and the tags read back as this package's history.
+    ///
+    /// A monorepo is usually one release line, but a polyglot repo often is not: a Rust workspace
+    /// shipping a CLI under `v{version}` — the tag its installer and self-updater read — alongside
+    /// independently versioned npm packages needs the two kept apart. Two packages formatting to
+    /// the same tag is not a warning, it is a silently skipped release: `github-release` treats an
+    /// existing release as already shipped, so the second package attaches nothing at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_format: Option<String>,
+    /// Changelog file for this package alone, relative to the repo root, replacing whatever
+    /// `changelog_scope` and the adapter would have chosen. The escape for a package whose notes do
+    /// not belong where its versioning would put them — a second binary that inherits a lockstep
+    /// workspace version but keeps release notes of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changelog: Option<String>,
 }
 
 impl PackageEntry {
@@ -462,6 +480,27 @@ impl PackageEntry {
     /// ship archives whose binary needs a `chmod +x`, which is the bug this behavior exists to fix.
     pub fn marks_executable(&self) -> bool {
         self.executable.unwrap_or(self.compress.is_none())
+    }
+
+    /// Reject a `tag_format` that cannot produce a distinct tag, or a `changelog` path that would
+    /// be written outside the repo. Both are joined onto the repo root and acted on at release
+    /// time, so a bad value must fail while `release.toml` is being read.
+    pub fn validate_release_identity(&self) -> Result<()> {
+        if let Some(format) = &self.tag_format {
+            format_tag(format, &self.name, "1.2.3")
+                .with_context(|| format!("package `{}`: tag_format", self.name))?;
+        }
+        if let Some(changelog) = &self.changelog {
+            let path = Path::new(changelog);
+            if path.is_absolute() || path.components().any(|c| c.as_os_str() == "..") {
+                bail!(
+                    "package `{}`: changelog must be a path inside the repo, relative to its root \
+                     (got `{changelog}`)",
+                    self.name
+                );
+            }
+        }
+        Ok(())
     }
 
     /// The inverse of [`is_build_only`]: the package is published to its registry.
@@ -648,6 +687,92 @@ impl Default for ReleaseConfig {
     }
 }
 
+/// Every package's tag format, resolved once and carried to the commands that write or read tags.
+///
+/// Commands take this rather than a bare format string so a per-package override can never be
+/// applied in one place and forgotten in another — `check`, `publish`, `github-release`, and the
+/// history lookups behind `version`/preflight all resolve through the same value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TagFormats {
+    global: String,
+    legacy: Vec<String>,
+    per_package: HashMap<String, String>,
+}
+
+impl TagFormats {
+    /// One format for every package — the shape of a repo with no overrides, and what tests and
+    /// the snapshot flow build directly.
+    pub fn global(format: &str) -> Self {
+        Self {
+            global: format.to_string(),
+            legacy: Vec::new(),
+            per_package: HashMap::new(),
+        }
+    }
+
+    /// Add the formats to read as history alongside whichever format applies (`legacy_tag_formats`).
+    pub fn with_legacy(mut self, legacy: Vec<String>) -> Self {
+        self.legacy = legacy;
+        self
+    }
+
+    /// The format used to *write* this package's tag.
+    pub fn for_package(&self, pkg_name: &str) -> &str {
+        self.per_package
+            .get(pkg_name)
+            .map(String::as_str)
+            .unwrap_or(&self.global)
+    }
+
+    /// The formats used to *read* this package's release history: its own format first, then the
+    /// repo's legacy formats. A package with an override deliberately does not fall back to the
+    /// global format — that is the tag line it was moved out of, and matching it again would hand
+    /// this package another package's tags as its own history.
+    pub fn history_for(&self, pkg_name: &str) -> Vec<String> {
+        std::iter::once(self.for_package(pkg_name).to_string())
+            .chain(self.legacy.iter().cloned())
+            .collect()
+    }
+
+    /// Format this package's tag at `version`.
+    pub fn tag_for(&self, pkg_name: &str, version: &str) -> Result<String> {
+        format_tag(self.for_package(pkg_name), pkg_name, version)
+    }
+}
+
+/// Where each package's curated notes live, resolved once from `changelog_scope` plus any
+/// per-package `changelog` override.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChangelogLayout {
+    scope: ChangelogScope,
+    per_package: HashMap<String, String>,
+}
+
+impl ChangelogLayout {
+    /// One scope for every package, with no overrides.
+    pub fn scoped(scope: ChangelogScope) -> Self {
+        Self {
+            scope,
+            per_package: HashMap::new(),
+        }
+    }
+
+    /// The changelog path for a package, or `None` to keep the one its adapter discovered.
+    ///
+    /// Precedence: an explicit override wins; otherwise root scope forces the root file and package
+    /// scope defers to the adapter (which is what already gives a lockstep Cargo workspace's
+    /// inheriting crates the root `CHANGELOG.md` and everything else its own).
+    pub fn path_for(&self, root: &Path, pkg_name: &str) -> Option<PathBuf> {
+        if let Some(path) = self.per_package.get(pkg_name) {
+            return Some(root.join(path));
+        }
+        match self.scope {
+            ChangelogScope::Root => Some(root.join("CHANGELOG.md")),
+            ChangelogScope::Package => None,
+        }
+    }
+}
+
 pub fn format_tag(format: &str, name: &str, version: &str) -> Result<String> {
     if !format.contains("{version}") {
         bail!("tag_format must contain `{{version}}`");
@@ -661,6 +786,47 @@ impl ReleaseConfig {
         std::iter::once(self.tag_format.clone())
             .chain(self.legacy_tag_formats.iter().cloned())
             .collect()
+    }
+
+    /// The repo's tag formats: the global one plus whatever individual `[[package]]` blocks set.
+    pub fn tag_formats(&self) -> TagFormats {
+        TagFormats {
+            global: self.tag_format.clone(),
+            legacy: self.legacy_tag_formats.clone(),
+            per_package: self
+                .packages
+                .iter()
+                .filter_map(|pkg| Some((pkg.name.clone(), pkg.tag_format.clone()?)))
+                .collect(),
+        }
+    }
+
+    /// The repo's changelog placement: the global scope plus whatever individual `[[package]]`
+    /// blocks name explicitly.
+    pub fn changelog_layout(&self) -> ChangelogLayout {
+        ChangelogLayout {
+            scope: self.changelog_scope.clone(),
+            per_package: self
+                .packages
+                .iter()
+                .filter_map(|pkg| Some((pkg.name.clone(), pkg.changelog.clone()?)))
+                .collect(),
+        }
+    }
+
+    /// The `[[package]]` block for a name, if the repo declares one.
+    pub fn package(&self, name: &str) -> Option<&PackageEntry> {
+        self.packages.iter().find(|pkg| pkg.name == name)
+    }
+
+    /// Reject a package block whose release identity would produce an unusable tag or escape the
+    /// repo. Called on load, so a hand-edited `release.toml` fails at parse time rather than
+    /// mid-release.
+    fn validate_packages(&self) -> Result<()> {
+        for pkg in &self.packages {
+            pkg.validate_release_identity()?;
+        }
+        Ok(())
     }
 
     /// The configured publish ignore globs for this package name.
@@ -701,7 +867,12 @@ impl ReleaseConfig {
                 path.display()
             )
         })?;
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        let config: Self =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        config
+            .validate_packages()
+            .with_context(|| format!("parsing {}", path.display()))?;
+        Ok(config)
     }
 
     /// Serialize to `release.toml` under `root`.
@@ -815,6 +986,8 @@ mod tests {
             checksums: false,
             attest: false,
             include: Vec::new(),
+            tag_format: None,
+            changelog: None,
             executable: None,
         };
 
@@ -874,6 +1047,8 @@ mod tests {
                     attest: false,
                     executable: None,
                     include: vec!["README.md".into(), "LICENSE".into()],
+                    tag_format: None,
+                    changelog: None,
                 },
                 PackageEntry {
                     name: "docs-site".into(),
@@ -893,6 +1068,8 @@ mod tests {
                     attest: false,
                     executable: None,
                     include: Vec::new(),
+                    tag_format: None,
+                    changelog: None,
                 },
             ],
         };
@@ -969,6 +1146,153 @@ mod tests {
         assert!(ReleaseConfig::exists(tmp.path()));
         let back = ReleaseConfig::load(tmp.path()).unwrap();
         assert_eq!(back.adapters, vec![Ecosystem::Cargo]);
+    }
+
+    /// A `[[package]]` block carrying nothing but identity — what `init` writes for a package its
+    /// adapter publishes as-is.
+    fn entry(name: &str) -> PackageEntry {
+        PackageEntry {
+            name: name.to_string(),
+            adapter: Ecosystem::Npm,
+            mode: Mode::Publish,
+            matrix: false,
+            targets: Vec::new(),
+            command: String::new(),
+            artifacts: String::new(),
+            bin_name: None,
+            compress: None,
+            manifest: None,
+            version_field: None,
+            publish: None,
+            archive: None,
+            checksums: false,
+            attest: false,
+            include: Vec::new(),
+            executable: None,
+            tag_format: None,
+            changelog: None,
+        }
+    }
+
+    fn config_with(packages: Vec<PackageEntry>) -> ReleaseConfig {
+        ReleaseConfig {
+            tag_format: "v{version}".to_string(),
+            packages,
+            ..ReleaseConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_package_tag_format_moves_only_that_package_off_the_repo_tag_line() {
+        // The ES-Runtime shape: a product tag line an installer reads, plus sidecar packages that
+        // version independently and must not land in it.
+        let cfg = config_with(vec![
+            entry("es-runtime-cli"),
+            PackageEntry {
+                tag_format: Some("{name}@{version}".to_string()),
+                ..entry("@scope/driver")
+            },
+        ]);
+        let tags = cfg.tag_formats();
+
+        assert_eq!(tags.tag_for("es-runtime-cli", "0.24.0").unwrap(), "v0.24.0");
+        assert_eq!(
+            tags.tag_for("@scope/driver", "0.1.0").unwrap(),
+            "@scope/driver@0.1.0"
+        );
+        // A package with no block at all still follows the repo.
+        assert_eq!(tags.tag_for("undeclared", "1.0.0").unwrap(), "v1.0.0");
+    }
+
+    #[test]
+    fn a_scoped_package_does_not_read_the_global_tag_line_as_its_own_history() {
+        // The whole point of scoping the format: `v{version}` matches *every* v-tag in the repo, so
+        // keeping it as a fallback would hand this package the CLI's releases as its history and
+        // resurrect the collision the setting exists to prevent.
+        let cfg = ReleaseConfig {
+            legacy_tag_formats: vec!["release-{version}".to_string()],
+            ..config_with(vec![
+                entry("es-runtime-cli"),
+                PackageEntry {
+                    tag_format: Some("{name}@{version}".to_string()),
+                    ..entry("@scope/driver")
+                },
+            ])
+        };
+        let tags = cfg.tag_formats();
+
+        assert_eq!(
+            tags.history_for("@scope/driver"),
+            vec![
+                "{name}@{version}".to_string(),
+                "release-{version}".to_string()
+            ],
+        );
+        // A package that does not scope its format still reads the repo's line, legacy included.
+        assert_eq!(
+            tags.history_for("es-runtime-cli"),
+            vec!["v{version}".to_string(), "release-{version}".to_string()],
+        );
+    }
+
+    #[test]
+    fn a_package_changelog_wins_over_either_scope() {
+        let root = Path::new("/repo");
+        let scoped = PackageEntry {
+            changelog: Some("crates/dev-cli/CHANGELOG.md".to_string()),
+            ..entry("es-dev-cli")
+        };
+
+        // Root scope: every other package is pinned to the root file, the scoped one is not.
+        let mut cfg = config_with(vec![entry("es-runtime-cli"), scoped]);
+        cfg.changelog_scope = ChangelogScope::Root;
+        let layout = cfg.changelog_layout();
+        assert_eq!(
+            layout.path_for(root, "es-dev-cli"),
+            Some(root.join("crates/dev-cli/CHANGELOG.md"))
+        );
+        assert_eq!(
+            layout.path_for(root, "es-runtime-cli"),
+            Some(root.join("CHANGELOG.md"))
+        );
+
+        // Package scope: the scoped path still wins, and everything else keeps whatever its adapter
+        // discovered — which is what leaves a lockstep workspace's crates on the root file.
+        cfg.changelog_scope = ChangelogScope::Package;
+        let layout = cfg.changelog_layout();
+        assert_eq!(
+            layout.path_for(root, "es-dev-cli"),
+            Some(root.join("crates/dev-cli/CHANGELOG.md"))
+        );
+        assert_eq!(layout.path_for(root, "es-runtime-cli"), None);
+    }
+
+    #[test]
+    fn package_release_identity_round_trips_and_is_validated_on_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = config_with(vec![PackageEntry {
+            tag_format: Some("{name}@{version}".to_string()),
+            changelog: Some("packages/driver/CHANGELOG.md".to_string()),
+            ..entry("@scope/driver")
+        }]);
+        cfg.save(tmp.path()).unwrap();
+
+        let back = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(back.packages, cfg.packages);
+
+        // A tag format with no {version} would format every release to the same tag.
+        let bad = "adapters = []\n[[package]]\nname = \"@scope/driver\"\nadapter = \"npm\"\n\
+                   mode = \"publish\"\ntag_format = \"latest\"\n";
+        fs::write(ReleaseConfig::path(tmp.path()), bad).unwrap();
+        let err = ReleaseConfig::load(tmp.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("tag_format"), "{err:#}");
+
+        // A changelog path must stay inside the repo — it is joined onto the root and written to.
+        let escaping = "adapters = []\n[[package]]\nname = \"@scope/driver\"\nadapter = \"npm\"\n\
+                        mode = \"publish\"\nchangelog = \"../elsewhere/CHANGELOG.md\"\n";
+        fs::write(ReleaseConfig::path(tmp.path()), escaping).unwrap();
+        let err = ReleaseConfig::load(tmp.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("inside the repo"), "{err:#}");
     }
 
     #[test]

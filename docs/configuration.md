@@ -53,6 +53,10 @@ artifacts = "target/{triple}/release/otfwc{ext}"        # the binary this target
 bin_name  = "otfwc"                 # staged as bin/<stage_as>/otfwc<ext>[.br]  (matrix only)
 compress  = "brotli"                # decompressed at install time            (matrix only)
 
+# Optional release identity: what this package overrides from the repo-wide settings above.
+tag_format = "{name}@{version}"     # this package's tag line, replacing the global tag_format
+changelog  = "packages/wc/CHANGELOG.md"   # this package's notes, replacing changelog_scope
+
 # build-only release packaging (read by `github-release`):
 archive   = "auto"                  # "tar.gz" | "zip" | "auto" — package each binary (build-only)
 checksums = true                    # also attach a combined checksums.txt (SHA-256)
@@ -95,7 +99,7 @@ artifacts = "dist/**"
 | `publish.ignore_paths` | Optional per-package path globs. If a package has commits since its last tag, `[Unreleased]` is empty, and **every** changed file matches one of these globs, the release flow prints a warning and continues instead of aborting. |
 | `changelog_scope` | Where curated release notes live: `"root"` uses the root `CHANGELOG.md` for every package; `"package"` uses each package's adapter-discovered `CHANGELOG.md`. |
 | `github_release_notes` | GitHub Release body source for `build-only` packages: `"auto-generate"` lets GitHub generate notes, `"curated-changelog"` copies root notes in root scope or combines released sections from all configured package changelogs in package scope, and `"semantic-commits"` writes a commit list since the previous matching `tag_format` tag. `init` asks for this and `config` can edit it later. |
-| `[[package]]` | A package with an explicit build step. |
+| `[[package]]` | One block per package this repo releases. `init` writes one for every publishable package it finds — a package that needs no build step gets a block carrying only its identity, so there is always somewhere to scope its settings. |
 | `name` | The package name as discovered by its adapter. |
 | `adapter` | The owning ecosystem (`"npm"` / `"crates.io"` / `"generic"`). |
 | `mode` | `"publish"` → build then push to the registry. `"build-only"` → build, then attach artifacts to a GitHub Release; **never** pushed to a registry. Generic packages can use either mode when a `publish` command is configured. |
@@ -107,6 +111,8 @@ artifacts = "dist/**"
 | `archive` | _(build-only)_ how to package each staged binary: `"tar.gz"`, `"zip"`, or `"auto"`. **Defaults to `"auto"`** (`.zip` for Windows targets, `.tar.gz` elsewhere) — build-only binaries always ship as archives, so every asset carries an extension and the binary extracts ready to run (stored mode `755`). Read by [`github-release`](./commands/github-release.md). |
 | `checksums` | _(build-only)_ `true` also attaches a combined `checksums.txt` (SHA-256 of every asset) to the GitHub Release. Proves an asset arrived **intact**; it does not prove who built it — see `attest`. |
 | `attest` | _(build-only)_ `true` signs build provenance for every release asset via `actions/attest-build-provenance`, and adds the `id-token: write` + `attestations: write` permissions to the generated workflow. This is the only setting here that establishes **authenticity**: a checksum can be replaced by whoever replaced the asset, a GitHub-signed attestation cannot. Consumers verify with `gh attestation verify <file> --repo <owner/repo>`. Off by default (it changes workflow permissions); `init` proposes enabling it. See [`github-release`](./commands/github-release.md#supply-chain-checksums-vs-provenance). |
+| `tag_format` | Optional. This package's tag format, replacing the repo's. Same placeholders; governs both the tag written and the tags read back as this package's history. See [Scoped release identity](#scoped-release-identity). |
+| `changelog` | Optional. This package's changelog file, relative to the repo root, replacing whatever `changelog_scope` and its adapter would have chosen. |
 | `executable` | _(build-only)_ whether the staged artifact is stored executable (mode `755`) inside each archive. **Omit it** — the default is "yes, unless `compress` is set", which is right for a CLI binary and right for a brotli blob (data, not a program). Set `false` for a build-only package shipping a payload rather than a program (`.wasm`, `.jar`, a model file); set `true` to force it. `include` files always keep their own mode. |
 | `include` | _(build-only)_ extra files to bundle **inside each archive** beside the binary — repo-relative paths or globs, e.g. `["README.md", "LICENSE", "types/*.d.ts"]`. Each keeps its path within the archive. |
 
@@ -173,6 +179,85 @@ the *host* target, so the tier-3 problem disappears.
 
 The same mechanism covers any OS with a `vmactions/<name>-vm` image; only FreeBSD ships in the
 registry today.
+
+## Scoped release identity
+
+The rule is: **a repo-wide setting applies to every package unless that package's own block sets
+its own value.**
+
+`tag_format` and `changelog_scope` describe the repo as a whole, which is right for a monorepo that
+releases as one product and wrong for a polyglot one. A Cargo workspace that ships a CLI *and* a set
+of npm sidecar packages has a product tag line its installer and self-updater read (`v{version}`)
+alongside packages that version independently — and every package sharing one name-less tag format
+means two of them can format to the **same tag**. That is not a warning:
+[`github-release`](./commands/github-release.md) treats an existing release as already shipped, so
+the second package's assets are silently never attached.
+
+Scope the exceptions in the package's own block:
+
+```toml
+tag_format = "v{version}"        # the product line: the CLI keeps it
+changelog_scope = "package"
+
+[[package]]
+name       = "es-runtime-cli"
+adapter    = "crates.io"
+mode       = "build-only"
+matrix     = true
+command    = "cargo build --release --target {triple}"
+bin_name   = "esrun"
+# no tag_format / changelog: this package *is* the product line
+
+[[package]]
+name       = "es-dev-cli"
+adapter    = "crates.io"
+mode       = "build-only"
+matrix     = true
+command    = "cargo build --release --target {triple}"
+bin_name   = "esdev"
+tag_format = "{name}@{version}"
+changelog  = "crates/dev-cli/CHANGELOG.md"
+
+# A package the adapter publishes as-is still gets a block — it is where its settings go.
+[[package]]
+name       = "@scope/driver"
+adapter    = "npm"
+mode       = "publish"
+manifest   = "packages/driver/package.json"
+tag_format = "{name}@{version}"
+```
+
+Both fields are optional and independent — set either, both, or neither.
+
+**History does not fall back to the global format.** A package that scopes its `tag_format` reads
+its history through that format plus `legacy_tag_formats`, and deliberately *not* through the
+repo's: `v{version}` matches every `v`-tag in the repo, so keeping it as a fallback would hand this
+package another package's releases as its own history — the collision the setting exists to
+prevent. Migrating a package that *does* have history under the old format is what
+`legacy_tag_formats` is for.
+
+**When you need one.** Two packages that can be released independently must not format to the same
+tag. If `tag_format` has no `{name}`, that means at most one package may use it — scope every other
+one. The symptom of getting this wrong is a release that "succeeds" with nothing attached, not an
+error.
+
+### Blocks for packages with no build step
+
+`init` writes a `[[package]]` block for every publishable package, including those their adapter
+publishes as-is (an npm package with no `build` script, a crate published straight to crates.io).
+Such a block carries only identity — `name`, `adapter`, `mode = "publish"`, `manifest` — and an
+empty `command`.
+
+An empty `command` is what keeps it inert for workflow generation: build jobs, dedicated publish
+jobs, the per-package `release_<pkg>` gate, and the catch-all's `--exclude-package` list are all
+keyed off a package having a job of its own, so a settings-only block leaves the generated
+`release.yml` exactly as it was. Packages listed in `skip_publish` get no block at all — the blocks
+describe what the repo releases.
+
+`otf-release config` → *Packages* → pick a package → *Tag format* / *Changelog* edits these, with
+the repo-wide value named in the prompt so blank visibly means "whatever the repo does". Values are
+validated when `release.toml` is loaded, so a format with no `{version}` or a changelog path outside
+the repo fails at parse time rather than mid-release.
 
 ## The `generic` adapter
 
