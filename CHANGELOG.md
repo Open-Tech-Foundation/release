@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-08-12
+
 ### Added
 
 - **`otf-release doctor` — a read-only audit of the release setup.** Every other command acts at
