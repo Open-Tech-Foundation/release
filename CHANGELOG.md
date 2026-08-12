@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-08-12
+
 ### Added
 
 - **A package can now scope its own `tag_format` and `changelog`.** Both were repo-wide, which a
