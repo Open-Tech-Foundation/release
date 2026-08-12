@@ -8,6 +8,7 @@ use crate::config::{
     PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_VERSION_FIELD,
 };
 use crate::discover::{declares_npm_workspaces, scan_npm_candidates, GenericCandidate};
+use crate::init::{sync_package_blocks, AdapterFactory};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigAction {
@@ -346,11 +347,15 @@ impl ConfigPrompt for StdinConfigPrompt {
     }
 }
 
-pub fn orchestrate(root: &Path) -> Result<()> {
-    orchestrate_with_prompt(root, &StdinConfigPrompt)
+pub fn orchestrate(root: &Path, factory: &dyn AdapterFactory) -> Result<()> {
+    orchestrate_with_prompt(root, factory, &StdinConfigPrompt)
 }
 
-pub fn orchestrate_with_prompt(root: &Path, prompt: &dyn ConfigPrompt) -> Result<()> {
+pub fn orchestrate_with_prompt(
+    root: &Path,
+    factory: &dyn AdapterFactory,
+    prompt: &dyn ConfigPrompt,
+) -> Result<()> {
     let mut config = ReleaseConfig::load(root)?;
 
     loop {
@@ -359,6 +364,11 @@ pub fn orchestrate_with_prompt(root: &Path, prompt: &dyn ConfigPrompt) -> Result
             ConfigAction::Ecosystems => {
                 config.adapters = prompt.ecosystems(&config.adapters)?;
                 edit_npm_discovery(root, prompt, &mut config)?;
+                // Enabling an ecosystem is only half an answer: without a block per package there
+                // is no build step, no per-package setting to scope, and — for a package whose
+                // publish needs a build — a broken release. Finish the job here rather than
+                // leaving the repo in a state only `init` could complete.
+                report_sync(sync_package_blocks(&mut config, factory, root)?);
                 save(root, &config)?;
             }
             ConfigAction::Packages => edit_package(root, prompt, &mut config)?,
@@ -641,6 +651,25 @@ impl HookStage {
     }
 }
 
+/// Print what reconciling the package blocks changed, so an edit never silently rewrites the file.
+fn report_sync(sync: crate::init::PackageSync) {
+    for (package, hook) in &sync.stripped_hooks {
+        println!(
+            "Removed npm lifecycle hook `{hook}` from {package}. The release pipeline runs the \
+             build itself — move any custom steps into a `build` script or [hooks] in release.toml."
+        );
+    }
+    if sync.is_empty() {
+        return;
+    }
+    for name in &sync.added {
+        println!("Added a [[package]] block for {name}.");
+    }
+    for name in &sync.removed {
+        println!("Removed the [[package]] block for {name} — this repo no longer releases it.");
+    }
+}
+
 fn save(root: &Path, config: &ReleaseConfig) -> Result<()> {
     config.save(root)?;
     println!("Saved.");
@@ -710,6 +739,50 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::path::Path;
+
+    /// A factory whose adapters discover nothing: the package-block sync is exercised in its own
+    /// tests, and these cover the editor's own behaviour.
+    struct NoPackages;
+    impl AdapterFactory for NoPackages {
+        fn make(&self, _: Ecosystem) -> Box<dyn crate::adapter::Adapter> {
+            Box::new(EmptyAdapter)
+        }
+    }
+
+    struct EmptyAdapter;
+    impl crate::adapter::Adapter for EmptyAdapter {
+        fn discover_packages(&self) -> Result<Vec<crate::adapter::Pkg>> {
+            Ok(Vec::new())
+        }
+        fn write_version(&self, _: &crate::adapter::Pkg, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn update_dep_range(&self, _: &crate::adapter::Pkg, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn format_range(&self, _: &str) -> String {
+            unreachable!()
+        }
+        fn resolve_workspace_links(&self, _: &crate::adapter::Pkg) -> Result<()> {
+            unreachable!()
+        }
+        fn update_lockfile(&self, _: &Path) -> Result<()> {
+            unreachable!()
+        }
+        fn dependent_bump(
+            &self,
+            _: crate::adapter::Bump,
+            _: &crate::adapter::DepKind,
+        ) -> crate::adapter::Bump {
+            unreachable!()
+        }
+        fn is_published(&self, _: &crate::adapter::Pkg, _: &str) -> Result<bool> {
+            unreachable!()
+        }
+        fn publish(&self, _: &crate::adapter::Pkg, _: Option<&Path>) -> Result<()> {
+            unreachable!()
+        }
+    }
 
     struct FakePrompt {
         actions: RefCell<Vec<ConfigAction>>,
@@ -828,6 +901,7 @@ mod tests {
         for field in [PackageField::Checksums, PackageField::Attest] {
             orchestrate_with_prompt(
                 tmp.path(),
+                &NoPackages,
                 &FakePrompt {
                     toggle: RefCell::new(true),
                     ..package_prompt(field, vec![])
@@ -885,7 +959,7 @@ mod tests {
         base.adapters = vec![Ecosystem::Generic];
         base.save(tmp.path()).unwrap();
 
-        orchestrate_with_prompt(tmp.path(), &ecosystems_prompt()).unwrap();
+        orchestrate_with_prompt(tmp.path(), &NoPackages, &ecosystems_prompt()).unwrap();
 
         let cfg = ReleaseConfig::load(tmp.path()).unwrap();
         // The publishable ones, recorded as directories. `website` is private, so it is offered
@@ -914,7 +988,7 @@ mod tests {
         .unwrap();
         config().save(tmp.path()).unwrap();
 
-        orchestrate_with_prompt(tmp.path(), &ecosystems_prompt()).unwrap();
+        orchestrate_with_prompt(tmp.path(), &NoPackages, &ecosystems_prompt()).unwrap();
 
         // npm's own declaration stays the single source of truth; duplicating it here would be one
         // more place to drift.
@@ -1051,12 +1125,18 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         config().save(tmp.path()).unwrap();
 
-        orchestrate_with_prompt(tmp.path(), &package_prompt(PackageField::Mode, vec![])).unwrap();
+        orchestrate_with_prompt(
+            tmp.path(),
+            &NoPackages,
+            &package_prompt(PackageField::Mode, vec![]),
+        )
+        .unwrap();
         let mut cfg = ReleaseConfig::load(tmp.path()).unwrap();
         assert_eq!(cfg.packages[0].mode, Mode::Publish);
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &package_prompt(PackageField::Command, vec!["new build"]),
         )
         .unwrap();
@@ -1065,6 +1145,7 @@ mod tests {
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &package_prompt(PackageField::Artifacts, vec!["dist/**"]),
         )
         .unwrap();
@@ -1079,6 +1160,7 @@ mod tests {
         ];
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &FakePrompt {
                 targets: RefCell::new(picked),
                 ..package_prompt(PackageField::Targets, vec![])
@@ -1096,16 +1178,19 @@ mod tests {
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &package_prompt(PackageField::GenericManifest, vec!["jsr.json"]),
         )
         .unwrap();
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &package_prompt(PackageField::GenericVersionField, vec!["pkg.version"]),
         )
         .unwrap();
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &package_prompt(PackageField::GenericPublishCommand, vec!["npx jsr publish"]),
         )
         .unwrap();
@@ -1206,11 +1291,13 @@ mod tests {
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &package_prompt(PackageField::TagFormat, vec!["{name}@{version}"]),
         )
         .unwrap();
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &package_prompt(PackageField::Changelog, vec!["crates/dev-cli/CHANGELOG.md"]),
         )
         .unwrap();
@@ -1235,11 +1322,13 @@ mod tests {
         // Blank clears the field back to the repo-wide setting.
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &package_prompt(PackageField::TagFormat, vec![""]),
         )
         .unwrap();
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &package_prompt(PackageField::Changelog, vec!["  "]),
         )
         .unwrap();
@@ -1257,6 +1346,7 @@ mod tests {
 
         let err = orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &package_prompt(PackageField::TagFormat, vec!["latest"]),
         )
         .unwrap_err();
@@ -1278,6 +1368,7 @@ mod tests {
 
         let err = orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &package_prompt(PackageField::Changelog, vec!["../elsewhere/CHANGELOG.md"]),
         )
         .unwrap_err();
@@ -1294,12 +1385,13 @@ mod tests {
             ..FakePrompt::default()
         };
 
-        orchestrate_with_prompt(tmp.path(), &ecosystem_prompt).unwrap();
+        orchestrate_with_prompt(tmp.path(), &NoPackages, &ecosystem_prompt).unwrap();
         let mut cfg = ReleaseConfig::load(tmp.path()).unwrap();
         assert_eq!(cfg.adapters, vec![Ecosystem::Npm, Ecosystem::Generic]);
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &global_prompt(GlobalField::Provider, vec!["github-enterprise"]),
         )
         .unwrap();
@@ -1308,6 +1400,7 @@ mod tests {
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &global_prompt(GlobalField::SnapshotTag, vec!["canary"]),
         )
         .unwrap();
@@ -1316,6 +1409,7 @@ mod tests {
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &global_prompt(GlobalField::SkipPublish, vec!["@scope/old, pkg-internal"]),
         )
         .unwrap();
@@ -1324,6 +1418,7 @@ mod tests {
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &global_prompt(
                 GlobalField::PublishIgnorePaths,
                 vec!["docs/**, **/*.test.ts"],
@@ -1338,6 +1433,7 @@ mod tests {
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &global_prompt(GlobalField::TagFormat, vec!["{name}@{version}"]),
         )
         .unwrap();
@@ -1346,6 +1442,7 @@ mod tests {
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &global_prompt(GlobalField::LegacyTagFormats, vec!["{name}@{version}"]),
         )
         .unwrap();
@@ -1354,6 +1451,7 @@ mod tests {
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &global_prompt(GlobalField::ChangelogScope, vec![]),
         )
         .unwrap();
@@ -1362,6 +1460,7 @@ mod tests {
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &global_prompt(GlobalField::ChangelogStrategy, vec![]),
         )
         .unwrap();
@@ -1370,6 +1469,7 @@ mod tests {
 
         orchestrate_with_prompt(
             tmp.path(),
+            &NoPackages,
             &global_prompt(GlobalField::GithubReleaseNotes, vec![]),
         )
         .unwrap();

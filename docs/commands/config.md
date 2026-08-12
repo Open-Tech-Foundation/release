@@ -24,6 +24,26 @@ to regenerate `.github/workflows/release.yml`. See [upgrade.md](./upgrade.md).
 - global settings: provider, snapshot tag, skip-publish packages, publish ignore paths, tag
   format, changelog scope/strategy, and GitHub Release notes.
 
+## Enabling an ecosystem configures its packages
+
+Confirming the *Ecosystems* menu reconciles `[[package]]` blocks with what the enabled adapters
+discover, and reports every change. A package that this repo releases but has no block gets one:
+with the build command its adapter detects (an npm package declaring `scripts.build` gets
+`command = "npm run build"`, and npm's own pack/publish lifecycle hooks are stripped so they cannot
+re-run the build behind the pipeline), or identity-only when its publish needs no build.
+
+Without this, enabling an ecosystem left a repo it could not release from — the packages were
+discovered but had no blocks, so no build step ran and there was nowhere to scope a per-package
+`tag_format`, which is what makes two independently versioned packages collide on one tag.
+
+Blocks that already exist are never rewritten: they hold decisions this cannot re-derive, such as a
+build matrix or a scoped tag format. Re-running is therefore a no-op. Removal is deliberately
+narrow — a block goes only when its ecosystem is switched off or the package moves into
+`skip_publish`, never merely because one discovery run came back without it, so a transiently empty
+discovery cannot delete a hand-tuned build matrix.
+
+Re-open *Ecosystems* and confirm after adding a package to the repo, to pick it up.
+
 Enabling **npm** for a repo that declares its members nowhere — neither a root `workspaces` field
 nor `pnpm-workspace.yaml` — scans for `package.json` files
 carrying a `name` and a `version`, lists them, and saves the ones you confirm to `[discovery] npm`

@@ -244,7 +244,15 @@ fn run() -> Result<()> {
             Ok(())
         }
         Command::Config => {
-            otf_release_core::config_cmd::orchestrate(&root)?;
+            // `config` edits an existing setup, so unlike `init` it reads the declaration that is
+            // already committed and hands it to the adapters.
+            let config = ReleaseConfig::load(&root)?;
+            let factory = CliAdapterFactory {
+                root: root.clone(),
+                generic: generic_pkgs(&config),
+                discovery: config.discovery.clone(),
+            };
+            otf_release_core::config_cmd::orchestrate(&root, &factory)?;
             Ok(())
         }
         Command::Matrix { package } => {

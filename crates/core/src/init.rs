@@ -621,27 +621,7 @@ pub fn orchestrate(
                 );
             }
             if let Some(command) = npm.build_command(pkg)? {
-                packages.push(PackageEntry {
-                    name: pkg.name.clone(),
-                    adapter: Ecosystem::Npm,
-                    mode: Mode::Publish,
-                    matrix: false,
-                    targets: Vec::new(),
-                    command,
-                    artifacts: String::new(),
-                    bin_name: None,
-                    compress: None,
-                    manifest: Some(rel_path(root, &pkg.manifest_path)),
-                    version_field: None,
-                    publish: None,
-                    archive: None,
-                    checksums: false,
-                    attest: false,
-                    executable: None,
-                    include: Vec::new(),
-                    tag_format: None,
-                    changelog: None,
-                });
+                packages.push(inline_build_entry(pkg, Ecosystem::Npm, command, root));
             }
         }
     }
@@ -1450,6 +1430,103 @@ fn render_publish_job(
     }
     s.push_str("          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     s.push('\n');
+}
+
+/// The `[[package]]` block for a package the tool builds inside its own publish job — the npm
+/// convention, where there is nothing to stage across jobs because npm packs the freshly built
+/// output on the same runner.
+fn inline_build_entry(pkg: &Pkg, adapter: Ecosystem, command: String, root: &Path) -> PackageEntry {
+    PackageEntry {
+        command,
+        ..publish_as_is_entry(pkg, adapter, root)
+    }
+}
+
+/// Bring `[[package]]` blocks in line with what the enabled adapters actually discover.
+///
+/// `init` writes a block for every package a repo releases, but `init` is a one-time setup. A repo
+/// changes afterwards — an ecosystem gets enabled, a package is added, one moves into
+/// `skip_publish` — and until this ran, `config` could enable npm and leave the repo in a state it
+/// could not release from: packages discovered, no blocks, so no build step and no per-package
+/// settings to scope. Enabling an ecosystem has to finish the job.
+///
+/// Blocks that already exist are **never** rewritten: they carry decisions this cannot re-derive (a
+/// build matrix, a scoped tag format). Removal is likewise deliberately narrow — a block goes only
+/// when its ecosystem is switched off or the package moves into `skip_publish`, never merely
+/// because a discovery run came back without it. A transiently empty discovery must not silently
+/// delete a hand-tuned build matrix.
+pub fn sync_package_blocks(
+    config: &mut ReleaseConfig,
+    factory: &dyn AdapterFactory,
+    root: &Path,
+) -> Result<PackageSync> {
+    let mut sync = PackageSync::default();
+
+    let enabled: Vec<Ecosystem> = config
+        .adapters
+        .iter()
+        .copied()
+        .filter(|eco| *eco != Ecosystem::Generic)
+        .collect();
+
+    for eco in enabled {
+        let adapter = factory.make_with_discovery(eco, &config.discovery);
+        for pkg in adapter.discover_packages()? {
+            if !pkg.publishable || config.skip_publish.contains(&pkg.name) {
+                continue;
+            }
+            if config.packages.iter().any(|entry| entry.name == pkg.name) {
+                continue;
+            }
+            let entry = match adapter.build_command(&pkg)? {
+                Some(command) => {
+                    // The pipeline owns the build, so npm's own pack/publish hooks must not
+                    // re-run it behind us — the same contract `init` establishes.
+                    sync.stripped_hooks.extend(
+                        adapter
+                            .strip_publish_hooks(&pkg)?
+                            .into_iter()
+                            .map(|hook| (pkg.name.clone(), hook)),
+                    );
+                    inline_build_entry(&pkg, eco, command, root)
+                }
+                None => publish_as_is_entry(&pkg, eco, root),
+            };
+            sync.added.push(entry.name.clone());
+            config.packages.push(entry);
+        }
+    }
+
+    config.packages.retain(|entry| {
+        let ecosystem_off =
+            entry.adapter != Ecosystem::Generic && !config.adapters.contains(&entry.adapter);
+        let skipped = config.skip_publish.contains(&entry.name);
+        if ecosystem_off || skipped {
+            sync.removed.push(entry.name.clone());
+            return false;
+        }
+        true
+    });
+
+    config.packages.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(sync)
+}
+
+/// What [`sync_package_blocks`] changed, for the caller to report.
+#[derive(Debug, Default, PartialEq)]
+pub struct PackageSync {
+    /// Packages that gained a block.
+    pub added: Vec<String>,
+    /// Packages whose block was dropped.
+    pub removed: Vec<String>,
+    /// `(package, hook)` pairs removed from a manifest so the pipeline owns the build.
+    pub stripped_hooks: Vec<(String, String)>,
+}
+
+impl PackageSync {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
 }
 
 /// The `[[package]]` block for a package its adapter publishes as-is — no build step, nothing to
@@ -3431,6 +3508,102 @@ pub(crate) mod tests {
         assert_eq!(
             installs, pins,
             "every install step needs a version pin; {installs} steps, {pins} pins:\n{out}"
+        );
+    }
+
+    /// The ES-Runtime complaint: `config` enabled npm, and the repo was left unreleasable — the
+    /// packages were discovered but had no `[[package]]` blocks, so no build step ran and there was
+    /// nowhere to scope a tag format. Enabling an ecosystem must finish the job.
+    #[test]
+    fn syncing_blocks_configures_every_discovered_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let factory = FakeFactory {
+            packages: vec![
+                npm_pkg("@scope/postgres", "packages/postgres/package.json"),
+                npm_pkg("@scope/types", "packages/types/package.json"),
+                pkg("internal-lib", true),
+            ],
+        };
+        // The half-configured state `config` used to leave behind: npm enabled, members declared,
+        // not one block.
+        let mut config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            discovery: crate::config::Discovery {
+                npm: vec!["packages/*".to_string()],
+            },
+            skip_publish: vec!["internal-lib".to_string()],
+            ..ReleaseConfig::default()
+        };
+
+        let sync = sync_package_blocks(&mut config, &factory, tmp.path()).unwrap();
+
+        assert_eq!(sync.added, vec!["@scope/postgres", "@scope/types"]);
+        assert!(sync.removed.is_empty());
+        // `skip_publish` is never released, so it gets no block.
+        assert!(config.package("internal-lib").is_none());
+
+        // FakeAdapter models a package.json with a `build` script, so both get an inline build —
+        // the thing whose absence published an unbuilt `dist/`.
+        let postgres = config.package("@scope/postgres").unwrap();
+        assert_eq!(postgres.command, "npm run build");
+        assert_eq!(postgres.adapter, Ecosystem::Npm);
+        assert_eq!(postgres.mode, Mode::Publish);
+        assert_eq!(
+            postgres.manifest.as_deref(),
+            Some("packages/postgres/package.json")
+        );
+
+        // Running it again is a no-op: an existing block is never rewritten.
+        let mut edited = config.clone();
+        edited.packages.iter_mut().for_each(|p| {
+            p.tag_format = Some("{name}@{version}".to_string());
+        });
+        let again = sync_package_blocks(&mut edited, &factory, tmp.path()).unwrap();
+        assert!(again.is_empty(), "{again:?}");
+        assert_eq!(
+            edited
+                .package("@scope/postgres")
+                .unwrap()
+                .tag_format
+                .as_deref(),
+            Some("{name}@{version}"),
+            "a scoped setting must survive a re-sync"
+        );
+    }
+
+    /// Removal is narrow on purpose: switching an ecosystem off drops its blocks, but a discovery
+    /// run that comes back empty must never delete a hand-tuned build matrix.
+    #[test]
+    fn syncing_drops_blocks_only_when_the_repo_stops_releasing_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            packages: vec![
+                cargo_build_only("es-runtime-cli"),
+                PackageEntry {
+                    manifest: Some("packages/postgres/package.json".to_string()),
+                    ..npm_publish("@scope/postgres")
+                },
+            ],
+            ..ReleaseConfig::default()
+        };
+
+        // npm is no longer enabled, and cargo discovers nothing this run.
+        let sync = sync_package_blocks(
+            &mut config,
+            &FakeFactory {
+                packages: Vec::new(),
+            },
+            tmp.path(),
+        )
+        .unwrap();
+
+        assert_eq!(sync.removed, vec!["@scope/postgres"]);
+        // The build-only binary keeps its block — and its targets — despite discovering nothing.
+        let cli = config.package("es-runtime-cli").unwrap();
+        assert!(
+            !cli.targets.is_empty(),
+            "a build matrix must not be dropped"
         );
     }
 

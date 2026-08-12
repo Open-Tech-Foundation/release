@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Fixed
+
+- **`config` could enable an ecosystem and leave a repo it could not release from.** `[discovery]`
+  was written and the packages were discovered, but not one of them got a `[[package]]` block — so
+  a package whose publish needs a build got no build step (npm packed an unbuilt `dist/`), and
+  there was nowhere to scope a per-package `tag_format`, which is what keeps two independently
+  versioned packages off one tag. Finishing the setup needed `init`, which rewrites the whole file
+  and re-asks every question.
+
+  Confirming *Ecosystems* now reconciles the blocks with what the adapters discover and reports
+  what changed: a released package with no block gets one, carrying the build command its adapter
+  detects (with npm's pack/publish hooks stripped, as `init` does) or identity only. Existing
+  blocks are never rewritten, so a build matrix or a scoped tag format survives, and re-running is
+  a no-op. A block is removed only when its ecosystem is switched off or the package moves into
+  `skip_publish` — never because a single discovery run came back empty.
+
 ## [0.32.0] - 2026-08-12
 
 ### Added
