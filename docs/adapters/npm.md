@@ -53,6 +53,15 @@ a false positive there means a published package or a pushed tag.
 Repos that *do* declare their members — `workspaces` or `pnpm-workspace.yaml` — are left alone:
 `[discovery]` stays absent, and the repo's own declaration remains the single source of truth.
 
+### Installing dependencies in CI
+
+A root workspace installs once at the root: one lockfile, every member resolving through it. A repo
+declaring `[discovery] npm` has no root workspace to install — there is no root `package.json` —
+so the generated workflow installs **each package in its own directory**, with the package manager
+that package's own lockfile implies (`bun.lock` → `bun install --frozen-lockfile`, and so on). Two
+packages in one repo may therefore use different package managers. The catch-all publish job builds
+nothing, so it installs nothing and only sets up node to reach the registry.
+
 ## Cascade rule (`dependent_bump`)
 
 ```

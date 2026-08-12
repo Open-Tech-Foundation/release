@@ -136,6 +136,100 @@ impl NpmTool {
     }
 }
 
+/// Where the generated workflow installs npm dependencies.
+///
+/// A repo whose members come from a root `workspaces` field (or `pnpm-workspace.yaml`) installs
+/// once at the root: that is the one lockfile, and every member resolves through it.
+///
+/// A repo that declares its members in `[discovery] npm` has no root workspace *by construction* —
+/// that table exists precisely for a polyglot repo whose root belongs to another ecosystem and has
+/// no root `package.json` at all. A root install there has nothing to install from: `npm ci` fails
+/// outright ("can only install with an existing package-lock.json") and takes every npm job with
+/// it, before a single package is built or published. Those packages install in their own
+/// directories instead, each with the tool its own lockfile implies — which is also the only way to
+/// get it right when two packages in one repo use different package managers.
+#[derive(Debug, Clone)]
+struct NpmInstall {
+    /// The root workspace's tool, or `None` when the repo declares no root workspace.
+    root: Option<NpmTool>,
+    /// Tool per package name, detected from that package's own directory. Only consulted when
+    /// `root` is `None`.
+    per_package: HashMap<String, NpmTool>,
+}
+
+impl NpmInstall {
+    /// One root workspace, one install.
+    fn rooted(tool: NpmTool) -> Self {
+        Self {
+            root: Some(tool),
+            per_package: HashMap::new(),
+        }
+    }
+
+    fn detect(config: &ReleaseConfig, root: &Path) -> Self {
+        if config.discovery.npm.is_empty() {
+            return Self::rooted(NpmTool::detect(root));
+        }
+        let per_package = config
+            .packages
+            .iter()
+            .filter(|entry| entry.adapter == Ecosystem::Npm)
+            .map(|entry| {
+                let dir = match package_workdir(entry) {
+                    Some(dir) => root.join(dir),
+                    None => root.to_path_buf(),
+                };
+                (entry.name.clone(), NpmTool::detect(&dir))
+            })
+            .collect();
+        Self {
+            root: None,
+            per_package,
+        }
+    }
+
+    /// The tool whose setup action a job needs. `entry` is the package the job serves; `None` is
+    /// the catch-all publish job, which shells out to `npm publish` and so needs only node.
+    fn setup_tool(&self, entry: Option<&PackageEntry>) -> NpmTool {
+        match (self.root, entry) {
+            (Some(tool), _) => tool,
+            (None, Some(entry)) => self.tool_for(entry),
+            (None, None) => NpmTool::Npm,
+        }
+    }
+
+    fn tool_for(&self, entry: &PackageEntry) -> NpmTool {
+        self.per_package
+            .get(&entry.name)
+            .copied()
+            .unwrap_or(NpmTool::Npm)
+    }
+
+    /// Emit the dependency-install step for a job, if it needs one.
+    fn push_install(&self, s: &mut String, entry: Option<&PackageEntry>) {
+        match (self.root, entry) {
+            (Some(tool), _) => {
+                s.push_str(&format!("      - run: {}\n", tool.install_command()));
+            }
+            (None, Some(entry)) => {
+                s.push_str(&format!(
+                    "      - run: {}\n",
+                    self.tool_for(entry).install_command()
+                ));
+                // `None` means the manifest is at the repo root, where no `working-directory` is
+                // needed — or that the entry records no manifest, in which case the root is the
+                // only guess available.
+                if let Some(dir) = package_workdir(entry) {
+                    s.push_str(&format!("        working-directory: {dir}\n"));
+                }
+            }
+            // The catch-all job publishes only packages with no build step of their own, so with no
+            // root workspace to install there is nothing an install could do for it.
+            (None, None) => {}
+        }
+    }
+}
+
 /// Options for an `init` run.
 #[derive(Debug, Clone, Default)]
 pub struct InitOptions {
@@ -912,10 +1006,14 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
 }
 
 pub(crate) fn render_workflow_for_root(config: &ReleaseConfig, root: &Path) -> String {
-    render_workflow_with_npm_tool(config, NpmTool::detect(root))
+    render_workflow_with_npm_install(config, &NpmInstall::detect(config, root))
 }
 
 fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> String {
+    render_workflow_with_npm_install(config, &NpmInstall::rooted(npm_tool))
+}
+
+fn render_workflow_with_npm_install(config: &ReleaseConfig, npm: &NpmInstall) -> String {
     let pin = workflow_pin(config);
     let any_build_only = config.packages.iter().any(|p| p.is_build_only());
     let npm_enabled = config.adapters.contains(&Ecosystem::Npm);
@@ -964,7 +1062,7 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
         .iter()
         .filter(|p| has_build(p) && !p.builds_inline())
     {
-        render_build_job(&mut s, entry, npm_tool, &pin);
+        render_build_job(&mut s, entry, npm, &pin);
     }
 
     for entry in config
@@ -972,7 +1070,7 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
         .iter()
         .filter(|p| p.is_publish() && has_build(p))
     {
-        render_package_publish_job(&mut s, entry, npm_tool, &pin);
+        render_package_publish_job(&mut s, entry, npm, &pin);
     }
 
     if needs_publish {
@@ -984,7 +1082,7 @@ fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> S
                 jsr: jsr_publishes,
                 generic: generic_publishes,
             },
-            npm_tool,
+            npm,
             &config
                 .packages
                 .iter()
@@ -1022,11 +1120,11 @@ fn rel_path(root: &Path, path: &Path) -> String {
 }
 
 /// One build job: matrix or single runner, runs the package's command, uploads its artifacts.
-fn render_build_job(s: &mut String, entry: &PackageEntry, npm_tool: NpmTool, pin: &str) {
+fn render_build_job(s: &mut String, entry: &PackageEntry, npm: &NpmInstall, pin: &str) {
     if entry.matrix {
-        render_matrix_build_jobs(s, entry, npm_tool, pin);
+        render_matrix_build_jobs(s, entry, npm, pin);
     } else {
-        render_single_build_job(s, entry, npm_tool);
+        render_single_build_job(s, entry, npm);
     }
 }
 
@@ -1109,7 +1207,7 @@ fn render_vm_build_step(s: &mut String, entry: &PackageEntry, os: &str, rust: bo
 /// job that fans out over `fromJSON(...)` and calls `otf-release build` per target. The tool — not
 /// hand-written YAML — owns the triple/runner/cross/stage_as reconciliation, so there are no
 /// `# edit me` markers.
-fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmTool, pin: &str) {
+fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm: &NpmInstall, pin: &str) {
     let name = &entry.name;
     let art_slug = slug(name);
     let matrix_job = format!("matrix-{art_slug}");
@@ -1171,8 +1269,8 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmT
         s.push_str("        with:\n          targets: ${{ matrix.triple }}\n");
     }
     if node {
-        npm_tool.setup_node(s, false);
-        s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
+        npm.setup_tool(Some(entry)).setup_node(s, false);
+        npm.push_install(s, Some(entry));
     }
     push_install_otf_release_cross_platform(s, pin);
     s.push_str(&format!("      - name: Build {name}\n"));
@@ -1204,7 +1302,7 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm_tool: NpmT
 }
 
 /// A non-matrix package builds on one runner with its plain command.
-fn render_single_build_job(s: &mut String, entry: &PackageEntry, npm_tool: NpmTool) {
+fn render_single_build_job(s: &mut String, entry: &PackageEntry, npm: &NpmInstall) {
     let job = build_job(&entry.name);
     let art_slug = slug(&entry.name);
     s.push_str(&format!("  {job}:\n"));
@@ -1221,8 +1319,8 @@ fn render_single_build_job(s: &mut String, entry: &PackageEntry, npm_tool: NpmTo
             s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
         }
         Ecosystem::Npm => {
-            npm_tool.setup_node(s, false);
-            s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
+            npm.setup_tool(Some(entry)).setup_node(s, false);
+            npm.push_install(s, Some(entry));
         }
         Ecosystem::Jsr => {
             s.push_str("      - uses: denoland/setup-deno@v1\n");
@@ -1276,11 +1374,11 @@ struct PublishEcosystems {
 fn render_publish_job(
     s: &mut String,
     eco: &PublishEcosystems,
-    npm_tool: NpmTool,
+    npm: &NpmInstall,
     excluded_packages: &[&str],
     pin: &str,
 ) {
-    let (npm, cargo, jsr, generic) = (eco.npm, eco.cargo, eco.jsr, eco.generic);
+    let (npm_enabled, cargo, jsr, generic) = (eco.npm, eco.cargo, eco.jsr, eco.generic);
     s.push_str("  publish:\n");
     // Each excluded package has its own `publish-<pkg>` job (it needs a build). The catch-all
     // publishes everything else — including dependents that pin an *exact* version of one of those
@@ -1315,8 +1413,8 @@ fn render_publish_job(
     s.push_str("    runs-on: ubuntu-latest\n");
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
-    if npm {
-        npm_tool.setup_node(s, true);
+    if npm_enabled {
+        npm.setup_tool(None).setup_node(s, true);
     }
     if cargo {
         s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
@@ -1327,8 +1425,8 @@ fn render_publish_job(
     if generic {
         s.push_str("      # edit me: set up the toolchain your generic publish command needs\n");
     }
-    if npm {
-        s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
+    if npm_enabled {
+        npm.push_install(s, None);
     }
     push_install_otf_release(s, pin);
     s.push_str("      - name: Publish\n");
@@ -1338,7 +1436,7 @@ fn render_publish_job(
     }
     s.push('\n');
     s.push_str("        env:\n");
-    if npm {
+    if npm_enabled {
         s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n");
     }
     if cargo {
@@ -1399,7 +1497,7 @@ fn package_workdir(entry: &PackageEntry) -> Option<String> {
 }
 
 /// Publish one configured build package after, and only after, its own build succeeds.
-fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm_tool: NpmTool, pin: &str) {
+fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm: &NpmInstall, pin: &str) {
     let name = &entry.name;
     let slug = slug(name);
     let inline = entry.builds_inline();
@@ -1421,7 +1519,7 @@ fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm_tool: Np
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
     match entry.adapter {
-        Ecosystem::Npm => npm_tool.setup_node(s, true),
+        Ecosystem::Npm => npm.setup_tool(Some(entry)).setup_node(s, true),
         Ecosystem::Cargo => s.push_str("      - uses: dtolnay/rust-toolchain@stable\n"),
         Ecosystem::Jsr => s.push_str("      - uses: denoland/setup-deno@v1\n"),
         Ecosystem::Generic => {}
@@ -1430,7 +1528,7 @@ fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm_tool: Np
         // The tool owns the build: install, run the package's build command in its own directory,
         // then publish. npm packs the freshly built output from this same runner — no artifact
         // upload/download, and npm's own pack/publish lifecycle hooks were stripped at init time.
-        s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
+        npm.push_install(s, Some(entry));
         s.push_str(&format!("      - name: Build {name}\n"));
         s.push_str(&format!("        run: {}\n", entry.command));
         if let Some(dir) = package_workdir(entry) {
@@ -1448,7 +1546,7 @@ fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm_tool: Np
             s.push_str("          path: .artifacts\n");
         }
         if entry.adapter == Ecosystem::Npm {
-            s.push_str(&format!("      - run: {}\n", npm_tool.install_command()));
+            npm.push_install(s, Some(entry));
         }
     }
     push_install_otf_release(s, pin);
@@ -3333,6 +3431,93 @@ pub(crate) mod tests {
         assert_eq!(
             installs, pins,
             "every install step needs a version pin; {installs} steps, {pins} pins:\n{out}"
+        );
+    }
+
+    /// A repo that declares its npm members in `[discovery] npm` has no root `package.json` — that
+    /// is what the table is for. Installing at the root there fails outright and takes every npm
+    /// job with it, so each package installs in its own directory instead.
+    #[test]
+    fn a_repo_with_no_root_workspace_installs_per_package_not_at_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Two npm packages, each with its own lockfile and a different package manager — which a
+        // single repo-root detection cannot represent either.
+        std::fs::create_dir_all(tmp.path().join("packages/postgres")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("packages/types")).unwrap();
+        std::fs::write(tmp.path().join("packages/postgres/bun.lock"), "{}").unwrap();
+        std::fs::write(tmp.path().join("packages/types/pnpm-lock.yaml"), "").unwrap();
+
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            discovery: crate::config::Discovery {
+                npm: vec!["packages/*".to_string()],
+            },
+            packages: vec![
+                PackageEntry {
+                    command: "npm run build".to_string(),
+                    manifest: Some("packages/postgres/package.json".to_string()),
+                    ..npm_publish("@scope/postgres")
+                },
+                // No build step: it rides the catch-all publish job.
+                PackageEntry {
+                    command: String::new(),
+                    manifest: Some("packages/types/package.json".to_string()),
+                    ..npm_publish("@scope/types")
+                },
+            ],
+            ..ReleaseConfig::default()
+        };
+
+        let out = render_workflow_for_root(&config, tmp.path());
+
+        // Nothing installs at the repo root — there is no manifest there to install from.
+        assert!(!out.contains("      - run: npm ci\n"), "{out}");
+        // Each package installs in its own directory, with its own lockfile's tool.
+        assert!(
+            out.contains(
+                "      - run: bun install --frozen-lockfile\n        working-directory: packages/postgres\n"
+            ),
+            "{out}"
+        );
+        // The catch-all publish job builds nothing, so it installs nothing.
+        let catch_all = out.split("  publish:\n").nth(1).unwrap();
+        assert!(!catch_all.contains("- run: bun install"), "{catch_all}");
+        assert!(!catch_all.contains("- run: pnpm install"), "{catch_all}");
+        assert!(
+            catch_all.contains("registry-url: https://registry.npmjs.org"),
+            "{catch_all}"
+        );
+    }
+
+    /// The ordinary case is untouched: one root workspace, one install, at the root.
+    #[test]
+    fn a_root_workspace_still_installs_once_at_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("pnpm-lock.yaml"), "").unwrap();
+
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            packages: vec![PackageEntry {
+                command: "npm run build".to_string(),
+                manifest: Some("packages/web/package.json".to_string()),
+                ..npm_publish("@scope/web")
+            }],
+            ..ReleaseConfig::default()
+        };
+
+        let out = render_workflow_for_root(&config, tmp.path());
+        // Installed at the root: the step carries no `working-directory` of its own — the build
+        // step right after it is the only thing scoped to the package directory.
+        assert!(
+            out.contains(
+                "      - run: pnpm install --frozen-lockfile\n      - name: Build @scope/web\n        run: npm run build\n        working-directory: packages/web\n"
+            ),
+            "{out}"
         );
     }
 

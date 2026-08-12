@@ -42,6 +42,16 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ### Fixed
 
+- **A repo with no root `package.json` generated a workflow that installed at the root and failed
+  immediately.** Every npm job ran `npm ci` in the repo root, but a repo that declares its members
+  in `[discovery] npm` has no root `package.json` *by construction* — that table exists for a
+  polyglot repo whose root belongs to another ecosystem. `npm ci` there fails with "can only
+  install with an existing package-lock.json", so no package was ever built or published. Such a
+  repo now installs each package in its own directory, with the tool that package's own lockfile
+  implies — which also fixes a repo whose packages use different package managers, something one
+  repo-root detection could not express. The catch-all publish job, which builds nothing, installs
+  nothing. A repo with a real root workspace is unchanged: one install, at the root.
+
 - **A package with a `[[package]]` block but no build step was gated out of every release path.**
   The generated `check-release` job emitted a `release_<pkg>` output and an `--exclude-package` for
   *every* block, but build and publish jobs are only generated for a package that has a build
