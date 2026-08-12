@@ -1118,6 +1118,87 @@ mod tests {
         assert_eq!(cfg.packages[0].publish.as_deref(), Some("npx jsr publish"));
     }
 
+    /// `config` reflects what is in the file; it never re-enables an ecosystem you removed. And
+    /// disabling npm takes its `[discovery]` list with it, so a stale member list cannot linger and
+    /// silently come back the next time npm is switched on.
+    #[test]
+    fn disabling_npm_keeps_it_disabled_and_clears_its_discovery_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = config();
+        cfg.adapters = vec![Ecosystem::Npm, Ecosystem::Cargo];
+        cfg.discovery.npm = vec![
+            "packages/postgres".to_string(),
+            "packages/redis".to_string(),
+        ];
+        cfg.save(tmp.path()).unwrap();
+
+        // A prompt that confirms whatever is already enabled, minus npm — i.e. the user unchecks
+        // npm and presses enter.
+        struct KeepMinusNpm;
+        impl ConfigPrompt for KeepMinusNpm {
+            fn action(&self) -> Result<ConfigAction> {
+                Ok(ConfigAction::Ecosystems)
+            }
+            fn ecosystems(&self, current: &[Ecosystem]) -> Result<Vec<Ecosystem>> {
+                Ok(current
+                    .iter()
+                    .copied()
+                    .filter(|e| *e != Ecosystem::Npm)
+                    .collect())
+            }
+            fn npm_packages(&self, _: &[GenericCandidate], _: &[usize]) -> Result<Vec<usize>> {
+                panic!("npm is disabled — discovery must not be asked about");
+            }
+            fn hook_stage(&self) -> Result<HookStage> {
+                unreachable!()
+            }
+            fn package<'a>(&self, _: &'a [PackageEntry]) -> Result<Option<&'a str>> {
+                unreachable!()
+            }
+            fn package_field(&self, _: &PackageEntry) -> Result<PackageField> {
+                unreachable!()
+            }
+            fn mode(&self, _: Mode) -> Result<Mode> {
+                unreachable!()
+            }
+            fn global_field(&self) -> Result<GlobalField> {
+                unreachable!()
+            }
+            fn changelog_scope(&self, _: &ChangelogScope) -> Result<ChangelogScope> {
+                unreachable!()
+            }
+            fn changelog_strategy(&self, _: &ChangelogStrategy) -> Result<ChangelogStrategy> {
+                unreachable!()
+            }
+            fn github_release_notes(&self, _: &GithubReleaseNotes) -> Result<GithubReleaseNotes> {
+                unreachable!()
+            }
+            fn tag_format(&self, _: &str) -> Result<String> {
+                unreachable!()
+            }
+            fn targets(&self, _: &[Target]) -> Result<Vec<Target>> {
+                unreachable!()
+            }
+            fn toggle(&self, _: &str, _: &str, _: bool) -> Result<bool> {
+                unreachable!()
+            }
+            fn text(&self, _: &str, _: &str) -> Result<String> {
+                unreachable!()
+            }
+        }
+
+        // One pass, then the loop is broken by the error the second `action()` would raise; run the
+        // single edit directly instead so the test does not depend on loop control flow.
+        let mut loaded = ReleaseConfig::load(tmp.path()).unwrap();
+        loaded.adapters = KeepMinusNpm.ecosystems(&loaded.adapters).unwrap();
+        edit_npm_discovery(tmp.path(), &KeepMinusNpm, &mut loaded).unwrap();
+        loaded.save(tmp.path()).unwrap();
+
+        let back = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(back.adapters, vec![Ecosystem::Cargo]);
+        assert!(back.discovery.npm.is_empty(), "{:?}", back.discovery.npm);
+    }
+
     #[test]
     fn scopes_and_clears_a_packages_tag_format_and_changelog() {
         let tmp = tempfile::tempdir().unwrap();
