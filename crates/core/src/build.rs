@@ -324,6 +324,7 @@ mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            provenance: false,
             executable: None,
             include: Vec::new(),
         };

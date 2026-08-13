@@ -8,7 +8,23 @@ use crate::graph::Graph;
 use crate::publish;
 use crate::ui;
 
-pub fn run(adapter: &dyn Adapter, root: &Path, config: &ReleaseConfig) -> Result<()> {
+/// Options for a snapshot run.
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotOptions {
+    /// Print the versions this run would publish and stop, writing nothing.
+    ///
+    /// Snapshot rewrites every manifest and the lockfile in place with no restore. On an ephemeral
+    /// runner that is harmless; run once in a working tree to see what it does and it leaves the
+    /// tree rewritten. This is the way to look first.
+    pub dry_run: bool,
+}
+
+pub fn run(
+    adapter: &dyn Adapter,
+    root: &Path,
+    config: &ReleaseConfig,
+    opts: &SnapshotOptions,
+) -> Result<()> {
     let tag = config.snapshot_tag.as_deref().unwrap_or("snapshot");
 
     // 1. Get the current short git hash
@@ -34,6 +50,20 @@ pub fn run(adapter: &dyn Adapter, root: &Path, config: &ReleaseConfig) -> Result
 
     if new_versions.is_empty() {
         ui::warn("No publishable packages found for snapshot.");
+        return Ok(());
+    }
+
+    if opts.dry_run {
+        ui::info(&format!(
+            "Would publish {} snapshot version(s):",
+            new_versions.len()
+        ));
+        let mut names: Vec<&String> = new_versions.keys().collect();
+        names.sort();
+        for name in names {
+            ui::detail(&format!("{name}@{}", new_versions[name]));
+        }
+        ui::detail("no git tag and no GitHub Release: snapshots ship to the registry only");
         return Ok(());
     }
 

@@ -263,6 +263,7 @@ fn dry_run_prints_the_plan_and_writes_nothing() {
         "2026-06-24",
         &VersionOptions {
             dry_run: true,
+            exclude_packages: Vec::new(),
             skip_pr: false,
         },
         &ReleaseConfig {

@@ -43,6 +43,7 @@ Severity is about **consequence**, not confidence.
 | `old-tool-pin` | suggestion | CI builds with an older tool than the binary you are running locally. |
 | `no-checksums` | suggestion | A build-only package ships assets with no `checksums.txt`, so a download cannot be verified as intact. |
 | `no-attestation` | suggestion | A build-only package ships assets with no signed provenance. A checksum can be replaced by whoever replaced the asset; an attestation cannot. |
+| `stale-workflow` | error | `.github/workflows/release.yml` has no job for a configured package. It will be versioned and tagged, then build nothing. Run `otf-release upgrade --force`. |
 | `shared-legacy-tag-format` | warning | A repo-wide `legacy_tag_formats` entry has no `{name}` while several packages are released, so every package reads the same release history. |
 | `empty-ignore-paths` | suggestion | One or more `publish.ignore_paths` entries have an empty glob list, which does nothing. Reported once for all of them. |
 

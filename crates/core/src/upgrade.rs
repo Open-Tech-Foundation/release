@@ -63,6 +63,7 @@ mod tests {
             skip_publish: Vec::new(),
             hooks: Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             packages: vec![PackageEntry {
                 name: "docs-site".to_string(),
                 adapter: Ecosystem::Npm,
@@ -79,6 +80,7 @@ mod tests {
                 archive: None,
                 checksums: false,
                 attest: false,
+                provenance: false,
                 executable: None,
                 tag_format: None,
                 legacy_tag_formats: Vec::new(),
@@ -100,7 +102,8 @@ mod tests {
 
         let workflow =
             fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
-        assert!(workflow.contains("permissions:\n  contents: write  # create tags and GitHub Releases\n  id-token: write\n"));
+        assert!(workflow
+            .contains("permissions:\n  contents: write  # create tags and GitHub Releases\n"));
         assert!(workflow.contains("      - uses: oven-sh/setup-bun@v2\n"));
         assert!(workflow.contains("      - run: bun install --frozen-lockfile\n"));
         assert!(!workflow.contains("      - run: npm ci\n"));
@@ -119,6 +122,7 @@ mod tests {
             skip_publish: Vec::new(),
             hooks: Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             packages: vec![PackageEntry {
                 name: "@opentf/web-compiler".to_string(),
                 adapter: Ecosystem::Npm,
@@ -135,6 +139,7 @@ mod tests {
                 archive: None,
                 checksums: false,
                 attest: false,
+                provenance: false,
                 executable: None,
                 tag_format: None,
                 legacy_tag_formats: Vec::new(),

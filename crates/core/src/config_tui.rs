@@ -1450,6 +1450,7 @@ mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            provenance: false,
             executable: None,
             include: Vec::new(),
             tag_format: None,
@@ -1464,6 +1465,7 @@ mod tests {
             tag_format: "v{version}".into(),
             skip_publish: vec!["internal".into()],
             publish: PublishConfig::default(),
+            secrets: Default::default(),
             packages: vec![pkg("@x/sdk", Ecosystem::Npm, Mode::Publish)],
             ..ReleaseConfig::default()
         }

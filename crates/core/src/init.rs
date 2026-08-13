@@ -60,6 +60,22 @@ fn install_version_env(indent: &str, pin: &str) -> String {
 ///
 /// A bare `0.25.0` is normalized to `v0.25.0` — this repo's tag format — so a value copied from a
 /// `Cargo.toml` rather than a tag list still resolves instead of 404ing at install time.
+/// `NODE_AUTH_TOKEN: ${{ secrets.<configured name> }}` — the env line npm publishing needs.
+fn npm_auth_env(config: &ReleaseConfig) -> String {
+    format!(
+        "          NODE_AUTH_TOKEN: ${{{{ secrets.{} }}}}\n",
+        config.secrets.npm
+    )
+}
+
+/// The same for crates.io.
+fn cargo_auth_env(config: &ReleaseConfig) -> String {
+    format!(
+        "          CARGO_REGISTRY_TOKEN: ${{{{ secrets.{} }}}}\n",
+        config.secrets.cargo
+    )
+}
+
 fn workflow_pin(config: &ReleaseConfig) -> String {
     match config.otf_release_version.as_deref() {
         Some(v) if v.starts_with('v') => v.to_string(),
@@ -682,6 +698,7 @@ pub fn orchestrate(
                 archive: None,
                 checksums: false,
                 attest: false,
+                provenance: false,
                 executable: None,
                 include: Vec::new(),
                 tag_format: None,
@@ -766,6 +783,7 @@ pub fn orchestrate(
         publish: crate::config::PublishConfig {
             ignore_paths: publish_ignore_paths_seed(&publishable, &packages, &ecosystem_of),
         },
+        secrets: crate::config::Secrets::default(),
         discovery,
         adapters: enabled,
         skip_publish,
@@ -815,7 +833,11 @@ fn build_job(name: &str) -> String {
 }
 
 /// Lowercase a package name into a job/artifact-safe slug (`@x/cli` → `x-cli`).
-fn slug(name: &str) -> String {
+/// The job-name form of a package name: lowercase alphanumerics, everything else a single dash.
+///
+/// Load-bearing beyond codegen — `doctor` reconstructs the job names it expects to find in the
+/// generated workflow, so both sides must agree on this exactly.
+pub(crate) fn slug(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars() {
         if c.is_ascii_alphanumeric() {
@@ -991,10 +1013,10 @@ fn render_snapshot_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmT
     s.push_str("      - name: Snapshot Release\n");
     s.push_str("        env:\n");
     if config.adapters.contains(&Ecosystem::Cargo) {
-        s.push_str("          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n");
+        s.push_str(&cargo_auth_env(config));
     }
     if config.adapters.contains(&Ecosystem::Npm) {
-        s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n");
+        s.push_str(&npm_auth_env(config));
     }
     s.push_str("        run: otf-release snapshot\n");
     s
@@ -1074,7 +1096,14 @@ fn render_workflow_with_npm_install(config: &ReleaseConfig, npm: &NpmInstall) ->
             .packages
             .iter()
             .any(|p| p.is_build_only() && p.attest);
-        if npm_enabled || jsr_publishes || attests {
+        // OIDC is only needed by something that actually signs: JSR authenticates with it, and
+        // provenance (npm's `--provenance`, or the attestation step for release assets) is signed
+        // with it. Enabling npm alone used to request the scope and never use it.
+        let npm_provenance = config
+            .packages
+            .iter()
+            .any(|p| p.adapter == Ecosystem::Npm && p.provenance);
+        if jsr_publishes || attests || npm_provenance {
             s.push_str("  id-token: write\n");
         }
         if attests {
@@ -1106,12 +1135,13 @@ fn render_workflow_with_npm_install(config: &ReleaseConfig, npm: &NpmInstall) ->
         .iter()
         .filter(|p| p.is_publish() && has_build(p))
     {
-        render_package_publish_job(&mut s, entry, npm, &pin);
+        render_package_publish_job(&mut s, config, entry, npm, &pin);
     }
 
     if needs_publish {
         render_publish_job(
             &mut s,
+            config,
             &PublishEcosystems {
                 npm: npm_enabled,
                 cargo: cargo_publishes,
@@ -1409,6 +1439,7 @@ struct PublishEcosystems {
 
 fn render_publish_job(
     s: &mut String,
+    config: &ReleaseConfig,
     eco: &PublishEcosystems,
     npm: &NpmInstall,
     excluded_packages: &[&str],
@@ -1473,10 +1504,10 @@ fn render_publish_job(
     s.push('\n');
     s.push_str("        env:\n");
     if npm_enabled {
-        s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n");
+        s.push_str(&npm_auth_env(config));
     }
     if cargo {
-        s.push_str("          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n");
+        s.push_str(&cargo_auth_env(config));
     }
     if jsr {
         s.push_str("          JSR_TOKEN: ${{ secrets.JSR_TOKEN }}\n");
@@ -1659,6 +1690,7 @@ fn publish_as_is_entry(pkg: &Pkg, adapter: Ecosystem, root: &Path) -> PackageEnt
         archive: None,
         checksums: false,
         attest: false,
+        provenance: false,
         include: Vec::new(),
         executable: None,
         tag_format: None,
@@ -1679,7 +1711,13 @@ fn package_workdir(entry: &PackageEntry) -> Option<String> {
 }
 
 /// Publish one configured build package after, and only after, its own build succeeds.
-fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm: &NpmInstall, pin: &str) {
+fn render_package_publish_job(
+    s: &mut String,
+    config: &ReleaseConfig,
+    entry: &PackageEntry,
+    npm: &NpmInstall,
+    pin: &str,
+) {
     let name = &entry.name;
     let slug = slug(name);
     let inline = entry.builds_inline();
@@ -1744,10 +1782,8 @@ fn render_package_publish_job(s: &mut String, entry: &PackageEntry, npm: &NpmIns
     }
     s.push_str("        env:\n");
     match entry.adapter {
-        Ecosystem::Npm => s.push_str("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n"),
-        Ecosystem::Cargo => {
-            s.push_str("          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}\n")
-        }
+        Ecosystem::Npm => s.push_str(&npm_auth_env(config)),
+        Ecosystem::Cargo => s.push_str(&cargo_auth_env(config)),
         Ecosystem::Jsr => s.push_str("          JSR_TOKEN: ${{ secrets.JSR_TOKEN }}\n"),
         Ecosystem::Generic => {}
     }
@@ -1980,6 +2016,7 @@ fn configure_generic(
         archive,
         checksums,
         attest,
+        provenance: false,
         include,
         executable: None,
         tag_format: None,
@@ -2218,6 +2255,7 @@ impl InitPrompt for StdinInitPrompt {
             archive: None,
             checksums: false,
             attest: false,
+            provenance: false,
             executable: None,
             include: Vec::new(),
             tag_format: None,
@@ -2624,6 +2662,7 @@ pub(crate) mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            provenance: false,
             executable: None,
             include: Vec::new(),
             tag_format: None,
@@ -2649,6 +2688,7 @@ pub(crate) mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            provenance: false,
             executable: None,
             include: Vec::new(),
             tag_format: None,
@@ -2678,6 +2718,7 @@ pub(crate) mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            provenance: false,
             executable: None,
             include: Vec::new(),
             tag_format: None,
@@ -2691,6 +2732,27 @@ pub(crate) mod tests {
         assert_eq!(slug("@x/cli"), "x-cli");
         assert_eq!(slug("opentf-release"), "opentf-release");
         assert_eq!(slug("web_compiler"), "web-compiler");
+    }
+
+    /// Provenance is what makes the OIDC scope necessary — and what the scope was being granted
+    /// for before anything used it.
+    #[test]
+    fn npm_provenance_grants_the_oidc_scope_and_passes_the_flag() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            packages: vec![PackageEntry {
+                name: "@x/sdk".into(),
+                adapter: Ecosystem::Npm,
+                mode: Mode::Publish,
+                matrix: false,
+                targets: Vec::new(),
+                provenance: true,
+                ..cargo_build_only("@x/sdk")
+            }],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+        assert!(out.contains("  id-token: write\n"), "{out}");
     }
 
     #[test]
@@ -2708,12 +2770,18 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
             skip_publish: Vec::new(),
             packages: vec![],
         };
         let out = render_workflow(&config);
-        assert!(out.contains("permissions:\n  contents: write  # create tags and GitHub Releases\n  id-token: write\n"));
+        // No `id-token: write`: nothing here signs anything. Enabling npm used to request the
+        // scope and never use it, since the adapter never passed `--provenance`.
+        assert!(
+            out.contains("permissions:\n  contents: write  # create tags and GitHub Releases\n")
+        );
+        assert!(!out.contains("id-token: write"), "{out}");
         assert!(out.contains("  publish:\n"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         assert!(out.contains("          node-version: 24\n"));
@@ -2743,6 +2811,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
             skip_publish: Vec::new(),
             packages: vec![],
@@ -2796,6 +2865,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
             skip_publish: Vec::new(),
             packages: vec![PackageEntry {
@@ -2814,6 +2884,7 @@ pub(crate) mod tests {
                 archive: None,
                 checksums: false,
                 attest: false,
+                provenance: false,
                 executable: None,
                 include: Vec::new(),
                 tag_format: None,
@@ -2848,6 +2919,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Jsr],
             skip_publish: Vec::new(),
             packages: vec![
@@ -2867,6 +2939,7 @@ pub(crate) mod tests {
                     archive: None,
                     checksums: false,
                     attest: false,
+                    provenance: false,
                     executable: None,
                     include: Vec::new(),
                     tag_format: None,
@@ -2889,6 +2962,7 @@ pub(crate) mod tests {
                     archive: None,
                     checksums: false,
                     attest: false,
+                    provenance: false,
                     executable: None,
                     include: Vec::new(),
                     tag_format: None,
@@ -2925,6 +2999,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
             skip_publish: Vec::new(),
             packages: vec![npm_publish("docs-site")],
@@ -2971,6 +3046,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
             skip_publish: Vec::new(),
             packages: vec![npm_publish("docs-site")],
@@ -3005,6 +3081,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Cargo],
             skip_publish: Vec::new(),
             packages: vec![cargo_build_only("opentf-release")],
@@ -3070,6 +3147,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
             skip_publish: Vec::new(),
             packages: vec![PackageEntry {
@@ -3088,6 +3166,7 @@ pub(crate) mod tests {
                 archive: None,
                 checksums: false,
                 attest: false,
+                provenance: false,
                 executable: None,
                 include: Vec::new(),
                 tag_format: None,
@@ -3126,6 +3205,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Cargo],
             skip_publish: Vec::new(),
             packages: vec![PackageEntry {
@@ -3144,6 +3224,7 @@ pub(crate) mod tests {
                 archive: None,
                 checksums: false,
                 attest: false,
+                provenance: false,
                 executable: None,
                 include: Vec::new(),
                 tag_format: None,
@@ -3244,6 +3325,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
             skip_publish: Vec::new(),
             packages: vec![PackageEntry {
@@ -3265,6 +3347,7 @@ pub(crate) mod tests {
                 archive: None,
                 checksums: false,
                 attest: false,
+                provenance: false,
                 executable: None,
                 include: Vec::new(),
                 tag_format: None,
@@ -3339,6 +3422,7 @@ pub(crate) mod tests {
                 github_release_notes: notes,
                 hooks: crate::config::Hooks::default(),
                 publish: crate::config::PublishConfig::default(),
+                secrets: Default::default(),
                 adapters: vec![Ecosystem::Cargo],
                 skip_publish: Vec::new(),
                 packages: vec![cargo_build_only("otf-release")],
@@ -3371,6 +3455,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Generic],
             skip_publish: Vec::new(),
             packages: vec![generic_pkg("release", None)],
@@ -3405,6 +3490,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Cargo],
             skip_publish: Vec::new(),
             packages: vec![cargo_build_only("cli-a"), cargo_build_only("cli-b")],
@@ -3438,6 +3524,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Generic],
             skip_publish: Vec::new(),
             packages: vec![generic_pkg("jsr-lib", Some("npx jsr publish"))],
@@ -3471,6 +3558,7 @@ pub(crate) mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
             publish: crate::config::PublishConfig::default(),
+            secrets: Default::default(),
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             skip_publish: Vec::new(),
             packages: vec![cargo_build_only("web-compiler"), npm_publish("docs-site")],

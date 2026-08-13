@@ -37,6 +37,11 @@ pub struct NpmAdapter {
     /// Explicit member directory globs from `release.toml`'s `[discovery] npm`. Non-empty ⇒ they
     /// *are* the member set and the root `package.json` is never consulted for `workspaces`.
     packages: Vec<String>,
+    /// Package names configured with `provenance = true`. Publishing these passes `--provenance`,
+    /// which signs the tarball with the workflow's OIDC identity — the npm equivalent of the
+    /// attestation build-only assets get. Carried here because it lives in `release.toml`, which
+    /// is also what grants the workflow the `id-token: write` the signature needs.
+    provenance: Vec<String>,
 }
 
 /// A workspace manifest that npm discovery intentionally ignored.
@@ -67,6 +72,7 @@ impl NpmAdapter {
             root: root.into(),
             runner: Box::new(SystemRunner),
             packages: Vec::new(),
+            provenance: Vec::new(),
         }
     }
 
@@ -76,6 +82,7 @@ impl NpmAdapter {
             root: root.into(),
             runner,
             packages: Vec::new(),
+            provenance: Vec::new(),
         }
     }
 
@@ -84,6 +91,12 @@ impl NpmAdapter {
     /// way to name the JS packages without restructuring how the repo installs.
     pub fn with_packages(mut self, packages: Vec<String>) -> Self {
         self.packages = packages;
+        self
+    }
+
+    /// Names of packages that publish with `--provenance`.
+    pub fn with_provenance(mut self, provenance: Vec<String>) -> Self {
+        self.provenance = provenance;
         self
     }
 
@@ -374,6 +387,9 @@ impl Adapter for NpmAdapter {
         // A prerelease version (e.g. a `1.2.3-dev.<hash>` snapshot) must publish under its own
         // dist-tag, never `latest`, so an automated snapshot never becomes the default install.
         let mut args = vec!["publish", "--access", &access, "--no-workspaces"];
+        if self.provenance.contains(&pkg.name) {
+            args.push("--provenance");
+        }
         let tag = dist_tag(&pkg.version);
         if let Some(tag) = &tag {
             args.push("--tag");

@@ -30,11 +30,17 @@ struct CliAdapterFactory {
     /// does not declare that itself. Empty for `init`, which settles it mid-run and then goes
     /// through [`AdapterFactory::make_with_discovery`].
     discovery: Discovery,
+    /// Packages whose `[[package]]` block sets `provenance = true`.
+    provenance: Vec<String>,
 }
 
 impl CliAdapterFactory {
     fn npm(&self, discovery: &Discovery) -> Box<dyn Adapter> {
-        Box::new(NpmAdapter::new(self.root.clone()).with_packages(discovery.npm.clone()))
+        Box::new(
+            NpmAdapter::new(self.root.clone())
+                .with_packages(discovery.npm.clone())
+                .with_provenance(self.provenance.clone()),
+        )
     }
 }
 
@@ -123,6 +129,9 @@ enum Command {
         /// Compute and print the plan, but write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Leave a package out of this release entirely. Repeatable.
+        #[arg(long = "exclude-package")]
+        exclude_packages: Vec<String>,
     },
     /// CI gate: print `true` if any configured package has an untagged version to release, else
     /// `false`. Drives the workflow's `check-release` job so a non-release push skips the build.
@@ -204,7 +213,11 @@ enum Command {
         dry_run: bool,
     },
     /// Non-interactive, CI: automated ephemeral release via short git hashes.
-    Snapshot,
+    Snapshot {
+        /// Print the versions this would publish and stop. Nothing is written.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Update otf-release to the latest version.
     SelfUpdate,
 }
@@ -217,6 +230,16 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Packages configured to publish with npm provenance.
+fn provenance_names(config: &ReleaseConfig) -> Vec<String> {
+    config
+        .packages
+        .iter()
+        .filter(|p| p.provenance)
+        .map(|p| p.name.clone())
+        .collect()
 }
 
 fn print_error(err: &anyhow::Error) {
@@ -247,6 +270,7 @@ fn run() -> Result<()> {
                 // `init` has no config to read yet; it settles discovery mid-run and passes it
                 // explicitly through `make_with_discovery`.
                 discovery: Discovery::default(),
+                provenance: Vec::new(),
             };
             init::run(&factory, &root, &init::InitOptions { force })
         }
@@ -260,6 +284,7 @@ fn run() -> Result<()> {
                 root: root.clone(),
                 generic: generic_pkgs(&config),
                 discovery: config.discovery.clone(),
+                provenance: provenance_names(&config),
             };
             let adapters: Vec<(Ecosystem, Box<dyn Adapter>)> = config
                 .adapters
@@ -288,6 +313,7 @@ fn run() -> Result<()> {
                 root: root.clone(),
                 generic: generic_pkgs(&config),
                 discovery: config.discovery.clone(),
+                provenance: provenance_names(&config),
             };
             otf_release_core::config_tui::run(&root, &factory)?;
             Ok(())
@@ -319,6 +345,7 @@ fn run() -> Result<()> {
                 root: root.clone(),
                 generic: generic_pkgs(&config),
                 discovery: config.discovery.clone(),
+                provenance: provenance_names(&config),
             };
             let adapters: Vec<Box<dyn Adapter>> = config
                 .adapters
@@ -339,16 +366,22 @@ fn run() -> Result<()> {
             )?;
             Ok(())
         }
-        Command::Snapshot => {
+        Command::Snapshot { dry_run } => {
             let config = ReleaseConfig::load(&root)?;
             let factory = CliAdapterFactory {
                 root: root.clone(),
                 generic: generic_pkgs(&config),
                 discovery: config.discovery.clone(),
+                provenance: provenance_names(&config),
             };
             for eco in &config.adapters {
                 let adapter = factory.make(*eco);
-                otf_release_core::snapshot::run(adapter.as_ref(), &root, &config)?;
+                otf_release_core::snapshot::run(
+                    adapter.as_ref(),
+                    &root,
+                    &config,
+                    &otf_release_core::snapshot::SnapshotOptions { dry_run },
+                )?;
             }
             Ok(())
         }
@@ -358,16 +391,21 @@ fn run() -> Result<()> {
         }
 
         // Every other command reads `release.toml` and acts on each enabled ecosystem.
-        Command::Version { dry_run } => {
+        Command::Version {
+            dry_run,
+            exclude_packages,
+        } => {
             let config = ReleaseConfig::load(&root)?;
             let factory = CliAdapterFactory {
                 root: root.clone(),
                 generic: generic_pkgs(&config),
                 discovery: config.discovery.clone(),
+                provenance: provenance_names(&config),
             };
             let opts = version::VersionOptions {
                 dry_run,
                 skip_pr: false,
+                exclude_packages,
             };
             let adapters: Vec<Box<dyn Adapter>> = config
                 .adapters
@@ -389,6 +427,7 @@ fn run() -> Result<()> {
                 root: root.clone(),
                 generic: generic_pkgs(&config),
                 discovery: config.discovery.clone(),
+                provenance: provenance_names(&config),
             };
             let adapters: Vec<Box<dyn Adapter>> = config
                 .adapters
@@ -419,6 +458,7 @@ fn run() -> Result<()> {
                 root: root.clone(),
                 generic: generic_pkgs(&config),
                 discovery: config.discovery.clone(),
+                provenance: provenance_names(&config),
             };
             // build-only packages ship via the GitHub Release the workflow creates, never a
             // registry — so `publish` skips them.

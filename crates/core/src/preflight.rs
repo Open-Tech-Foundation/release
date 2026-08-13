@@ -194,6 +194,20 @@ fn unreleased_is_empty(changelog_path: &Path) -> Result<bool> {
     Ok(changelog::parse_unreleased(changelog_path)?.is_empty())
 }
 
+/// Whether every file this package changed since `tag` matches one of its `ignore_paths`.
+///
+/// Shared with the generated-changelog path in `version`, so "this change does not warrant a
+/// release" is decided by one rule rather than two that can disagree.
+pub fn changes_are_all_ignored(
+    repo: &dyn RepoState,
+    tag: &str,
+    pkg_dir: &Path,
+    ignore_paths: &[String],
+) -> Result<bool> {
+    let changed = repo.changed_files_since(tag, pkg_dir)?;
+    only_ignored_changes(&changed, ignore_paths)
+}
+
 fn only_ignored_changes(changed_files: &[PathBuf], ignore_paths: &[String]) -> Result<bool> {
     if changed_files.is_empty() {
         return Ok(false);

@@ -25,6 +25,7 @@ use anyhow::Result;
 
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{Ecosystem, ReleaseConfig};
+use crate::init::slug;
 use crate::ui;
 
 /// How much a finding costs if ignored.
@@ -143,6 +144,7 @@ pub fn audit(config: &ReleaseConfig, discovered: &[Discovered], root: &Path) -> 
         .collect();
 
     tag_collisions(config, &released, &mut findings);
+    stale_workflow(config, root, &mut findings);
     missing_blocks(config, &released, &mut findings);
     stale_blocks(config, discovered, &mut findings);
     unbuilt_publishes(config, &released, &mut findings);
@@ -160,6 +162,51 @@ pub fn audit(config: &ReleaseConfig, discovered: &[Discovered], root: &Path) -> 
             .then_with(|| a.package.cmp(&b.package))
     });
     Report { findings }
+}
+
+/// The generated workflow is written from `release.toml`, and adding a `[[package]]` does not
+/// touch it. A package configured after the last `upgrade` therefore has no jobs: it is versioned
+/// and tagged like any other, then builds nothing and attaches nothing to its release.
+///
+/// Every job name is derived from the package's slug, so their absence is checkable without
+/// parsing YAML — and the fix is one command.
+fn stale_workflow(config: &ReleaseConfig, root: &Path, out: &mut Vec<Finding>) {
+    let path = root.join(".github/workflows/release.yml");
+    let Ok(workflow) = std::fs::read_to_string(&path) else {
+        // No workflow at all is a different problem, and `init` is the answer to it.
+        return;
+    };
+
+    let mut missing: Vec<String> = Vec::new();
+    for entry in &config.packages {
+        let job = match () {
+            _ if entry.is_build_only() => format!("github-release-{}", slug(&entry.name)),
+            _ if !entry.command.trim().is_empty() => format!("build-{}", slug(&entry.name)),
+            // A block with no build rides the catch-all publish job and needs no job of its own.
+            _ => continue,
+        };
+        if !workflow.contains(&format!("  {job}:")) {
+            missing.push(format!("{} (expected `{job}`)", entry.name));
+        }
+    }
+
+    if !missing.is_empty() {
+        out.push(
+            Finding::new(
+                Severity::Error,
+                "stale-workflow",
+                format!(
+                    "`.github/workflows/release.yml` has no job for {} package(s): {}. They will \
+                     be versioned and tagged, then build nothing and attach nothing to their \
+                     release — the workflow is generated from release.toml and does not update \
+                     itself when a package is added.",
+                    missing.len(),
+                    missing.join(", ")
+                ),
+            )
+            .fix("run `otf-release upgrade --force` and commit the regenerated workflow"),
+        );
+    }
 }
 
 /// Two packages that format to the same tag is the quietest failure this tool has: nothing errors,
@@ -821,6 +868,7 @@ mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            provenance: false,
             include: Vec::new(),
             executable: None,
             tag_format: None,
@@ -836,6 +884,71 @@ mod tests {
             .filter(|f| f.severity == severity)
             .map(|f| f.code)
             .collect()
+    }
+
+    /// Adding a `[[package]]` does not touch the generated workflow, so a package configured after
+    /// the last `upgrade` is versioned and tagged and then builds nothing. Nothing else in the tool
+    /// reads release.yml, so without this the first sign is an empty GitHub Release.
+    #[test]
+    fn flags_a_package_with_no_job_in_the_generated_workflow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workflows = tmp.path().join(".github/workflows");
+        std::fs::create_dir_all(&workflows).unwrap();
+
+        let mut config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            ..ReleaseConfig::default()
+        };
+        config.packages = vec![
+            PackageEntry {
+                mode: Mode::BuildOnly,
+                ..entry("es-runtime-cli", Ecosystem::Cargo)
+            },
+            PackageEntry {
+                mode: Mode::BuildOnly,
+                ..entry("es-runtime-dev-cli", Ecosystem::Cargo)
+            },
+        ];
+        // A workflow generated when only the first package existed.
+        std::fs::write(
+            workflows.join("release.yml"),
+            "jobs:\n  github-release-es-runtime-cli:\n    runs-on: ubuntu-latest\n",
+        )
+        .unwrap();
+
+        let report = audit(&config, &[], tmp.path());
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.code == "stale-workflow")
+            .expect("missing job is reported");
+        assert_eq!(finding.severity, Severity::Error);
+        assert!(
+            finding.message.contains("es-runtime-dev-cli"),
+            "{finding:?}"
+        );
+        assert!(
+            !finding.message.contains("es-runtime-cli (expected"),
+            "the package that does have a job must not be listed: {finding:?}"
+        );
+    }
+
+    /// No workflow at all is `init`'s problem, not this check's — reporting it here would fire on
+    /// every repo mid-setup.
+    #[test]
+    fn a_repo_with_no_workflow_yet_is_not_reported_as_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            ..ReleaseConfig::default()
+        };
+        config.packages = vec![PackageEntry {
+            mode: Mode::BuildOnly,
+            ..entry("cli", Ecosystem::Cargo)
+        }];
+
+        let report = audit(&config, &[], tmp.path());
+        assert!(!codes(&report, Severity::Error).contains(&"stale-workflow"));
     }
 
     /// The mistake this catches is one I walked a user into: `legacy_tag_formats = ["v{version}"]`

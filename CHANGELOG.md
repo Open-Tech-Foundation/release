@@ -12,6 +12,28 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ### Added
 
+- **`doctor` reports a workflow that has no job for a configured package** (`stale-workflow`,
+  error). `release.yml` is generated from `release.toml` and adding a `[[package]]` does not touch
+  it, so a package configured after the last `upgrade` was versioned and tagged and then built
+  nothing and attached nothing to its release. Nothing else in the tool reads the workflow, so the
+  first sign was an empty GitHub Release.
+
+- **npm packages can publish with provenance.** `provenance = true` in a `[[package]]` block passes
+  `--provenance`, signing the tarball with the workflow's OIDC identity — the npm twin of `attest`
+  for release assets. The workflow now grants `id-token: write` only when something actually signs:
+  enabling npm used to request the scope and never use it.
+
+- **`version --exclude-package`**, repeatable, matching `publish` and `check`. Previously the only
+  way to hold a package back was to remember not to tick it in the picker.
+
+- **`snapshot --dry-run`** prints the versions it would publish and stops. Snapshot rewrites every
+  manifest and the lockfile in place with no restore, which is harmless on a runner and destructive
+  in a working tree.
+
+- **Registry secret names are configurable** via a `[secrets]` table (`npm`, `cargo`). The defaults
+  are unchanged; an org with its own naming no longer has to hand-edit generated YAML and then
+  avoid regenerating it.
+
 - **`legacy_tag_formats` can be scoped to one package.** A format with no `{name}` — `v{version}` —
   matches any package's tag, so the repo-wide list handed one package's release history to every
   package in the repo. A crate that had never shipped therefore read as already released, stopped
@@ -61,6 +83,12 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   worked before stopped working. `release.toml` remains the interface for anything scripted.
 
 ### Fixed
+
+- **The `generated` changelog strategy now honours `publish.ignore_paths`.** Curated notes skipped
+  a docs-only change because nobody writes an `[Unreleased]` entry for a README fix; generated notes
+  read git directly and offered the package anyway. The same commit in the same repo produced a
+  different release decision depending only on the changelog strategy. Both paths now share one
+  rule.
 
 - **npm packages are published with the access their manifest asks for.** `npm publish` was always
   invoked with `--access public`, and a CLI `--access` overrides `publishConfig.access` — so a

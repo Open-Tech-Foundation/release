@@ -30,6 +30,12 @@ pub struct VersionOptions {
     pub dry_run: bool,
     /// Skip opening the PR (e.g. if gh CLI is missing).
     pub skip_pr: bool,
+    /// Packages to leave out of this cut entirely — never offered, never cascaded into.
+    ///
+    /// `publish` and `check` have had this since they existed; `version` did not, so the only way
+    /// to hold a package back was to remember not to tick it in the picker. A dependent excluded
+    /// here still keeps its dependency ranges up to date; it just does not get a version of its own.
+    pub exclude_packages: Vec<String>,
 }
 
 /// Wire up the real adapter/git/forge/prompt and run the flow.
@@ -207,7 +213,28 @@ pub fn orchestrate_many(
     for p in &all_packages {
         if is_generated {
             let last = repo.last_tag(&p.name, &tag_formats.history_for(&p.name))?;
-            let notes = repo.commits_since(last.as_deref(), p.manifest_path.parent().unwrap())?;
+            let pkg_dir = p.manifest_path.parent().unwrap();
+            let notes = repo.commits_since(last.as_deref(), pkg_dir)?;
+            // `ignore_paths` decides whether a docs-only or test-only change is worth a release.
+            // Curated notes honour it because nobody writes an [Unreleased] entry for a README fix;
+            // generated notes read git directly, so without this the same commit in the same repo
+            // produced a different answer depending only on the changelog strategy.
+            let notes = if notes.is_empty() {
+                notes
+            } else {
+                let ignores = config.publish_ignore_paths_for(&p.name);
+                let only_ignored = match &last {
+                    Some(tag) if !ignores.is_empty() => {
+                        preflight::changes_are_all_ignored(repo, tag, pkg_dir, ignores)?
+                    }
+                    _ => false,
+                };
+                if only_ignored {
+                    String::new()
+                } else {
+                    notes
+                }
+            };
             generated_notes.insert(p.name.as_str(), notes.clone());
             empties.insert(p.name.as_str(), notes.is_empty());
         } else {
@@ -217,6 +244,7 @@ pub fn orchestrate_many(
     let pending: Vec<&Pkg> = all_packages
         .iter()
         .filter(|p| p.publishable && !empties[p.name.as_str()])
+        .filter(|p| !opts.exclude_packages.contains(&p.name))
         .collect();
     if pending.is_empty() {
         ui::warn("Nothing to release: no package has [Unreleased] notes.");

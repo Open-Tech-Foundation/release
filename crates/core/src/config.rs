@@ -411,6 +411,15 @@ pub struct PackageEntry {
     /// permissions; `init` proposes enabling it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub attest: bool,
+    /// Publish this npm package with `--provenance`: a signed statement, from the workflow's OIDC
+    /// identity, of which repo and commit produced the tarball. npm shows it on the package page
+    /// and `npm audit signatures` verifies it.
+    ///
+    /// The npm twin of [`attest`](Self::attest), which covers assets attached to a GitHub Release.
+    /// Off by default for the same reason: turning it on changes the workflow's permissions, so it
+    /// must be a decision rather than something `upgrade` does silently.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub provenance: bool,
     /// Also attach a combined `checksums.txt` (SHA-256 of every asset) to the GitHub Release.
     #[serde(default, skip_serializing_if = "is_false")]
     pub checksums: bool,
@@ -593,6 +602,45 @@ pub fn default_ignore_paths(ecosystem: Ecosystem) -> Vec<String> {
     globs.iter().map(|glob| (*glob).to_string()).collect()
 }
 
+/// Repository-secret names the generated workflow reads for registry auth.
+///
+/// Hardcoded names meant an org with a naming convention, or one publishing to a registry with
+/// different credentials, had to hand-edit generated YAML — and then remember never to regenerate
+/// it. The defaults are unchanged, so an existing repo sees no difference.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Secrets {
+    /// Repository secret holding the npm auth token, exposed as `NODE_AUTH_TOKEN`.
+    #[serde(default = "default_npm_secret")]
+    pub npm: String,
+    /// Repository secret holding the crates.io token, exposed as `CARGO_REGISTRY_TOKEN`.
+    #[serde(default = "default_cargo_secret")]
+    pub cargo: String,
+}
+
+fn default_npm_secret() -> String {
+    "NPM_TOKEN".to_string()
+}
+
+fn default_cargo_secret() -> String {
+    "CARGO_REGISTRY_TOKEN".to_string()
+}
+
+impl Default for Secrets {
+    fn default() -> Self {
+        Self {
+            npm: default_npm_secret(),
+            cargo: default_cargo_secret(),
+        }
+    }
+}
+
+impl Secrets {
+    /// Whether this is the default naming, so it can be omitted when serialising.
+    fn is_default(&self) -> bool {
+        *self == Secrets::default()
+    }
+}
+
 /// Where an ecosystem's packages live, when the repo does not declare that natively.
 ///
 /// npm discovery normally reads the root `package.json`'s `workspaces` globs. A polyglot repo
@@ -643,6 +691,9 @@ pub struct ReleaseConfig {
     /// Publish path-ignore policy keyed by package name.
     #[serde(default)]
     pub publish: PublishConfig,
+    /// Names of the repository secrets the generated workflow reads for registry auth.
+    #[serde(default, skip_serializing_if = "Secrets::is_default")]
+    pub secrets: Secrets,
     /// Explicit package locations for ecosystems whose members this repo does not declare
     /// natively. Empty for a repo whose root manifest already declares them.
     #[serde(default, skip_serializing_if = "Discovery::is_empty")]
@@ -719,6 +770,7 @@ impl Default for ReleaseConfig {
             skip_publish: Vec::new(),
             hooks: Hooks::default(),
             publish: PublishConfig::default(),
+            secrets: Secrets::default(),
             discovery: Discovery::default(),
             packages: Vec::new(),
             snapshot_tag: None,
@@ -1046,6 +1098,7 @@ mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            provenance: false,
             include: Vec::new(),
             tag_format: None,
             legacy_tag_formats: Vec::new(),
@@ -1090,6 +1143,7 @@ mod tests {
                     vec!["docs/**".into(), "**/*.test.ts".into()],
                 )]),
             },
+            secrets: Default::default(),
             packages: vec![
                 PackageEntry {
                     name: "web-compiler".into(),
@@ -1107,6 +1161,7 @@ mod tests {
                     archive: Some(ArchiveFormat::Auto),
                     checksums: true,
                     attest: false,
+                    provenance: false,
                     executable: None,
                     include: vec!["README.md".into(), "LICENSE".into()],
                     tag_format: None,
@@ -1129,6 +1184,7 @@ mod tests {
                     archive: None,
                     checksums: false,
                     attest: false,
+                    provenance: false,
                     executable: None,
                     include: Vec::new(),
                     tag_format: None,
@@ -1204,6 +1260,7 @@ mod tests {
             adapters: vec![Ecosystem::Cargo],
             hooks: Hooks::default(),
             publish: PublishConfig::default(),
+            secrets: Default::default(),
             packages: vec![],
         };
         cfg.save(tmp.path()).unwrap();
@@ -1231,6 +1288,7 @@ mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            provenance: false,
             include: Vec::new(),
             executable: None,
             tag_format: None,

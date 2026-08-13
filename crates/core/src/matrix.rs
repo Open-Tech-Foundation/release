@@ -75,6 +75,7 @@ mod tests {
             archive: None,
             checksums: false,
             attest: false,
+            provenance: false,
             executable: None,
             tag_format: None,
             legacy_tag_formats: Vec::new(),
