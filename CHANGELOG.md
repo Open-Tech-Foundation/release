@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Changed
+
+- **`config` is a full-screen editor instead of a chain of prompts.** The old flow asked which
+  area, then which setting, then the value — and a nine-item menu rendered in `inquire`'s
+  seven-row window, so half the options sat behind scroll arrows and no setting showed what it was
+  currently set to without opening it. Every setting, its current value, and every package now sit
+  on one screen: `↑↓`/`jk` to move, `enter` to edit, `esc` to back out, `q` to leave. Editing opens
+  a modal over the screen and closes back onto the same row. Unset values read as what the repo
+  will actually do (`(repo default: v{version})`), and the footer carries the focused row's
+  explanation. Built on the same `ratatui` foundation as the `version` review screen.
+
 ### Fixed
 
 - **npm packages are published with the access their manifest asks for.** `npm publish` was always

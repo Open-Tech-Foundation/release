@@ -289,7 +289,7 @@ fn run() -> Result<()> {
                 generic: generic_pkgs(&config),
                 discovery: config.discovery.clone(),
             };
-            otf_release_core::config_cmd::orchestrate(&root, &factory)?;
+            otf_release_core::config_tui::run(&root, &factory)?;
             Ok(())
         }
         Command::Matrix { package } => {

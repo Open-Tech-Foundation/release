@@ -23,7 +23,7 @@ pub mod build;
 pub mod changelog;
 pub mod check;
 pub mod config;
-pub mod config_cmd;
+pub mod config_tui;
 pub mod date;
 pub mod discover;
 pub mod doctor;

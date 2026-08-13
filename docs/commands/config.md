@@ -15,59 +15,59 @@ otf-release upgrade --force
 
 to regenerate `.github/workflows/release.yml`. See [upgrade.md](./upgrade.md).
 
+## The screen
+
+`config` is a full-screen editor, not a chain of prompts. Every setting and its current value is on
+one screen:
+
+```
+┌ release.toml · github ─────────────────────────────────────────────────────┐
+│REPOSITORY                                                                  │
+│  Provider                  github                                          │
+│  Default branch            main                                            │
+│❯ Tag format                v{version}                                      │
+│  Legacy tag formats        (none)                                          │
+│  Snapshot tag              (none)                                          │
+│                                                                            │
+│CHANGELOG                                                                   │
+│  Scope                     root                                            │
+│  Strategy                  curated                                         │
+│  GitHub Release notes      curated-changelog                               │
+│                                                                            │
+│ECOSYSTEMS                                                                  │
+│  Enabled                   npm, crates.io                                  │
+│  Never publish             es-runtime, es-runtime-common                   │
+│                                                                            │
+│PACKAGES (3)                                                                │
+│  @opentf/esrun-redis       npm · publish                                   │
+│  es-runtime-cli            crates.io · build-only, matrix ×5               │
+│  es-runtime-lsp            [new] in this repo, not in release.toml         │
+└────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│how release tags are named; needs {name} when packages version independently │
+│[↑↓/jk] move  [enter] edit  [q] quit                                        │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+A value in `(parentheses)` is not set — the text names what the repo will do instead, so
+`(repo default: v{version})` on a package means it inherits rather than "is blank". The footer
+carries the focused row's explanation, which the old menu had nowhere to put.
+
 ## Keys
 
-**Esc goes back.** It abandons whatever prompt is open and returns to the menu above it, writing
-nothing — the edit in progress is dropped, not saved. Menus that show a *Back* row treat Esc as
-that row.
+| Key | Does |
+| --- | --- |
+| `↑` `↓` / `k` `j` | move between settings |
+| `enter` | edit the focused setting, or open a package |
+| `space` | toggle an item in a checklist |
+| `esc` | close an editor without saving; from a package, back to the settings |
+| `q` | leave |
 
-At the root menu there is nothing above to go back to, so Esc arms the exit and says so; press it
-again to leave. A stray press on the way out of a submenu therefore cannot end the session, and
-leaving never requires hunting for the *Exit* row.
-
-Ctrl-C still quits immediately, from anywhere.
-
-## Editable Areas
-
-- lifecycle hooks;
-- enabled ecosystems;
-- configured package build fields;
-- generic package fields;
-- global settings: provider, snapshot tag, skip-publish packages, publish ignore paths, tag
-  format, changelog scope/strategy, and GitHub Release notes.
-
-## New packages show up under *Packages*
-
-The *Packages* menu re-reads the repo every time it opens. A package the enabled adapters find that
-has no `[[package]]` block is listed alongside the configured ones, marked `[new]`:
-
-```
-? Which package?
-> @opentf/esrun-postgres
-  @opentf/esrun-redis
-  es-runtime-cli
-  es-runtime-lsp [new]
-  Back
-[new] = in this repo but not yet in release.toml — pick one to release it or skip it for good
-```
-
-Listing is all it does. Nothing is written to `release.toml`, and no manifest is touched, until you
-pick the `[new]` entry and answer:
-
-- **Release it** — writes its block, with the build command its adapter detects (an npm package
-  declaring `scripts.build` gets `command = "npm run build"`, and npm's own pack/publish lifecycle
-  hooks are stripped so they cannot re-run the build behind the pipeline), or identity-only when its
-  publish needs no build. The pick then falls through into the normal field editor, so mode, build
-  targets and the rest are set in the same visit.
-- **Skip it** — records it in `skip_publish`. This repo will not version or publish it, and it stops
-  being offered here.
-- **Back** — decides nothing. It is still `[new]` next time.
-
-Opening the menu, or backing out of it, therefore leaves the file byte-for-byte as it was: a package
-that is not ready to release cannot be adopted by looking at a list.
-
-Packages already in `skip_publish`, and ones their manifest marks unpublishable (`publish = false`,
-`"private": true`), are never offered — the repo has already answered for those.
+Editing opens over the screen and closes back onto the same row. Every confirmed edit is written to
+`release.toml` immediately and the footer says so; nothing is buffered until an explicit save. A
+value that fails validation — a `tag_format` that cannot produce a distinct tag, a changelog path
+outside the repo — leaves the file untouched and reports why in the footer, rather than ending the
+session.
 
 ## Enabling an ecosystem configures its packages
 

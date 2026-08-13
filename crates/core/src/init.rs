@@ -837,12 +837,7 @@ fn release_output(name: &str) -> String {
 /// `already_on` that the registry does *not* know — hand-written into `release.toml` with an
 /// explicit triple — is appended as its own row rather than dropped, so re-editing a config can
 /// never silently discard a custom target.
-/// Esc reports `None` — the caller keeps whatever targets it had.
-pub(crate) fn pick_targets(
-    prompt: &str,
-    already_on: &[Target],
-    help: &str,
-) -> Result<Option<Vec<Target>>> {
+fn pick_targets(prompt: &str, already_on: &[Target], help: &str) -> Result<Option<Vec<Target>>> {
     let labels: Vec<String> = TARGET_REGISTRY
         .iter()
         .map(|t| format!("{} - {}-{}", t.label, t.name, t.arch))
@@ -1998,10 +1993,6 @@ const SELECT_HELP: &str = "↑↓ move · enter select";
 
 const INIT_TARGETS_HELP: &str =
     "the widely-supported platforms are pre-selected; space toggles · enter confirm";
-pub(crate) const EDIT_TARGETS_HELP: &str =
-    "checked = built for that platform. Unchecking one drops it from the matrix on the next \
-     `otf-release upgrade`. ↑↓ move · space toggle · enter confirm";
-
 const BUILD_PKGS_HELP: &str =
     "select packages that must produce artifacts first — for example a prebuilt binary, generated \
      dist files, or a bundled CLI. Packages you don't pick are published as-is. ↑↓ move · space toggle · enter confirm";
