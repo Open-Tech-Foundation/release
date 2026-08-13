@@ -20,9 +20,9 @@ use inquire::{MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{
-    ArchiveFormat, ChangelogScope, ChangelogStrategy, Discovery, Ecosystem, GithubReleaseNotes,
-    Mode, PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_TAG_FORMAT,
-    DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
+    default_ignore_paths, ArchiveFormat, ChangelogScope, ChangelogStrategy, Discovery, Ecosystem,
+    GithubReleaseNotes, Mode, PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS,
+    DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
 };
 use crate::discover::{
     declares_npm_workspaces, scan_generic_candidates, scan_npm_candidates, GenericCandidate,
@@ -305,18 +305,41 @@ pub fn run(factory: &dyn AdapterFactory, root: &Path, opts: &InitOptions) -> Res
     orchestrate(factory, &StdinInitPrompt, root, opts)
 }
 
+/// Seed `publish.ignore_paths` for every package this repo releases, with the defaults its own
+/// adapter suggests — docs plus that ecosystem's test layout.
+///
+/// This used to write an empty list per package, which does nothing: the first README-only release
+/// then failed preflight, and `doctor` reported the empty entries the tool had just written. A
+/// package whose ecosystem cannot be determined still gets an entry, since the entry is where a
+/// repo writes its own globs.
 fn publish_ignore_paths_seed(
     discovered_publishable: &[Pkg],
     configured_packages: &[PackageEntry],
+    ecosystem_of: &HashMap<&str, Ecosystem>,
 ) -> HashMap<String, Vec<String>> {
-    let mut names: Vec<String> = discovered_publishable
+    let mut names: Vec<(String, Option<Ecosystem>)> = discovered_publishable
         .iter()
-        .map(|pkg| pkg.name.clone())
+        .map(|pkg| {
+            (
+                pkg.name.clone(),
+                ecosystem_of.get(pkg.name.as_str()).copied(),
+            )
+        })
         .collect();
-    names.extend(configured_packages.iter().map(|pkg| pkg.name.clone()));
-    names.sort();
-    names.dedup();
-    names.into_iter().map(|name| (name, Vec::new())).collect()
+    names.extend(
+        configured_packages
+            .iter()
+            .map(|pkg| (pkg.name.clone(), Some(pkg.adapter))),
+    );
+    names.sort_by(|a, b| a.0.cmp(&b.0));
+    names.dedup_by(|a, b| a.0 == b.0);
+    names
+        .into_iter()
+        .map(|(name, ecosystem)| {
+            let globs = ecosystem.map(default_ignore_paths).unwrap_or_default();
+            (name, globs)
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -740,7 +763,7 @@ pub fn orchestrate(
         otf_release_version: None,
         hooks: crate::config::Hooks::default(),
         publish: crate::config::PublishConfig {
-            ignore_paths: publish_ignore_paths_seed(&publishable, &packages),
+            ignore_paths: publish_ignore_paths_seed(&publishable, &packages, &ecosystem_of),
         },
         discovery,
         adapters: enabled,
@@ -1533,6 +1556,13 @@ pub fn adopt_package(
         }
         None => publish_as_is_entry(&new.pkg, new.ecosystem, root),
     };
+    // A package adopted here gets the same ignore-path seed `init` writes, so which command first
+    // saw a package does not decide whether a README fix can be released.
+    config
+        .publish
+        .ignore_paths
+        .entry(new.pkg.name.clone())
+        .or_insert_with(|| default_ignore_paths(new.ecosystem));
     config.packages.push(entry);
     config.packages.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(stripped)
@@ -3873,9 +3903,11 @@ pub(crate) mod tests {
         assert_eq!(cfg.build_only_names(), vec!["opentf-release".to_string()]);
         assert_eq!(cfg.tag_format, DEFAULT_TAG_FORMAT);
         assert_eq!(cfg.snapshot_tag, None);
+        // Seeded from the package's own ecosystem, not left empty: an empty list does nothing,
+        // and the first README-only release would have been blocked by preflight.
         assert_eq!(
             cfg.publish.ignore_paths.get("opentf-release"),
-            Some(&Vec::new())
+            Some(&default_ignore_paths(Ecosystem::Cargo))
         );
 
         // workflow generated from it.
@@ -3941,7 +3973,11 @@ pub(crate) mod tests {
         assert_eq!(p.manifest.as_deref(), Some("deno.json"));
         assert_eq!(p.publish.as_deref(), Some("npx jsr publish"));
         assert_eq!(p.mode, Mode::Publish);
-        assert_eq!(cfg.publish.ignore_paths.get("jsr-lib"), Some(&Vec::new()));
+        // A generic package's layout is unknowable, so it gets documentation and nothing else.
+        assert_eq!(
+            cfg.publish.ignore_paths.get("jsr-lib"),
+            Some(&vec!["**/*.md".to_string()])
+        );
     }
 
     #[test]

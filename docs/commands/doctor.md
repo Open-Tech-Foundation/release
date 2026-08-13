@@ -35,7 +35,7 @@ Severity is about **consequence**, not confidence.
 | `stale-package-block` | error | A block names a package no enabled adapter discovers. Its generated jobs release nothing. |
 | `unbuilt-publish` | error | A package whose manifest declares a build script has no `command` in its block, so it is published without ever being built — for a package whose `files` points at `dist/`, an empty tarball. |
 | `discovery-matches-nothing` | error | A `[discovery] npm` entry matches no package. The list *is* the member set, so whatever it named is not released at all — and a glob matching nothing raises no error anywhere else. |
-| `missing-changelog` | warning | A released package has no changelog file. Under the curated strategy its `[Unreleased]` is empty by definition, so it is never offered for release. |
+| `missing-changelog` | warning | Released packages have no changelog file. Under the curated strategy their `[Unreleased]` is empty by definition, so they are never offered for release. Reported once, listing every package. |
 | `shared-changelog` | warning | Packages at different versions all write notes into one file, interleaving them under a single heading. A lockstep group sharing one changelog is *not* flagged — that is the point of lockstep. |
 | `matrix-without-targets` | warning | A `matrix = true` package has no `[[package.targets]]`, so its build fans out to nothing. |
 | `inert-tool-pin` | error | `otf_release_version` predates `v0.26.0`, the first release whose installer reads `OTF_RELEASE_VERSION`. The workflow fetches that older script, which always downloads the *latest* release — so CI does not build with the pinned version at all. |
@@ -43,7 +43,7 @@ Severity is about **consequence**, not confidence.
 | `old-tool-pin` | suggestion | CI builds with an older tool than the binary you are running locally. |
 | `no-checksums` | suggestion | A build-only package ships assets with no `checksums.txt`, so a download cannot be verified as intact. |
 | `no-attestation` | suggestion | A build-only package ships assets with no signed provenance. A checksum can be replaced by whoever replaced the asset; an attestation cannot. |
-| `empty-ignore-paths` | suggestion | A `publish.ignore_paths` entry has an empty glob list and does nothing. |
+| `empty-ignore-paths` | suggestion | One or more `publish.ignore_paths` entries have an empty glob list, which does nothing. Reported once for all of them. |
 
 ## In CI
 

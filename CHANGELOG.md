@@ -8,6 +8,21 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Changed
+
+- **`publish.ignore_paths` is seeded per adapter instead of empty.** `init` wrote an empty list for
+  every package, which does nothing — so the first README-only or test-only release failed
+  preflight for want of changelog notes, and `doctor` then reported the empty entries the tool
+  itself had written. A package now starts with `**/*.md` plus its ecosystem's test layout
+  (`__tests__`/`*.test.*`/`test/` for npm, `tests/`+`benches/` for cargo, `*_test.ts` for jsr,
+  docs only for generic), whether it was configured by `init` or adopted later by `config`. Cargo
+  unit tests inside `src/` are deliberately not covered — a `#[cfg(test)]` change usually rides
+  along with the code it tests.
+
+- **`doctor` reports repeated findings once.** `empty-ignore-paths` and `missing-changelog` printed
+  one near-identical paragraph per package, so a six-package repo got six copies of the same
+  sentence and the same fix. Each is now a single finding listing every package it applies to.
+
 ## [0.34.0] - 2026-08-13
 
 ### Added
@@ -18,8 +33,6 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   re-scanned the repo. Listing writes nothing: picking a `[new]` entry asks whether to release it
   (writes its block, then drops into the field editor) or skip it (records it in `skip_publish`),
   and backing out leaves the file untouched.
-
-### Changed
 
 - **`config` picks from lists instead of asking you to retype one.** `skip_publish` was a
   comma-separated text field that made you re-enter every package to change one; it is now a

@@ -370,6 +370,9 @@ fn changelog_files(
     }
     let layout = config.changelog_layout();
     let mut sharing: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    // Collected, not reported one by one: the explanation is identical for every package, so N
+    // packages produced N copies of the same paragraph.
+    let mut missing: Vec<String> = Vec::new();
 
     for d in released {
         // In package scope the layout defers to the adapter, whose path is absolute in a real
@@ -382,25 +385,29 @@ fn changelog_files(
             }
         });
         if !path.exists() {
-            out.push(
-                Finding::new(
-                    Severity::Warning,
-                    "missing-changelog",
-                    format!(
-                        "`{}` has no changelog at `{}`. With the curated strategy a package with no \
-                         `[Unreleased]` notes is never offered for release.",
-                        d.pkg.name,
-                        rel(root, &path)
-                    ),
-                )
-                .about(&d.pkg.name)
-                .fix("create the file with a `## [Unreleased]` heading"),
-            );
+            missing.push(format!("{} ({})", d.pkg.name, rel(root, &path)));
         }
         sharing
             .entry(rel(root, &path))
             .or_default()
             .push(d.pkg.name.as_str());
+    }
+
+    if !missing.is_empty() {
+        missing.sort();
+        out.push(
+            Finding::new(
+                Severity::Warning,
+                "missing-changelog",
+                format!(
+                    "{} package(s) have no changelog: {}. With the curated strategy a package with \
+                     no `[Unreleased]` notes is never offered for release.",
+                    missing.len(),
+                    missing.join(", ")
+                ),
+            )
+            .fix("create each file with a `## [Unreleased]` heading"),
+        );
     }
 
     // Sharing one changelog is correct for a lockstep group and wrong for packages that version
@@ -558,18 +565,38 @@ fn supply_chain(config: &ReleaseConfig, out: &mut Vec<Finding>) {
         }
     }
 
-    for (name, globs) in &config.publish.ignore_paths {
-        if globs.is_empty() {
-            out.push(
-                Finding::new(
-                    Severity::Suggestion,
-                    "empty-ignore-paths",
-                    format!("`publish.ignore_paths` has an empty list for `{name}`, which does nothing."),
-                )
-                .about(name)
-                .fix("remove the entry, or list the globs that should not force changelog notes"),
-            );
-        }
+    // One finding for all of them, not one per package: an empty list is the same mistake with the
+    // same fix everywhere it appears, and a repo that has it usually has it for every package —
+    // which turned the suggestions section into a wall of identical lines.
+    let mut empty: Vec<&str> = config
+        .publish
+        .ignore_paths
+        .iter()
+        .filter(|(_, globs)| globs.is_empty())
+        .map(|(name, _)| name.as_str())
+        .collect();
+    // `ignore_paths` is a HashMap, so without this the same config lists its packages in a
+    // different order on every run.
+    empty.sort_unstable();
+    if !empty.is_empty() {
+        out.push(
+            Finding::new(
+                Severity::Suggestion,
+                "empty-ignore-paths",
+                format!(
+                    "`publish.ignore_paths` is an empty list for {} package(s), which does \
+                     nothing: {}. A release is then blocked by a README-only or test-only change \
+                     with no changelog notes.",
+                    empty.len(),
+                    empty.join(", ")
+                ),
+            )
+            .fix(
+                "list the globs that should not force changelog notes — `**/*.md` plus the \
+                 ecosystem's test layout is what a new package now starts with — or remove the \
+                 entries",
+            ),
+        );
     }
 }
 

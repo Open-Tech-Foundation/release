@@ -547,6 +547,39 @@ pub struct PublishConfig {
     pub ignore_paths: HashMap<String, Vec<String>>,
 }
 
+/// The path globs a new package starts with in `publish.ignore_paths`.
+///
+/// Preflight refuses to release a package that has commits since its last tag but no
+/// `[Unreleased]` notes. That rule is right for code and wrong for a README fix or a test-only
+/// change, which is the whole reason `ignore_paths` exists — and seeding it empty (what `init` used
+/// to do) meant every repo hit the false alarm before discovering the setting.
+///
+/// Documentation is common to every ecosystem; the test layout is not, so it comes from the
+/// adapter that owns the package. These are a starting point, not a policy: they are written into
+/// `release.toml` as plain globs precisely so a repo can edit them.
+pub fn default_ignore_paths(ecosystem: Ecosystem) -> Vec<String> {
+    let globs: &[&str] = match ecosystem {
+        // `__tests__` (jest), `*.test.*`/`*.spec.*` (jest/vitest), `test/`+`tests/` (node:test, ava).
+        Ecosystem::Npm => &[
+            "**/*.md",
+            "**/__tests__/**",
+            "**/*.test.*",
+            "**/*.spec.*",
+            "**/test/**",
+            "**/tests/**",
+        ],
+        // Cargo's own layout: integration tests and benches live outside `src/`. Unit tests sit
+        // *inside* `src/`, so they are deliberately not covered — a `#[cfg(test)]` change usually
+        // rides along with the code it tests.
+        Ecosystem::Cargo => &["**/*.md", "**/tests/**", "**/benches/**"],
+        // Deno's convention is `_test.ts`; `.test.ts` is accepted too.
+        Ecosystem::Jsr => &["**/*.md", "**/*_test.ts", "**/*.test.ts", "**/tests/**"],
+        // Nothing can be assumed about the layout, so only documentation.
+        Ecosystem::Generic => &["**/*.md"],
+    };
+    globs.iter().map(|glob| (*glob).to_string()).collect()
+}
+
 /// Where an ecosystem's packages live, when the repo does not declare that natively.
 ///
 /// npm discovery normally reads the root `package.json`'s `workspaces` globs. A polyglot repo
@@ -1326,6 +1359,49 @@ mod tests {
         assert!(!packages[0].publishable);
         assert!(packages[1].publishable);
         assert_eq!(cfg.build_only_names(), vec!["@scope/manual"]);
+    }
+
+    /// A seeded glob that matches nothing is worse than no glob at all: it looks configured, and
+    /// the release it was meant to unblock still fails. Check them against the paths they exist for.
+    #[test]
+    fn seeded_ignore_paths_match_the_files_they_are_meant_to_cover() {
+        let matches = |ecosystem: Ecosystem, path: &str| {
+            default_ignore_paths(ecosystem)
+                .iter()
+                .any(|glob| glob::Pattern::new(glob).unwrap().matches(path))
+        };
+
+        // Documentation, at the repo root and inside a package, for every ecosystem.
+        for ecosystem in Ecosystem::ALL {
+            assert!(matches(ecosystem, "README.md"), "{ecosystem:?}");
+            assert!(
+                matches(ecosystem, "packages/redis/README.md"),
+                "{ecosystem:?}"
+            );
+            assert!(
+                !matches(ecosystem, "packages/redis/src/index.ts"),
+                "{ecosystem:?}"
+            );
+        }
+
+        assert!(matches(Ecosystem::Npm, "packages/redis/src/pool.test.ts"));
+        assert!(matches(Ecosystem::Npm, "packages/redis/__tests__/pool.ts"));
+        assert!(matches(Ecosystem::Npm, "packages/redis/test/pool.ts"));
+
+        assert!(matches(
+            Ecosystem::Cargo,
+            "crates/core/tests/publish_flow.rs"
+        ));
+        assert!(matches(Ecosystem::Cargo, "crates/core/benches/parse.rs"));
+        // Unit tests live inside `src/` and ride along with the code they cover, so a change there
+        // still needs notes.
+        assert!(!matches(Ecosystem::Cargo, "crates/core/src/publish.rs"));
+
+        assert!(matches(Ecosystem::Jsr, "mod_test.ts"));
+        assert!(matches(Ecosystem::Jsr, "src/mod.test.ts"));
+
+        // Generic knows only about docs — anything else would be a guess about someone's layout.
+        assert_eq!(default_ignore_paths(Ecosystem::Generic), vec!["**/*.md"]);
     }
 
     #[test]

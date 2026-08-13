@@ -21,8 +21,8 @@ legacy_tag_formats = ["{name}@{version}"]
 # Publishable packages that otf-release should not version or publish.
 skip_publish = ["@scope/internal-tool"]
 
-# Optional: per-package globs that should warn instead of block when only these paths changed.
-# Add one entry per package name.
+# Per-package globs that warn instead of block when only these paths changed. Seeded per adapter
+# when a package is first configured; edit freely.
 [publish.ignore_paths]
 "@scope/docs-site" = ["docs/**", "**/*.test.ts", "**/__tests__/**"]
 
@@ -286,7 +286,24 @@ See [adapters/generic.md](./adapters/generic.md).
 
 `publish.ignore_paths` is keyed by package name, not adapter, so it applies even to packages
 that do not have a `[[package]]` build entry. Use it for churn that should not force changelog
-notes by itself, for example docs-only and tests-only edits:
+notes by itself, for example docs-only and tests-only edits.
+
+**A new package starts with defaults, not an empty list.** `init` and `config` seed each package
+from the ecosystem that discovered it — documentation everywhere, plus that ecosystem's test
+layout:
+
+| adapter | seeded globs |
+| --- | --- |
+| npm | `**/*.md`, `**/__tests__/**`, `**/*.test.*`, `**/*.spec.*`, `**/test/**`, `**/tests/**` |
+| crates.io | `**/*.md`, `**/tests/**`, `**/benches/**` |
+| jsr | `**/*.md`, `**/*_test.ts`, `**/*.test.ts`, `**/tests/**` |
+| generic | `**/*.md` |
+
+Cargo's unit tests live inside `src/` and are deliberately not covered: a `#[cfg(test)]` change
+usually rides along with the code it tests. Nothing can be assumed about a generic package's
+layout, so it gets documentation only.
+
+They are a starting point, not a policy — plain globs in `release.toml`, there to be edited:
 
 ```toml
 [publish.ignore_paths]
