@@ -318,13 +318,18 @@ pub fn orchestrate_many(
                     note = format!("{note}\n\nGenerated notes:\n{gen}");
                 }
             }
+            let new_version = new_versions[name].clone();
+            let tag = tag_formats
+                .tag_for(name, &new_version)
+                .unwrap_or_else(|_| "<invalid tag format>".to_string());
             VersionChange {
                 name: name.clone(),
                 old_version: bump_base(pkg, bump, stable_heads.get(name.as_str()).copied())
                     .to_string(),
-                new_version: new_versions[name].clone(),
+                new_version,
                 selected: is_selected,
                 note,
+                tag,
             }
         })
         .collect();

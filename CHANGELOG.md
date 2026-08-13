@@ -8,6 +8,21 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Added
+
+- **The release review shows the git tag each package will get.** `tag_format` decides what
+  `last_tag` reads back and whether two packages collide on one tag, and it was the one thing the
+  review screen could not show — so changing it looked like it had done nothing. Every package in
+  the plan now carries its formatted tag, in the TUI review and in the `--dry-run` table.
+
+- **Preflight warns when a `tag_format` change orphans the release history.** Editing the format
+  makes every tag written under the old one invisible to `last_tag`: the package reads as never
+  released, notes are generated from the whole history, and nothing is diffed against its real last
+  release. Nothing errored, so there was no way to notice. When a package has no history under the
+  configured formats but a built-in format finds a tag, preflight names the tag it found and the
+  exact `legacy_tag_formats` line to add. A genuine first release, which has no tag under any
+  format, is not reported.
+
 ### Changed
 
 - **`config` is a full-screen editor instead of a chain of prompts.** The old flow asked which

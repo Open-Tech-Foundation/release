@@ -261,7 +261,11 @@ fn run_git(root: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn version_from_tag<'a>(tag: &'a str, tag_format: &str, pkg_name: &str) -> Option<&'a str> {
+pub(crate) fn version_from_tag<'a>(
+    tag: &'a str,
+    tag_format: &str,
+    pkg_name: &str,
+) -> Option<&'a str> {
     let (before_version, after_version) = tag_format.split_once("{version}")?;
     let prefix = before_version.replace("{name}", pkg_name);
     let suffix = after_version.replace("{name}", pkg_name);

@@ -82,7 +82,25 @@ pub fn check_with_options(
         let selected_for_bump = selected.iter().any(|name| name == &pkg.name);
         let pkg_dir = pkg.manifest_path.parent().unwrap_or_else(|| Path::new("."));
 
-        let violation = match repo.last_tag(&pkg.name, &opts.tag_formats.history_for(&pkg.name))? {
+        let history = opts.tag_formats.history_for(&pkg.name);
+        let last_tag = repo.last_tag(&pkg.name, &history)?;
+        if last_tag.is_none() {
+            if let Some(orphan) = orphaned_history(repo, &pkg.name, &history)? {
+                report.warnings.push(Warning {
+                    package: pkg.name.clone(),
+                    message: format!(
+                        "no release history under the configured tag format, but `{orphan}` \
+                         exists. Changing `tag_format` hides every tag written under the old one: \
+                         this package now looks unreleased, so notes are generated from the whole \
+                         history and nothing is diffed against its real last release. Add \
+                         `legacy_tag_formats = [\"{}\"]` to keep reading them.",
+                        orphan_format(&orphan, &pkg.name)
+                    ),
+                });
+            }
+        }
+
+        let violation = match last_tag {
             None if empty => Some("first release but [Unreleased] is empty".to_string()),
             None => None,
             Some(tag) => {
@@ -137,6 +155,37 @@ pub fn format_violations(violations: &[Violation]) -> String {
     out
 }
 
+/// A tag this package plainly has, written under a format the config no longer reads.
+///
+/// Only consulted when the configured formats find nothing: a package with history is not
+/// interesting, and a genuine first release has no tag under any format either. Checking the
+/// built-in formats is enough to catch the case that actually happens — someone edits
+/// `tag_format` and every prior release drops out of view with no error and no output.
+fn orphaned_history(
+    repo: &dyn RepoState,
+    pkg_name: &str,
+    configured: &[String],
+) -> Result<Option<String>> {
+    for candidate in crate::config::COMMON_TAG_FORMATS {
+        if configured.iter().any(|f| f == candidate) {
+            continue;
+        }
+        if let Some(tag) = repo.last_tag(pkg_name, &[(*candidate).to_string()])? {
+            return Ok(Some(tag));
+        }
+    }
+    Ok(None)
+}
+
+/// Recover which built-in format produced `tag`, for the fix text.
+fn orphan_format(tag: &str, pkg_name: &str) -> String {
+    crate::config::COMMON_TAG_FORMATS
+        .iter()
+        .find(|format| crate::git::version_from_tag(tag, format, pkg_name).is_some())
+        .map(|format| (*format).to_string())
+        .unwrap_or_default()
+}
+
 /// A missing changelog counts as empty (the "empty/missing" rule), not an error.
 fn unreleased_is_empty(changelog_path: &Path) -> Result<bool> {
     if !changelog_path.exists() {
@@ -188,6 +237,103 @@ mod tests {
         fn commits_since(&self, _: Option<&str>, _: &Path) -> Result<String> {
             Ok(String::new())
         }
+    }
+
+    /// A repo holding real tag strings, matched through the same parser the production code uses.
+    /// The other fake keys off the package name alone, which cannot model the thing under test:
+    /// whether a *format* finds a tag.
+    struct TaggedRepo {
+        tags: Vec<String>,
+    }
+
+    impl RepoState for TaggedRepo {
+        fn last_tag(&self, pkg_name: &str, tag_formats: &[String]) -> Result<Option<String>> {
+            Ok(self
+                .tags
+                .iter()
+                .find(|tag| {
+                    tag_formats
+                        .iter()
+                        .any(|f| crate::git::version_from_tag(tag, f, pkg_name).is_some())
+                })
+                .cloned())
+        }
+        fn commit_count_since(&self, _: &str, _: &Path) -> Result<usize> {
+            Ok(0)
+        }
+        fn changed_files_since(&self, _: &str, _: &Path) -> Result<Vec<PathBuf>> {
+            Ok(Vec::new())
+        }
+        fn commits_since(&self, _: Option<&str>, _: &Path) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    fn options(format: &str) -> CheckOptions {
+        CheckOptions {
+            tag_formats: crate::config::TagFormats::global(format),
+            ignore_paths: HashMap::new(),
+        }
+    }
+
+    /// Editing `tag_format` silently orphans every tag written under the old one: `last_tag`
+    /// stops matching, the package reads as never released, and notes are generated from the whole
+    /// history with nothing to diff against. Nothing errors, so the only way to notice is to be
+    /// told.
+    #[test]
+    fn changing_the_tag_format_warns_that_the_old_tags_are_no_longer_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = TaggedRepo {
+            tags: vec!["v0.23.0".to_string()],
+        };
+        let packages = vec![pkg(tmp.path(), "es-runtime-cli", true, Some(WITH_NOTES))];
+
+        let report =
+            check_with_options(&repo, &packages, &[], options("{name}@{version}")).unwrap();
+
+        assert!(report.violations.is_empty(), "{report:?}");
+        let warning = report
+            .warnings
+            .iter()
+            .find(|w| w.package == "es-runtime-cli")
+            .expect("orphaned history is reported");
+        assert!(warning.message.contains("v0.23.0"), "{}", warning.message);
+        assert!(
+            warning
+                .message
+                .contains(r#"legacy_tag_formats = ["v{version}"]"#),
+            "the fix must name the exact line to add: {}",
+            warning.message
+        );
+    }
+
+    /// Declaring the old format is the fix, so declaring it must silence the warning — and the
+    /// history must actually be read again, not merely stop complaining.
+    #[test]
+    fn declaring_the_old_format_as_legacy_restores_the_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = TaggedRepo {
+            tags: vec!["v0.23.0".to_string()],
+        };
+        let packages = vec![pkg(tmp.path(), "es-runtime-cli", true, Some(WITH_NOTES))];
+
+        let mut opts = options("{name}@{version}");
+        opts.tag_formats = opts.tag_formats.with_legacy(vec!["v{version}".to_string()]);
+
+        let report = check_with_options(&repo, &packages, &[], opts).unwrap();
+        assert!(report.warnings.is_empty(), "{report:?}");
+    }
+
+    /// A genuine first release has no tag under any format. Warning there would fire on every new
+    /// package in the repo, which is exactly the noise that gets a warning ignored.
+    #[test]
+    fn a_package_that_never_shipped_is_not_reported_as_orphaned() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = TaggedRepo { tags: Vec::new() };
+        let packages = vec![pkg(tmp.path(), "brand-new", true, Some(WITH_NOTES))];
+
+        let report = check_with_options(&repo, &packages, &[], options("v{version}")).unwrap();
+        assert!(report.warnings.is_empty(), "{report:?}");
     }
 
     const EMPTY: &str = "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2024-01-01\n- x\n";

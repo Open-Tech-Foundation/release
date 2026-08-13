@@ -177,6 +177,11 @@ fn push_package_group(
         .map(|c| c.name.chars().count())
         .max()
         .unwrap_or(0);
+    let version_width = changes
+        .iter()
+        .map(|c| c.old_version.chars().count() + c.new_version.chars().count() + 3)
+        .max()
+        .unwrap_or(0);
     for c in changes {
         let version = format!("{} → {}", c.old_version, c.new_version);
         lines.push(Line::from(vec![
@@ -186,9 +191,19 @@ fn push_package_group(
                 Style::new().add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled(version, Style::new().fg(Color::Green)),
+            Span::styled(
+                format!("{version:<version_width$}"),
+                Style::new().fg(Color::Green),
+            ),
             Span::raw("  "),
             Span::styled(bump_label(&c.note), dim),
+        ]));
+        // The tag is what `tag_format` actually produces. It sits under the version rather than
+        // beside it so a long scoped tag cannot push the bump off a narrow terminal.
+        lines.push(Line::from(vec![
+            Span::raw("      "),
+            Span::styled("tag ", dim),
+            Span::styled(c.tag.clone(), Style::new().fg(ACCENT)),
         ]));
         if show_reason {
             lines.push(Line::styled(
@@ -303,6 +318,7 @@ mod tests {
                     new_version: "2.0.0".into(),
                     selected: true,
                     note: "major, selected".into(),
+                    tag: "@x/core@2.0.0".into(),
                 },
                 VersionChange {
                     name: "@x/sdk".into(),
@@ -310,6 +326,7 @@ mod tests {
                     new_version: "1.0.1".into(),
                     selected: false,
                     note: "patch — depends on @x/core".into(),
+                    tag: "@x/sdk@1.0.1".into(),
                 },
             ],
             range_updates: vec![RangeUpdate {
@@ -335,6 +352,33 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// `tag_format` decides what `last_tag` reads back and whether two packages collide on one
+    /// tag, and it was the one thing the review could not show — so a change to it looked like it
+    /// had done nothing.
+    #[test]
+    fn the_review_shows_the_tag_each_package_will_get() {
+        let lines = review_lines(
+            &plan(),
+            "",
+            false,
+            "release/2026-06-28",
+            "chore(release): x",
+        );
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.clone()).collect())
+            .collect();
+
+        assert!(
+            text.iter().any(|l| l.contains("tag @x/core@2.0.0")),
+            "{text:#?}"
+        );
+        assert!(
+            text.iter().any(|l| l.contains("tag @x/sdk@1.0.1")),
+            "a cascaded package's tag matters too — it is the one nobody chose: {text:#?}"
+        );
     }
 
     #[test]

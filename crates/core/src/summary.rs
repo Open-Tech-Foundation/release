@@ -21,6 +21,14 @@ pub struct VersionChange {
     pub selected: bool,
     /// The parenthetical reason, e.g. `major, selected` or `patch — depends on @x/core`.
     pub note: String,
+    /// The git tag this release will create, formatted through the package's `tag_format`.
+    ///
+    /// Shown in the review because `tag_format` is the setting with the widest blast radius and
+    /// the least visible effect: it decides what `last_tag` reads back, and two packages whose
+    /// format has no `{name}` collide on one tag and silently release only the first. Reviewing a
+    /// release without seeing its tags means the one thing you cannot check is the one that fails
+    /// quietly.
+    pub tag: String,
 }
 
 /// An internal dependency-range update on one consumer.
@@ -61,6 +69,7 @@ pub fn render(plan: &Plan) -> String {
                     c.old_version.clone(),
                     "→".to_string(),
                     c.new_version.clone(),
+                    c.tag.clone(),
                     c.note.clone(),
                 ]
             })
@@ -70,7 +79,7 @@ pub fn render(plan: &Plan) -> String {
         render_table(
             &mut out,
             "Version Bumps",
-            &["Kind", "Package", "Old", "", "New", "Reason"],
+            &["Kind", "Package", "Old", "", "New", "Tag", "Reason"],
             &rows,
         );
         out.push('\n');
@@ -212,6 +221,7 @@ mod tests {
                     new_version: "2.0.0".into(),
                     selected: true,
                     note: "major, selected".into(),
+                    tag: "@opentf/core@2.0.0".into(),
                 },
                 VersionChange {
                     name: "@opentf/sdk".into(),
@@ -219,6 +229,7 @@ mod tests {
                     new_version: "2.0.0".into(),
                     selected: false,
                     note: "mirror major — peerDep on @opentf/core".into(),
+                    tag: "@opentf/sdk@2.0.0".into(),
                 },
             ],
             range_updates: vec![RangeUpdate {
@@ -253,6 +264,7 @@ mod tests {
                 new_version: "1.0.1".into(),
                 selected: true,
                 note: "patch, selected".into(),
+                tag: "v1.0.1".into(),
             }],
             range_updates: vec![],
         };
