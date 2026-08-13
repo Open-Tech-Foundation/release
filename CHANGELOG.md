@@ -8,8 +8,6 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
-## [0.35.0] - 2026-08-13
-
 ### Added
 
 - **`doctor` reports a workflow that has no job for a configured package** (`stale-workflow`,
@@ -41,6 +39,18 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   `[[package]]` block can now carry its own `legacy_tag_formats`, which replaces the repo-wide list
   for that package. `doctor` reports a nameless repo-wide entry in a multi-package repo as
   `shared-legacy-tag-format`.
+
+### Fixed
+
+- **The `generated` changelog strategy now honours `publish.ignore_paths`.** Curated notes skipped
+  a docs-only change because nobody writes an `[Unreleased]` entry for a README fix; generated notes
+  read git directly and offered the package anyway. The same commit in the same repo produced a
+  different release decision depending only on the changelog strategy. Both paths now share one
+  rule.
+
+## [0.35.0] - 2026-08-13
+
+### Added
 
 - **A package that has never shipped can release its current version as-is.** Every available bump
   skipped the version the author had already written down: a crate sitting at `0.1.0` with no tag
@@ -83,12 +93,6 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   worked before stopped working. `release.toml` remains the interface for anything scripted.
 
 ### Fixed
-
-- **The `generated` changelog strategy now honours `publish.ignore_paths`.** Curated notes skipped
-  a docs-only change because nobody writes an `[Unreleased]` entry for a README fix; generated notes
-  read git directly and offered the package anyway. The same commit in the same repo produced a
-  different release decision depending only on the changelog strategy. Both paths now share one
-  rule.
 
 - **npm packages are published with the access their manifest asks for.** `npm publish` was always
   invoked with `--access public`, and a CLI `--access` overrides `publishConfig.access` — so a
