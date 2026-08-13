@@ -326,9 +326,14 @@ impl Adapter for NpmAdapter {
 
     fn is_published(&self, pkg: &Pkg, version: &str) -> Result<bool> {
         let spec = format!("{}@{}", pkg.name, version);
-        let out = self
-            .runner
-            .run("npm", &["view", &spec, "version"], &self.root)?;
+        // Retried: a dropped connection here would otherwise abort a release before it published
+        // anything. A 404 — the expected "not published yet" — is not transient and returns at once.
+        let out = crate::command::run_probe(
+            self.runner.as_ref(),
+            "npm",
+            &["view", &spec, "version"],
+            &self.root,
+        )?;
         if out.success {
             return Ok(!out.stdout.trim().is_empty());
         }
@@ -353,9 +358,18 @@ impl Adapter for NpmAdapter {
                 .with_context(|| format!("staging assets for {}", pkg.name))?;
         }
 
+        // `--access` on the command line beats `publishConfig.access` in the manifest, so passing
+        // a hardcoded `public` would publish a package that asked to stay restricted — once, and
+        // irreversibly. Honour the manifest when it has an opinion; default to `public` only when
+        // it does not, since that is what a scoped package's *first* publish needs to succeed.
+        let access = Manifest::read(&pkg.manifest_path)
+            .ok()
+            .and_then(|manifest| manifest.publish_access())
+            .unwrap_or_else(|| "public".to_string());
+
         // A prerelease version (e.g. a `1.2.3-dev.<hash>` snapshot) must publish under its own
         // dist-tag, never `latest`, so an automated snapshot never becomes the default install.
-        let mut args = vec!["publish", "--access", "public", "--no-workspaces"];
+        let mut args = vec!["publish", "--access", &access, "--no-workspaces"];
         let tag = dist_tag(&pkg.version);
         if let Some(tag) = &tag {
             args.push("--tag");
@@ -939,6 +953,54 @@ mod tests {
             ["publish", "--access", "public", "--no-workspaces"]
         );
         assert_eq!(calls[0].2, PathBuf::from("/repo/packages/a"));
+    }
+
+    /// The failure this guards is one-way: npm has no un-publish for making a package private
+    /// again. A manifest that asks to stay restricted must reach `npm publish` as `restricted`.
+    #[test]
+    fn publish_honours_publish_config_access_instead_of_forcing_public() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("packages/a");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        let manifest = pkg_dir.join("package.json");
+        std::fs::write(
+            &manifest,
+            r#"{"name":"@x/a","version":"1.2.3","publishConfig":{"access":"restricted"}}"#,
+        )
+        .unwrap();
+
+        let fake = FakeRunner::new(true, "", "");
+        let adapter = NpmAdapter::with_runner(tmp.path(), Box::new(fake.clone()));
+        let pkg = dummy_pkg("@x/a", manifest.to_str().unwrap());
+
+        adapter.publish(&pkg, None).unwrap();
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(
+            calls[0].1,
+            ["publish", "--access", "restricted", "--no-workspaces"],
+            "a CLI --access overrides publishConfig, so it must carry the manifest's answer"
+        );
+    }
+
+    /// A scoped package's first publish fails without an explicit `--access`, so "no opinion in
+    /// the manifest" must still mean public — this is the path every existing repo is on.
+    #[test]
+    fn publish_defaults_to_public_when_the_manifest_says_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path().join("packages/a");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        let manifest = pkg_dir.join("package.json");
+        std::fs::write(&manifest, r#"{"name":"@x/a","version":"1.2.3"}"#).unwrap();
+
+        let fake = FakeRunner::new(true, "", "");
+        let adapter = NpmAdapter::with_runner(tmp.path(), Box::new(fake.clone()));
+        let pkg = dummy_pkg("@x/a", manifest.to_str().unwrap());
+
+        adapter.publish(&pkg, None).unwrap();
+        assert_eq!(
+            fake.calls.lock().unwrap()[0].1,
+            ["publish", "--access", "public", "--no-workspaces"]
+        );
     }
 
     #[test]

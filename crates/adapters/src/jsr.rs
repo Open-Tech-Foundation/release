@@ -348,17 +348,28 @@ impl Adapter for JsrAdapter {
 
     fn is_published(&self, pkg: &Pkg, version: &str) -> Result<bool> {
         let url = format!("https://jsr.io/{}/meta.json", pkg.name);
-        match ureq::get(&url).call() {
-            Ok(resp) => {
-                let meta: serde_json::Value = resp.into_json()?;
-                if let Some(versions) = meta.get("versions").and_then(|v| v.as_object()) {
-                    Ok(versions.contains_key(version))
-                } else {
-                    Ok(false)
+        // Same contract as the npm/cargo probes: 404 is the answer "no such package", anything
+        // else that fails gets a few attempts before it is allowed to abort the release.
+        let mut attempt = 1;
+        loop {
+            match ureq::get(&url).call() {
+                Ok(resp) => {
+                    let meta: serde_json::Value = resp.into_json()?;
+                    return Ok(meta
+                        .get("versions")
+                        .and_then(|v| v.as_object())
+                        .is_some_and(|versions| versions.contains_key(version)));
+                }
+                Err(ureq::Error::Status(404, _)) => return Ok(false),
+                Err(e) => {
+                    if attempt >= crate::command::PROBE_ATTEMPTS {
+                        bail!("failed to query JSR registry: {}", e);
+                    }
+                    eprintln!("querying {url} failed transiently; retry {attempt}");
+                    std::thread::sleep(crate::command::PROBE_BACKOFF * attempt);
+                    attempt += 1;
                 }
             }
-            Err(ureq::Error::Status(404, _)) => Ok(false),
-            Err(e) => bail!("failed to query JSR registry: {}", e),
         }
     }
 

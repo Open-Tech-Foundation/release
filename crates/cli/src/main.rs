@@ -444,6 +444,7 @@ fn run() -> Result<()> {
                     changelog: config.changelog_layout(),
                     package,
                     exclude_packages,
+                    tag_releases: true,
                 },
                 &config.hooks,
             )?;

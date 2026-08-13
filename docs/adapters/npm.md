@@ -3,6 +3,25 @@
 Implemented in `crates/adapters/src/npm/`. The rules and gotchas below are baked into the npm
 adapter so the core release flow can stay ecosystem-agnostic.
 
+## Publish access
+
+`npm publish` is invoked with `--access` taken from the package's own `publishConfig.access`, and
+`public` only when the manifest has no opinion:
+
+```json
+{
+  "name": "@acme/internal",
+  "publishConfig": { "access": "restricted" }
+}
+```
+
+This matters because a CLI `--access` flag **overrides** `publishConfig`. Passing a hardcoded
+`public` would publish a package that asked to stay restricted — once, and irreversibly, since npm
+has no un-publish that makes a package private again.
+
+`public` remains the default because a scoped package's *first* publish fails without it. A package
+that should never be published at all belongs in `skip_publish`, or carries `"private": true`.
+
 ## Workspace discovery
 
 The adapter expands the root `package.json` `workspaces` globs and treats a member as a release

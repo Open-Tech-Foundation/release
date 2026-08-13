@@ -8,6 +8,38 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Fixed
+
+- **npm packages are published with the access their manifest asks for.** `npm publish` was always
+  invoked with `--access public`, and a CLI `--access` overrides `publishConfig.access` — so a
+  package declaring `"access": "restricted"` was published world-readable on its first release,
+  irreversibly, since npm has no un-publish that makes a package private again. The flag now comes
+  from `publishConfig.access`, defaulting to `public` only when the manifest has no opinion (a
+  scoped package's first publish needs that).
+
+- **`snapshot` no longer writes git tags.** It reused the publish flow's tagging step, so a repo
+  running snapshots got one tag per commit on `main` — and because snapshot versions are built from
+  the manifest's version core, those tags match the repo's `tag_format`. A snapshot tag could
+  therefore become what `last_tag` returns for a package, zeroing `commit_count_since`, emptying
+  preflight, and silently taking the package out of every future release. Snapshots publish to the
+  registry only; their version already carries the commit hash.
+
+- **Registry probes survive a transient failure.** `npm view` and `cargo info` — the read-only
+  checks that decide whether a version is already published — ran once and aborted the release on
+  any error, including a dropped connection *before anything had been published*. They now retry
+  with exponential backoff on transient signals only; a 404, which is the expected "not published
+  yet", still returns immediately. JSR's HTTP probe got the same treatment.
+
+- **A hung external command is killed instead of holding the runner.** Every `npm`/`cargo`
+  invocation now runs under a 15-minute cap — a hang guard, not a latency budget, since
+  `cargo publish` legitimately blocks while crates.io indexes. Output is drained by reader threads
+  so a child that outgrows the pipe buffer cannot deadlock the wait loop.
+
+- **The snapshot workflow serializes its runs.** It fires on every push to `main` with no
+  `concurrency` block, so two commits landing together published in parallel.
+  `cancel-in-progress: false`, because cancelling mid-publish is the half-released state the
+  guard exists to prevent. (The release workflow already had one.)
+
 ### Changed
 
 - **`publish.ignore_paths` is seeded per adapter instead of empty.** `init` wrote an empty list for

@@ -76,6 +76,9 @@ pub fn run(adapter: &dyn Adapter, root: &Path, config: &ReleaseConfig) -> Result
             // The snapshot flow has no build-matrix stage, so it stages no binaries to require.
             require_staged: Vec::new(),
             changelog: config.changelog_layout(),
+            // A snapshot ships to the registry only. See `PublishOptions::tag_releases`: tagging
+            // one version per commit would bury — and outrank — the release tags `last_tag` reads.
+            tag_releases: false,
         },
         &config.hooks,
     )?;

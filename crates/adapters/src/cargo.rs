@@ -507,7 +507,10 @@ impl Adapter for CargoAdapter {
 
     fn is_published(&self, pkg: &Pkg, version: &str) -> Result<bool> {
         let spec = format!("{}@{}", pkg.name, version);
-        let out = self.runner.run("cargo", &["info", &spec], &self.root)?;
+        // Retried for the same reason as npm's probe: this is a read, and a transient crates.io
+        // failure must not take down a release that has published nothing yet.
+        let out =
+            crate::command::run_probe(self.runner.as_ref(), "cargo", &["info", &spec], &self.root)?;
         if out.success {
             return Ok(true);
         }

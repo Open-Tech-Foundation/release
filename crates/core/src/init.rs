@@ -964,6 +964,14 @@ fn render_snapshot_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmT
     s.push_str("on:\n");
     s.push_str("  push:\n");
     s.push_str("    branches: [\"main\"]\n\n");
+    // Snapshots fire on *every* push, so this is the workflow most likely to overlap with itself.
+    // It still must not cancel: a snapshot publishes real versions to a registry, and killing that
+    // mid-loop leaves one commit's snapshot half-present — packages that depend on each other at
+    // an exact snapshot version then resolve against a set that was never published in full.
+    //
+    // Queuing does not pile up: GitHub keeps at most one pending run per group and replaces it
+    // with the newest trigger, so a busy branch settles at "one running, one queued".
+    s.push_str("concurrency:\n  group: otf-release-snapshot-${{ github.ref }}\n  cancel-in-progress: false\n\n");
     s.push_str("jobs:\n");
     s.push_str("  snapshot:\n");
     s.push_str("    runs-on: ubuntu-latest\n");
@@ -1078,8 +1086,10 @@ fn render_workflow_with_npm_install(config: &ReleaseConfig, npm: &NpmInstall) ->
         }
     }
     // Serialize release runs: two quick pushes to main must not run two `otf-release publish`
-    // pipelines at once. `cancel-in-progress: false` lets an in-flight release finish rather than
-    // being interrupted mid-publish.
+    // pipelines at once. Every idempotency check in `publish` (`is_published`, `tag_exists`,
+    // `release_exists`) is check-then-act, so concurrent runs can both read "not published" and
+    // both push. `cancel-in-progress: false` is equally load-bearing: cancelling mid-publish
+    // produces exactly the half-released state the serialization exists to prevent.
     s.push_str("\nconcurrency:\n  group: release\n  cancel-in-progress: false\n");
     s.push_str("\njobs:\n");
     render_check_release_job(&mut s, config);
@@ -2742,6 +2752,28 @@ pub(crate) mod tests {
         let out = render_workflow(&config);
         // Release runs are serialized so two quick pushes don't publish concurrently.
         assert!(out.contains("\nconcurrency:\n  group: release\n  cancel-in-progress: false\n"));
+    }
+
+    /// The snapshot workflow fires on *every* push to main, so it is the one most likely to
+    /// overlap with itself — and it publishes real versions, so an overlap half-publishes a
+    /// snapshot that dependent packages then resolve against.
+    #[test]
+    fn snapshot_workflow_serializes_its_runs() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            snapshot_tag: Some("snapshot".to_string()),
+            ..ReleaseConfig::default()
+        };
+        let out = render_snapshot_workflow(&config);
+        assert!(
+            out.contains(
+                "concurrency:\n  group: otf-release-snapshot-${{ github.ref }}\n  \
+                 cancel-in-progress: false\n"
+            ),
+            "{out}"
+        );
+        // Cancelling would kill a run mid-publish, which is the failure it exists to prevent.
+        assert!(!out.contains("cancel-in-progress: true"), "{out}");
         // No job here runs on Windows, so the PowerShell install branch is not emitted at all.
         assert!(out.contains("      - name: Install otf-release\n        shell: bash\n"));
         assert!(!out.contains("if: runner.os == 'Windows'"));

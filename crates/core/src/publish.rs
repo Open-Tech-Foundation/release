@@ -40,6 +40,15 @@ pub struct PublishOptions {
     pub require_staged: Vec<String>,
     /// Configured changelog layout: scope plus any per-package overrides.
     pub changelog: ChangelogLayout,
+    /// Whether a published version also gets a git tag and a GitHub Release.
+    ///
+    /// True for a real release. False for `snapshot`, which publishes one version per commit on
+    /// `main`: tagging those would write a tag per commit, and — because snapshot versions are
+    /// built from the manifest's version core — those tags match the repo's configured
+    /// `tag_format`. `last_tag` would then read a snapshot as a package's release baseline, which
+    /// silently zeroes `commit_count_since` and takes the package out of every future release.
+    /// A snapshot is addressable by its registry version, which already carries the commit hash.
+    pub tag_releases: bool,
 }
 
 /// Wire up the real git/forge and run the flow.
@@ -63,6 +72,7 @@ impl Default for PublishOptions {
             skip: Vec::new(),
             require_staged: Vec::new(),
             changelog: ChangelogLayout::default(),
+            tag_releases: true,
         }
     }
 }
@@ -155,10 +165,11 @@ pub fn orchestrate_many(
             }
             let tag = opts.tags.tag_for(&pkg.name, &pkg.version)?;
             let published = adapter.is_published(pkg, &pkg.version)?;
-            let tagged = git.tag_exists(&tag)?;
             // A package is fully shipped only when the registry has it AND its tag exists. If it
             // published on an earlier run but the tag/release step failed, it is reprocessed so
             // the missing tag and GitHub Release get created — without re-publishing the version.
+            // When this run writes no tags, the registry is the whole answer.
+            let tagged = !opts.tag_releases || git.tag_exists(&tag)?;
             if published && tagged {
                 continue;
             }
@@ -231,23 +242,28 @@ pub fn orchestrate_many(
 
             // Tag + release are idempotent so a forward-resume after a mid-package failure fills
             // in whatever is missing instead of skipping the package and stranding the release.
-            if !git.tag_exists(&p.tag)? {
-                git.create_tag(&p.tag)?;
-            }
-            git.push_tag(&p.tag)?;
+            if opts.tag_releases {
+                if !git.tag_exists(&p.tag)? {
+                    git.create_tag(&p.tag)?;
+                }
+                git.push_tag(&p.tag)?;
 
-            if let Some(notes) =
-                changelog::dated_section_notes(&p.pkg.changelog_path, &p.pkg.version)?
-            {
-                if !forge.release_exists(&p.tag)? {
-                    forge.create_release(&p.tag, &p.tag, &notes)?;
+                if let Some(notes) =
+                    changelog::dated_section_notes(&p.pkg.changelog_path, &p.pkg.version)?
+                {
+                    if !forge.release_exists(&p.tag)? {
+                        forge.create_release(&p.tag, &p.tag, &notes)?;
+                    }
                 }
             }
 
-            if p.needs_publish {
-                ui::ok(&format!("Published {}", p.tag));
-            } else {
-                ui::ok(&format!("Tagged {} (already published)", p.tag));
+            match (p.needs_publish, opts.tag_releases) {
+                (true, true) => ui::ok(&format!("Published {}", p.tag)),
+                (true, false) => {
+                    ui::ok(&format!("Published {}@{}", p.pkg.name, p.pkg.version));
+                }
+                (false, true) => ui::ok(&format!("Tagged {} (already published)", p.tag)),
+                (false, false) => {}
             }
         }
     }

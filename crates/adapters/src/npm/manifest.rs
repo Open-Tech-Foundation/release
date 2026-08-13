@@ -83,6 +83,21 @@ impl Manifest {
             == Some(true)
     }
 
+    /// `publishConfig.access`, npm's own way of saying who may install a scoped package.
+    ///
+    /// The release pipeline reads it instead of hardcoding `--access public`, because a CLI
+    /// `--access` flag *overrides* this field: a package that declares `"restricted"` here and is
+    /// published by a tool that always passes `public` becomes world-readable on its first
+    /// release, silently and irreversibly.
+    pub fn publish_access(&self) -> Option<String> {
+        self.json()
+            .ok()?
+            .get("publishConfig")?
+            .get("access")?
+            .as_str()
+            .map(str::to_string)
+    }
+
     /// Every declared dependency across [`DEP_SECTIONS`] whose value is a string range.
     pub fn deps(&self) -> Result<Vec<DepRecord>> {
         let json = self.json()?;

@@ -93,6 +93,9 @@ impl CommandRunner for PubRunner {
 #[derive(Default)]
 struct FakeGit {
     tags: RefCell<Vec<String>>,
+    /// Tags actually pushed to the remote — separate from `tags` so a test can tell "created a
+    /// local tag" from "wrote to shared git history".
+    pushed_tags: RefCell<Vec<String>>,
     /// When set, the next `create_tag` call fails (models a tagging step that died right after a
     /// successful registry publish).
     fail_create_tag_once: RefCell<bool>,
@@ -132,7 +135,8 @@ impl GitOps for FakeGit {
         self.tags.borrow_mut().push(name.to_string());
         Ok(())
     }
-    fn push_tag(&self, _name: &str) -> Result<()> {
+    fn push_tag(&self, name: &str) -> Result<()> {
+        self.pushed_tags.borrow_mut().push(name.to_string());
         Ok(())
     }
     fn tag_exists(&self, name: &str) -> Result<bool> {
@@ -393,6 +397,46 @@ fn halts_on_failure_and_resumes_forward() {
     .unwrap();
     assert!(runner.published.lock().unwrap().contains("@x/sdk@1.0.0"));
     assert!(runner.published.lock().unwrap().contains("@x/mid@1.0.0"));
+}
+
+/// `snapshot` runs on every push to `main` and reuses this flow. It must publish to the registry
+/// and stop there: a snapshot version is built from the manifest's version core, so its tag would
+/// match the repo's configured `tag_format` and could outrank the real release tag that `last_tag`
+/// reads — zeroing `commit_count_since` and taking the package out of every future release.
+#[test]
+fn publishing_without_tagging_ships_to_the_registry_and_writes_no_git_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write_chain(root);
+
+    let runner = PubRunner::new(&[]);
+    let adapter = NpmAdapter::with_runner(root, Box::new(runner.clone()));
+    let git = FakeGit::default();
+    let forge = FakeForge::default();
+    let hooks = otf_release_core::config::Hooks::default();
+    let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
+
+    let opts = PublishOptions {
+        tag_releases: false,
+        ..package_tag_options()
+    };
+    orchestrate(&adapter, &git, &forge, root, &opts, &hooks, &hook_runner).unwrap();
+
+    // Everything reached the registry.
+    let published = runner.published.lock().unwrap().clone();
+    assert!(published.contains("@x/core@1.0.0"), "{published:?}");
+    assert!(published.contains("@x/mid@1.0.0"), "{published:?}");
+
+    // And nothing reached git or the forge.
+    assert!(git.tags.borrow().is_empty(), "{:?}", git.tags.borrow());
+    assert!(git.pushed_tags.borrow().is_empty());
+    assert!(forge.releases.borrow().is_empty());
+
+    // Re-running is a no-op rather than a re-publish: with no tags to check, the registry alone
+    // decides what is already shipped.
+    let before = runner.published.lock().unwrap().len();
+    orchestrate(&adapter, &git, &forge, root, &opts, &hooks, &hook_runner).unwrap();
+    assert_eq!(runner.published.lock().unwrap().len(), before);
 }
 
 #[test]
