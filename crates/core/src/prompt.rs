@@ -19,6 +19,12 @@ pub struct Candidate<'a> {
     pub pkg: &'a Pkg,
     /// Version of the highest stable tag, or `None` if the package never shipped a stable release.
     pub stable_base: Option<String>,
+    /// No tag matches this package under any configured format — it has never been released.
+    ///
+    /// Such a package is offered its current version as-is: a crate whose manifest says `0.1.0`
+    /// and that has shipped nowhere wants `0.1.0` on the registry, not the `0.2.0` that the
+    /// smallest available bump would produce.
+    pub first_release: bool,
 }
 
 impl Candidate<'_> {
@@ -62,6 +68,26 @@ impl Prompt for StdinPrompt {
     fn choose_bumps(&self, pending: &[Candidate]) -> Result<HashMap<String, Bump>> {
         let mut selected = HashMap::new();
         let mut remaining: Vec<&Candidate> = pending.iter().collect();
+
+        // Offered first, and only to packages with no release at all: for them every bump is
+        // wrong, because it skips the version the author already wrote down.
+        let unreleased: Vec<&Candidate> = remaining
+            .iter()
+            .copied()
+            .filter(|c| c.first_release)
+            .collect();
+        if !unreleased.is_empty() {
+            let label = "Initial releases — publish the current version as-is";
+            let chosen = choose_bump_group(label, &unreleased, Some(&Bump::Initial))?;
+            ui::info(&group_summary(label, &chosen, unreleased.len()));
+            let chosen_set: HashSet<String> = chosen.into_iter().collect();
+            for cand in &unreleased {
+                if chosen_set.contains(&cand.pkg.name) {
+                    selected.insert(cand.pkg.name.clone(), Bump::Initial);
+                }
+            }
+            remaining.retain(|cand| !chosen_set.contains(&cand.pkg.name));
+        }
 
         for (label, bump) in [
             ("Major", Bump::Major),
@@ -163,6 +189,10 @@ fn candidate_line(cand: &Candidate, bump: Option<&Bump>) -> Result<String> {
     let Some(bump) = bump else {
         return Ok(format!("{name}  current {}", cand.pkg.version));
     };
+    // `0.1.0 -> 0.1.0` is technically true and reads like a mistake. Say what it means instead.
+    if *bump == Bump::Initial {
+        return Ok(format!("{name}  {} (first release)", cand.pkg.version));
+    }
     let head = cand.stable_head();
     let next = crate::version::apply_bump(head, bump)?;
     if cand.on_prerelease() && cand.stable_base.is_some() {
@@ -256,6 +286,7 @@ mod tests {
         let cand = Candidate {
             pkg: &pkg,
             stable_base: Some("0.13.0".to_string()),
+            first_release: false,
         };
         assert_eq!(
             candidate_line(&cand, Some(&Bump::Minor)).unwrap(),
@@ -268,12 +299,28 @@ mod tests {
         );
     }
 
+    /// A first release keeps its version, so the arrow form would render `0.1.0 -> 0.1.0`.
+    #[test]
+    fn an_initial_release_names_itself_rather_than_showing_an_arrow() {
+        let pkg = pkg_at("0.1.0");
+        let cand = Candidate {
+            pkg: &pkg,
+            stable_base: None,
+            first_release: true,
+        };
+        assert_eq!(
+            candidate_line(&cand, Some(&Bump::Initial)).unwrap(),
+            "@opentf/std  0.1.0 (first release)"
+        );
+    }
+
     #[test]
     fn a_stable_package_shows_the_plain_bump() {
         let pkg = pkg_at("0.13.0");
         let cand = Candidate {
             pkg: &pkg,
             stable_base: None,
+            first_release: false,
         };
         assert_eq!(
             candidate_line(&cand, Some(&Bump::Minor)).unwrap(),

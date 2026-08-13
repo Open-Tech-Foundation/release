@@ -21,6 +21,12 @@ use crate::config::ChangelogLayout;
 /// mixes (two different prerelease channels).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Bump {
+    /// Ship the manifest's current version unchanged.
+    ///
+    /// Only offered for a package with no prior release: a crate sitting at `0.1.0` that has never
+    /// shipped wants `0.1.0` on the registry, not `0.2.0`. Every other bump would skip the version
+    /// the author already chose and published nowhere.
+    Initial,
     Graduate,
     Prerelease(String),
     PrePatch(String),
@@ -68,6 +74,7 @@ impl Bump {
 impl std::fmt::Display for Bump {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Bump::Initial => "initial",
             Bump::Graduate => "graduate",
             Bump::Prerelease(ch) => return write!(f, "prerelease ({ch})"),
             Bump::PrePatch(ch) => return write!(f, "prepatch ({ch})"),

@@ -48,6 +48,19 @@ pub struct RangeUpdate {
 pub struct Plan {
     pub changes: Vec<VersionChange>,
     pub range_updates: Vec<RangeUpdate>,
+    /// Preflight conditions that do not block the release but should change the answer.
+    ///
+    /// These travel *in the plan* rather than being printed before it. The review is a full-screen
+    /// TUI: anything written to stdout beforehand is hidden the moment the alternate screen opens,
+    /// so a warning printed there was invisible at exactly the point it had to be read.
+    pub warnings: Vec<Warning>,
+}
+
+/// A non-blocking condition attached to one package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Warning {
+    pub package: String,
+    pub message: String,
 }
 
 /// Render the human-readable confirmation summary (no trailing prompt).
@@ -83,6 +96,13 @@ pub fn render(plan: &Plan) -> String {
             &rows,
         );
         out.push('\n');
+    }
+
+    if !plan.warnings.is_empty() {
+        out.push_str("\nWarnings\n");
+        for warning in &plan.warnings {
+            out.push_str(&format!("  {}: {}\n", warning.package, warning.message));
+        }
     }
 
     if !plan.range_updates.is_empty() {
@@ -232,6 +252,7 @@ mod tests {
                     tag: "@opentf/sdk@2.0.0".into(),
                 },
             ],
+            warnings: Vec::new(),
             range_updates: vec![RangeUpdate {
                 consumer: "playground".into(),
                 dep: "@opentf/core".into(),
@@ -267,6 +288,7 @@ mod tests {
                 tag: "v1.0.1".into(),
             }],
             range_updates: vec![],
+            warnings: Vec::new(),
         };
         let out = render(&plan);
         assert!(out.contains("Version Bumps"));

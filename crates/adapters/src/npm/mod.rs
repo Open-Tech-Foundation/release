@@ -319,7 +319,11 @@ impl Adapter for NpmAdapter {
 
     fn dependent_bump(&self, dep_bump: Bump, kind: &DepKind) -> Bump {
         match kind {
-            DepKind::PeerDep => dep_bump, // mirror
+            // A peerDep mirrors its dependency's bump — except `Initial`, which means "ship the
+            // manifest version unchanged". That is only ever right for the package that has never
+            // shipped; mirroring it onto a dependent that *has* would re-release a version it
+            // already published, and collide with that version's existing tag.
+            DepKind::PeerDep if dep_bump != Bump::Initial => dep_bump,
             _ => Bump::Patch,
         }
     }

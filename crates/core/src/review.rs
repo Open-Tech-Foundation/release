@@ -109,6 +109,26 @@ pub fn review_lines(
     let dim = Style::new().fg(Color::DarkGray);
     let mut lines = Vec::new();
 
+    // Above the plan, not below it: a warning that changes the answer has to be read before the
+    // eye reaches the packages, and this screen is the only place it is visible at all.
+    if !plan.warnings.is_empty() {
+        lines.push(section("Warnings"));
+        for warning in &plan.warnings {
+            lines.push(Line::from(vec![
+                Span::styled("  ⚠  ", Style::new().fg(Color::Yellow)),
+                Span::styled(
+                    warning.package.clone(),
+                    Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::styled(
+                format!("     {}", warning.message),
+                Style::new().fg(Color::Yellow),
+            ));
+        }
+        lines.push(Line::raw(""));
+    }
+
     lines.push(section("Packages"));
     let selected: Vec<&VersionChange> = plan.changes.iter().filter(|c| c.selected).collect();
     let automatic: Vec<&VersionChange> = plan.changes.iter().filter(|c| !c.selected).collect();
@@ -307,6 +327,7 @@ fn section(title: &'static str) -> Line<'static> {
 mod tests {
     use super::*;
     use crate::adapter::DepKind;
+    use crate::summary::Warning;
     use crate::summary::{RangeUpdate, VersionChange};
 
     fn plan() -> Plan {
@@ -329,6 +350,10 @@ mod tests {
                     tag: "@x/sdk@1.0.1".into(),
                 },
             ],
+            warnings: vec![Warning {
+                package: "@x/core".into(),
+                message: "no release history under the configured tag format".into(),
+            }],
             range_updates: vec![RangeUpdate {
                 consumer: "@x/app".into(),
                 dep: "@x/core".into(),
@@ -352,6 +377,31 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The review takes over the terminal, so a warning printed before it opens is wiped by the
+    /// alternate screen — invisible at exactly the moment it has to be read. It belongs on the
+    /// screen, above the plan.
+    #[test]
+    fn warnings_are_shown_on_the_review_above_the_packages() {
+        let lines = review_lines(
+            &plan(),
+            "",
+            false,
+            "release/2026-06-28",
+            "chore(release): x",
+        );
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.clone()).collect())
+            .collect();
+
+        let warnings_at = text.iter().position(|l| l.contains("Warnings")).unwrap();
+        let packages_at = text.iter().position(|l| l.contains("Packages")).unwrap();
+        assert!(warnings_at < packages_at, "{text:#?}");
+        assert!(text
+            .iter()
+            .any(|l| l.contains("no release history under the configured tag format")));
     }
 
     /// `tag_format` decides what `last_tag` reads back and whether two packages collide on one

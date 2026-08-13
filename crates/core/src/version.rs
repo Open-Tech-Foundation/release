@@ -185,15 +185,16 @@ pub fn orchestrate_many(
                 .collect(),
         },
     )?;
-    if !report.warnings.is_empty() {
-        // One marked line per warning, rather than one `!` on a paragraph whose remaining lines
-        // then read as unrelated output.
-        ui::warn("preflight warnings");
-        for warning in &report.warnings {
-            ui::detail(&format!("{}: {}", warning.package, warning.message));
-        }
-        println!();
-    }
+    // Warnings are carried into the plan rather than printed here: the review screen takes over
+    // the terminal, so anything written now is gone by the time the decision is made.
+    let warnings: Vec<summary::Warning> = report
+        .warnings
+        .iter()
+        .map(|w| summary::Warning {
+            package: w.package.clone(),
+            message: w.message.clone(),
+        })
+        .collect();
     if !report.violations.is_empty() {
         bail!("{}", preflight::format_violations(&report.violations));
     }
@@ -251,7 +252,14 @@ pub fn orchestrate_many(
             } else {
                 None
             };
-            Ok(Candidate { pkg, stable_base })
+            let first_release = repo
+                .last_tag(&pkg.name, &tag_formats.history_for(&pkg.name))?
+                .is_none();
+            Ok(Candidate {
+                pkg,
+                stable_base,
+                first_release,
+            })
         })
         .collect::<Result<_>>()?;
     let stable_heads: HashMap<&str, &str> = candidates
@@ -359,6 +367,7 @@ pub fn orchestrate_many(
     let plan = Plan {
         changes,
         range_updates,
+        warnings,
     };
     let summary_text = summary::render(&plan);
 
@@ -562,6 +571,9 @@ pub(crate) fn apply_bump(version: &str, bump: &Bump) -> Result<String> {
     let (major, minor, patch) = (next()?, next()?, next()?);
 
     match bump {
+        // Validated by the parse above, then returned untouched: the point is to ship the version
+        // the manifest already carries.
+        Bump::Initial => Ok(version.to_string()),
         Bump::Graduate => {
             if pre.is_none() {
                 bail!("Cannot graduate a stable version: {version}. Select Major/Minor/Patch instead.");
@@ -616,6 +628,7 @@ fn change_note(
 
 fn bump_word(bump: &Bump) -> &'static str {
     match bump {
+        Bump::Initial => "initial",
         Bump::Graduate => "graduate",
         Bump::PreMajor(_) | Bump::Major => "major",
         Bump::PreMinor(_) | Bump::Minor => "minor",

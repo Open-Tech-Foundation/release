@@ -10,6 +10,18 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ### Added
 
+- **A package that has never shipped can release its current version as-is.** Every available bump
+  skipped the version the author had already written down: a crate sitting at `0.1.0` with no tag
+  anywhere could only be released as `0.2.0`. `version` now offers an *Initial releases* group,
+  listed first and containing only packages with no tag under any configured format, which ships
+  the manifest version unchanged. A peerDep on such a package still gets a patch rather than
+  mirroring it — mirroring would re-release a version the dependent already published.
+
+- **Preflight warnings appear on the review screen.** They were printed before the review opened,
+  and the review is a full-screen TUI — so the alternate screen wiped them at exactly the moment
+  they had to be read. Warnings now travel in the plan and render above the packages, in the TUI
+  and in the `--dry-run` output.
+
 - **The release review shows the git tag each package will get.** `tag_format` decides what
   `last_tag` reads back and whether two packages collide on one tag, and it was the one thing the
   review screen could not show — so changing it looked like it had done nothing. Every package in
