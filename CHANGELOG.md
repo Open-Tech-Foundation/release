@@ -19,6 +19,10 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   will actually do (`(repo default: v{version})`), and the footer carries the focused row's
   explanation. Built on the same `ratatui` foundation as the `version` review screen.
 
+  It requires a terminal on stdin and stdout, and says so with an actionable error when it does not
+  have one — the previous prompt-based editor also refused to run without a TTY, so nothing that
+  worked before stopped working. `release.toml` remains the interface for anything scripted.
+
 ### Fixed
 
 - **npm packages are published with the access their manifest asks for.** `npm publish` was always

@@ -547,6 +547,7 @@ impl App<'_> {
 
 /// Show the config screen. Returns when the user leaves it.
 pub fn run(root: &Path, factory: &dyn AdapterFactory) -> Result<()> {
+    require_terminal()?;
     let config = ReleaseConfig::load(root)?;
     let mut app = App {
         root: root.to_path_buf(),
@@ -565,6 +566,24 @@ pub fn run(root: &Path, factory: &dyn AdapterFactory) -> Result<()> {
     let result = event_loop(&mut terminal, &mut app);
     ratatui::restore();
     result
+}
+
+/// Fail with an explanation before entering raw mode, rather than panicking inside it.
+///
+/// A full-screen editor needs a real terminal on both ends: stdin to read keys, stdout to draw. In
+/// CI or behind a pipe there is neither, and `ratatui::init` panics — which in a release pipeline
+/// surfaces as a backtrace instead of a sentence saying what to do. Point at the file, since
+/// `release.toml` is the actual interface for anything automated.
+fn require_terminal() -> Result<()> {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "`config` is an interactive screen and needs a terminal on stdin and stdout.\n\
+         Nothing here is exclusive to it: `{CONFIG_FILE}` is plain, committed TOML — edit it \
+         directly, then run `otf-release doctor` to check the result."
+    )
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
