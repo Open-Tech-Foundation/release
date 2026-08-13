@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-08-13
+
 ### Added
 
 - **A package that has never shipped can release its current version as-is.** Every available bump
