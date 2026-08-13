@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Added
+
+- **`config` → *Packages* now lists packages the repo has but `release.toml` does not**, marked
+  `[new]`. Adding a package sends you straight to this menu, and it used to be the one place the
+  new package could not appear — the block list was read back from the file, and only *Ecosystems*
+  re-scanned the repo. Listing writes nothing: picking a `[new]` entry asks whether to release it
+  (writes its block, then drops into the field editor) or skip it (records it in `skip_publish`),
+  and backing out leaves the file untouched.
+
+### Changed
+
+- **Esc goes back instead of quitting `config`.** Every prompt reported Esc as an error that
+  unwound the whole session, so one stray press dropped you at the shell and lost your place. It
+  now abandons the open prompt and returns to the menu above, saving nothing. At the root menu, one
+  Esc arms the exit and a second one leaves; Ctrl-C still quits from anywhere.
+
 ### Fixed
 
 - **This repo's own workflow ignored its `otf_release_version` pin.** It pinned `v0.25.0`, and that

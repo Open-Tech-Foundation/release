@@ -22,7 +22,7 @@ use otf_release_core::config::{
     PackageEntry, ReleaseConfig, Target,
 };
 use otf_release_core::config_cmd::{
-    ConfigAction, ConfigPrompt, GlobalField, HookStage, PackageField,
+    ConfigAction, ConfigPrompt, GlobalField, HookStage, NewPackageAction, PackageField,
 };
 use otf_release_core::discover::GenericCandidate;
 use otf_release_core::init::AdapterFactory;
@@ -62,13 +62,17 @@ impl ConfigPrompt for ConfirmEcosystems {
     fn action(&self) -> Result<ConfigAction> {
         Ok(self.steps.borrow_mut().remove(0))
     }
-    fn ecosystems(&self, current: &[Ecosystem]) -> Result<Vec<Ecosystem>> {
-        Ok(current.to_vec())
+    fn ecosystems(&self, current: &[Ecosystem]) -> Result<Option<Vec<Ecosystem>>> {
+        Ok(Some(current.to_vec()))
     }
-    fn npm_packages(&self, found: &[GenericCandidate], defaults: &[usize]) -> Result<Vec<usize>> {
+    fn npm_packages(
+        &self,
+        found: &[GenericCandidate],
+        defaults: &[usize],
+    ) -> Result<Option<Vec<usize>>> {
         // Confirm the declared set unchanged.
         let _ = found;
-        Ok(defaults.to_vec())
+        Ok(Some(defaults.to_vec()))
     }
     fn hook_stage(&self) -> Result<HookStage> {
         unreachable!()
@@ -76,34 +80,40 @@ impl ConfigPrompt for ConfirmEcosystems {
     fn package<'a>(&self, _: &'a [PackageEntry]) -> Result<Option<&'a str>> {
         unreachable!()
     }
+    fn package_to_edit(&self, _: &[PackageEntry], _: &[String]) -> Result<Option<String>> {
+        unreachable!()
+    }
+    fn new_package(&self, _: &str) -> Result<NewPackageAction> {
+        unreachable!()
+    }
     fn package_field(&self, _: &PackageEntry) -> Result<PackageField> {
         unreachable!()
     }
-    fn mode(&self, _: Mode) -> Result<Mode> {
+    fn mode(&self, _: Mode) -> Result<Option<Mode>> {
         unreachable!()
     }
     fn global_field(&self) -> Result<GlobalField> {
         unreachable!()
     }
-    fn changelog_scope(&self, _: &ChangelogScope) -> Result<ChangelogScope> {
+    fn changelog_scope(&self, _: &ChangelogScope) -> Result<Option<ChangelogScope>> {
         unreachable!()
     }
-    fn changelog_strategy(&self, _: &ChangelogStrategy) -> Result<ChangelogStrategy> {
+    fn changelog_strategy(&self, _: &ChangelogStrategy) -> Result<Option<ChangelogStrategy>> {
         unreachable!()
     }
-    fn github_release_notes(&self, _: &GithubReleaseNotes) -> Result<GithubReleaseNotes> {
+    fn github_release_notes(&self, _: &GithubReleaseNotes) -> Result<Option<GithubReleaseNotes>> {
         unreachable!()
     }
-    fn tag_format(&self, _: &str) -> Result<String> {
+    fn tag_format(&self, _: &str) -> Result<Option<String>> {
         unreachable!()
     }
-    fn targets(&self, _: &[Target]) -> Result<Vec<Target>> {
+    fn targets(&self, _: &[Target]) -> Result<Option<Vec<Target>>> {
         unreachable!()
     }
-    fn toggle(&self, _: &str, _: &str, _: bool) -> Result<bool> {
+    fn toggle(&self, _: &str, _: &str, _: bool) -> Result<Option<bool>> {
         unreachable!()
     }
-    fn text(&self, _: &str, _: &str) -> Result<String> {
+    fn text(&self, _: &str, _: &str) -> Result<Option<String>> {
         unreachable!()
     }
 }

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
+use inquire::error::{InquireError, InquireResult};
 use inquire::{MultiSelect, Select, Text};
 
 use crate::config::{
@@ -8,7 +9,12 @@ use crate::config::{
     PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_VERSION_FIELD,
 };
 use crate::discover::{declares_npm_workspaces, scan_npm_candidates, GenericCandidate};
-use crate::init::{sync_package_blocks, AdapterFactory};
+use crate::init::{
+    adopt_package, sync_package_blocks, unconfigured_packages, AdapterFactory, UnconfiguredPackage,
+};
+
+/// How a package the repo has but `release.toml` does not is labelled in the picker.
+const NEW_MARKER: &str = "[new]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigAction {
@@ -44,6 +50,17 @@ pub enum PackageField {
     Back,
 }
 
+/// What to do with a package the repo releases that `release.toml` does not mention yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewPackageAction {
+    /// Write its `[[package]]` block, then edit it like any other.
+    Add,
+    /// Record it in `skip_publish` so it stops being offered.
+    Skip,
+    /// Decide later — nothing is written.
+    Back,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlobalField {
     Provider,
@@ -58,31 +75,68 @@ pub enum GlobalField {
     Back,
 }
 
+/// The menus, as a seam the tests drive without a terminal.
+///
+/// **Esc means back.** Every prompt that returns an `Option` reports Esc as `None` — the caller
+/// abandons that edit and returns to the menu above, saving nothing. Prompts whose menu already
+/// has a *Back* row report Esc as that row instead. Only [`ConfigPrompt::action`], the root menu,
+/// can end the session, and it takes two presses.
 pub trait ConfigPrompt {
     fn action(&self) -> Result<ConfigAction>;
     fn hook_stage(&self) -> Result<HookStage>;
-    fn ecosystems(&self, current: &[Ecosystem]) -> Result<Vec<Ecosystem>>;
+    fn ecosystems(&self, current: &[Ecosystem]) -> Result<Option<Vec<Ecosystem>>>;
     /// Confirm which scanned npm packages this repo releases, returning indices into `found`.
     /// `defaults` are the ones to start checked.
-    fn npm_packages(&self, found: &[GenericCandidate], defaults: &[usize]) -> Result<Vec<usize>>;
+    fn npm_packages(
+        &self,
+        found: &[GenericCandidate],
+        defaults: &[usize],
+    ) -> Result<Option<Vec<usize>>>;
     fn package<'a>(&self, packages: &'a [PackageEntry]) -> Result<Option<&'a str>>;
+    /// Pick a package to edit. `configured` have blocks; `new` are packages found in the repo with
+    /// no block yet, and must be shown as such rather than silently mixed in.
+    fn package_to_edit(
+        &self,
+        configured: &[PackageEntry],
+        new: &[String],
+    ) -> Result<Option<String>>;
+    /// Decide what to do with a package picked from the `new` list.
+    fn new_package(&self, name: &str) -> Result<NewPackageAction>;
     fn package_field(&self, package: &PackageEntry) -> Result<PackageField>;
-    fn mode(&self, current: Mode) -> Result<Mode>;
+    fn mode(&self, current: Mode) -> Result<Option<Mode>>;
     fn global_field(&self) -> Result<GlobalField>;
-    fn changelog_scope(&self, current: &ChangelogScope) -> Result<ChangelogScope>;
-    fn changelog_strategy(&self, current: &ChangelogStrategy) -> Result<ChangelogStrategy>;
-    fn github_release_notes(&self, current: &GithubReleaseNotes) -> Result<GithubReleaseNotes>;
-    fn tag_format(&self, current: &str) -> Result<String>;
+    fn changelog_scope(&self, current: &ChangelogScope) -> Result<Option<ChangelogScope>>;
+    fn changelog_strategy(&self, current: &ChangelogStrategy) -> Result<Option<ChangelogStrategy>>;
+    fn github_release_notes(
+        &self,
+        current: &GithubReleaseNotes,
+    ) -> Result<Option<GithubReleaseNotes>>;
+    fn tag_format(&self, current: &str) -> Result<Option<String>>;
     /// Re-pick a package's build targets, with the configured ones pre-checked.
-    fn targets(&self, current: &[Target]) -> Result<Vec<Target>>;
+    fn targets(&self, current: &[Target]) -> Result<Option<Vec<Target>>>;
     /// Flip an on/off package flag, starting on its current value.
-    fn toggle(&self, prompt: &str, help: &str, current: bool) -> Result<bool>;
-    fn text(&self, prompt: &str, current: &str) -> Result<String>;
+    fn toggle(&self, prompt: &str, help: &str, current: bool) -> Result<Option<bool>>;
+    fn text(&self, prompt: &str, current: &str) -> Result<Option<String>>;
+}
+
+/// Esc is *back*, not *quit*: `inquire` reports it as `OperationCanceled`, which would otherwise
+/// bubble out of the menu loop as an error and end the whole session — losing the developer's place
+/// for what everywhere else is an undo. Ctrl-C (`OperationInterrupted`) still quits, which is the
+/// convention users already have from every other TUI.
+fn cancellable<T>(result: InquireResult<T>) -> Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(InquireError::OperationCanceled) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
 }
 
 pub struct StdinConfigPrompt;
 
 impl ConfigPrompt for StdinConfigPrompt {
+    /// The root menu, where there is nothing above to go back to. Esc here arms the exit and says
+    /// so; a second Esc leaves. One stray press on the way out of a submenu therefore cannot end
+    /// the session, and nobody has to hunt for the *Exit* row to leave.
     fn action(&self) -> Result<ConfigAction> {
         let choices = vec![
             "Lifecycle Hooks",
@@ -91,27 +145,50 @@ impl ConfigPrompt for StdinConfigPrompt {
             "Global Settings",
             "Exit",
         ];
-        Ok(
-            match Select::new("What would you like to configure?", choices).prompt()? {
+        let mut armed = false;
+        loop {
+            let chosen = cancellable(
+                Select::new("What would you like to configure?", choices.clone())
+                    .with_help_message(if armed {
+                        "Esc again to exit"
+                    } else {
+                        "Esc twice to exit; inside a menu, Esc goes back"
+                    })
+                    .prompt(),
+            )?;
+            let Some(chosen) = chosen else {
+                if armed {
+                    return Ok(ConfigAction::Exit);
+                }
+                armed = true;
+                continue;
+            };
+            return Ok(match chosen {
                 "Lifecycle Hooks" => ConfigAction::LifecycleHooks,
                 "Ecosystems" => ConfigAction::Ecosystems,
                 "Packages" => ConfigAction::Packages,
                 "Global Settings" => ConfigAction::GlobalSettings,
                 _ => ConfigAction::Exit,
-            },
-        )
+            });
+        }
     }
 
-    fn npm_packages(&self, found: &[GenericCandidate], defaults: &[usize]) -> Result<Vec<usize>> {
+    fn npm_packages(
+        &self,
+        found: &[GenericCandidate],
+        defaults: &[usize],
+    ) -> Result<Option<Vec<usize>>> {
         let labels: Vec<String> = found.iter().map(GenericCandidate::label).collect();
-        let chosen = MultiSelect::new("Which of these does this repo release?", labels)
-            .with_default(defaults)
-            .with_help_message(
-                "saved as [discovery] npm in release.toml, so version/check/publish all read the \
-                 same set — leave out fixtures, examples, and anything you never publish",
-            )
-            .raw_prompt()?;
-        Ok(chosen.iter().map(|o| o.index).collect())
+        let chosen = cancellable(
+            MultiSelect::new("Which of these does this repo release?", labels)
+                .with_default(defaults)
+                .with_help_message(
+                    "saved as [discovery] npm in release.toml, so version/check/publish all read \
+                     the same set — leave out fixtures, examples, and anything you never publish",
+                )
+                .raw_prompt(),
+        )?;
+        Ok(chosen.map(|chosen| chosen.iter().map(|o| o.index).collect()))
     }
 
     fn hook_stage(&self) -> Result<HookStage> {
@@ -122,7 +199,8 @@ impl ConfigPrompt for StdinConfigPrompt {
             "post_publish",
             "Back",
         ];
-        Ok(match Select::new("Which hook stage?", choices).prompt()? {
+        let chosen = cancellable(Select::new("Which hook stage?", choices).prompt())?;
+        Ok(match chosen.unwrap_or("Back") {
             "pre_version" => HookStage::PreVersion,
             "post_version" => HookStage::PostVersion,
             "pre_publish" => HookStage::PrePublish,
@@ -131,20 +209,24 @@ impl ConfigPrompt for StdinConfigPrompt {
         })
     }
 
-    fn ecosystems(&self, current: &[Ecosystem]) -> Result<Vec<Ecosystem>> {
+    fn ecosystems(&self, current: &[Ecosystem]) -> Result<Option<Vec<Ecosystem>>> {
         let labels: Vec<&str> = Ecosystem::ALL.iter().map(|e| e.label()).collect();
         let defaults: Vec<usize> = current
             .iter()
             .filter_map(|a| Ecosystem::ALL.iter().position(|e| e == a))
             .collect();
-        let chosen = MultiSelect::new("Enabled Ecosystems:", labels)
-            .with_default(&defaults)
-            .prompt()?;
-        Ok(Ecosystem::ALL
-            .iter()
-            .copied()
-            .filter(|eco| chosen.contains(&eco.label()))
-            .collect())
+        let chosen = cancellable(
+            MultiSelect::new("Enabled Ecosystems:", labels)
+                .with_default(&defaults)
+                .prompt(),
+        )?;
+        Ok(chosen.map(|chosen| {
+            Ecosystem::ALL
+                .iter()
+                .copied()
+                .filter(|eco| chosen.contains(&eco.label()))
+                .collect()
+        }))
     }
 
     fn package<'a>(&self, packages: &'a [PackageEntry]) -> Result<Option<&'a str>> {
@@ -154,7 +236,9 @@ impl ConfigPrompt for StdinConfigPrompt {
         }
         let mut names: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
         names.push("Back".to_string());
-        let chosen = Select::new("Which package?", names).prompt()?;
+        let Some(chosen) = cancellable(Select::new("Which package?", names).prompt())? else {
+            return Ok(None);
+        };
         if chosen == "Back" {
             Ok(None)
         } else {
@@ -166,6 +250,60 @@ impl ConfigPrompt for StdinConfigPrompt {
                     .unwrap_or(""),
             ))
         }
+    }
+
+    fn package_to_edit(
+        &self,
+        configured: &[PackageEntry],
+        new: &[String],
+    ) -> Result<Option<String>> {
+        if configured.is_empty() && new.is_empty() {
+            println!("No configured packages in release.toml, and none found in the repo.");
+            return Ok(None);
+        }
+        let mut labels: Vec<String> = configured.iter().map(|p| p.name.clone()).collect();
+        labels.extend(new.iter().map(|name| format!("{name} {NEW_MARKER}")));
+        labels.push("Back".to_string());
+        let chosen = cancellable(
+            Select::new("Which package?", labels)
+                .with_help_message(
+                    "packages marked [new] are in this repo but not yet in release.toml — pick one \
+                     to release it or skip it for good",
+                )
+                .prompt(),
+        )?;
+        let Some(chosen) = chosen else {
+            return Ok(None);
+        };
+        if chosen == "Back" {
+            return Ok(None);
+        }
+        Ok(Some(
+            chosen
+                .strip_suffix(&format!(" {NEW_MARKER}"))
+                .unwrap_or(&chosen)
+                .to_string(),
+        ))
+    }
+
+    fn new_package(&self, name: &str) -> Result<NewPackageAction> {
+        let choices = vec![
+            "Release it — write its [[package]] block",
+            "Skip it — never version or publish it",
+            "Back",
+        ];
+        let chosen = cancellable(
+            Select::new(&format!("{name} is not in release.toml yet:"), choices)
+                .with_help_message(
+                    "skipping records it in `skip_publish`, so it stops being offered here",
+                )
+                .raw_prompt(),
+        )?;
+        Ok(match chosen.map(|choice| choice.index) {
+            Some(0) => NewPackageAction::Add,
+            Some(1) => NewPackageAction::Skip,
+            _ => NewPackageAction::Back,
+        })
     }
 
     fn package_field(&self, package: &PackageEntry) -> Result<PackageField> {
@@ -182,37 +320,36 @@ impl ConfigPrompt for StdinConfigPrompt {
             ]);
         }
         choices.push("Back");
-        Ok(
-            match Select::new("Which package field?", choices).prompt()? {
-                "Mode" => PackageField::Mode,
-                "Build command" => PackageField::Command,
-                "Artifacts" => PackageField::Artifacts,
-                "Build targets" => PackageField::Targets,
-                "Checksums" => PackageField::Checksums,
-                "Build provenance" => PackageField::Attest,
-                "Generic manifest" => PackageField::GenericManifest,
-                "Generic version field" => PackageField::GenericVersionField,
-                "Generic publish command" => PackageField::GenericPublishCommand,
-                _ => PackageField::Back,
-            },
-        )
+        let chosen = cancellable(Select::new("Which package field?", choices).prompt())?;
+        Ok(match chosen.unwrap_or("Back") {
+            "Mode" => PackageField::Mode,
+            "Build command" => PackageField::Command,
+            "Artifacts" => PackageField::Artifacts,
+            "Build targets" => PackageField::Targets,
+            "Checksums" => PackageField::Checksums,
+            "Build provenance" => PackageField::Attest,
+            "Generic manifest" => PackageField::GenericManifest,
+            "Generic version field" => PackageField::GenericVersionField,
+            "Generic publish command" => PackageField::GenericPublishCommand,
+            _ => PackageField::Back,
+        })
     }
 
-    fn mode(&self, current: Mode) -> Result<Mode> {
+    fn mode(&self, current: Mode) -> Result<Option<Mode>> {
         let choices = vec!["publish", "build-only"];
         let default = match current {
             Mode::Publish => 0,
             Mode::BuildOnly => 1,
         };
-        Ok(
-            match Select::new("Package mode:", choices)
+        let chosen = cancellable(
+            Select::new("Package mode:", choices)
                 .with_starting_cursor(default)
-                .prompt()?
-            {
-                "publish" => Mode::Publish,
-                _ => Mode::BuildOnly,
-            },
-        )
+                .prompt(),
+        )?;
+        Ok(chosen.map(|chosen| match chosen {
+            "publish" => Mode::Publish,
+            _ => Mode::BuildOnly,
+        }))
     }
 
     fn global_field(&self) -> Result<GlobalField> {
@@ -228,76 +365,78 @@ impl ConfigPrompt for StdinConfigPrompt {
             "GitHub Release notes",
             "Back",
         ];
-        Ok(
-            match Select::new("Which global setting?", choices).prompt()? {
-                "Provider" => GlobalField::Provider,
-                "Snapshot tag" => GlobalField::SnapshotTag,
-                "Skip publish packages" => GlobalField::SkipPublish,
-                "Publish ignore paths" => GlobalField::PublishIgnorePaths,
-                "Tag format" => GlobalField::TagFormat,
-                "Legacy tag formats" => GlobalField::LegacyTagFormats,
-                "Changelog scope" => GlobalField::ChangelogScope,
-                "Changelog strategy" => GlobalField::ChangelogStrategy,
-                "GitHub Release notes" => GlobalField::GithubReleaseNotes,
-                _ => GlobalField::Back,
-            },
-        )
+        let chosen = cancellable(Select::new("Which global setting?", choices).prompt())?;
+        Ok(match chosen.unwrap_or("Back") {
+            "Provider" => GlobalField::Provider,
+            "Snapshot tag" => GlobalField::SnapshotTag,
+            "Skip publish packages" => GlobalField::SkipPublish,
+            "Publish ignore paths" => GlobalField::PublishIgnorePaths,
+            "Tag format" => GlobalField::TagFormat,
+            "Legacy tag formats" => GlobalField::LegacyTagFormats,
+            "Changelog scope" => GlobalField::ChangelogScope,
+            "Changelog strategy" => GlobalField::ChangelogStrategy,
+            "GitHub Release notes" => GlobalField::GithubReleaseNotes,
+            _ => GlobalField::Back,
+        })
     }
 
-    fn changelog_scope(&self, current: &ChangelogScope) -> Result<ChangelogScope> {
+    fn changelog_scope(&self, current: &ChangelogScope) -> Result<Option<ChangelogScope>> {
         let choices = vec!["root", "package"];
         let default = match current {
             ChangelogScope::Root => 0,
             ChangelogScope::Package => 1,
         };
-        Ok(
-            match Select::new("Changelog scope:", choices)
+        let chosen = cancellable(
+            Select::new("Changelog scope:", choices)
                 .with_starting_cursor(default)
-                .prompt()?
-            {
-                "root" => ChangelogScope::Root,
-                _ => ChangelogScope::Package,
-            },
-        )
+                .prompt(),
+        )?;
+        Ok(chosen.map(|chosen| match chosen {
+            "root" => ChangelogScope::Root,
+            _ => ChangelogScope::Package,
+        }))
     }
 
-    fn changelog_strategy(&self, current: &ChangelogStrategy) -> Result<ChangelogStrategy> {
+    fn changelog_strategy(&self, current: &ChangelogStrategy) -> Result<Option<ChangelogStrategy>> {
         let choices = vec!["curated", "generated"];
         let default = match current {
             ChangelogStrategy::Curated => 0,
             ChangelogStrategy::Generated => 1,
         };
-        Ok(
-            match Select::new("Changelog strategy:", choices)
+        let chosen = cancellable(
+            Select::new("Changelog strategy:", choices)
                 .with_starting_cursor(default)
-                .prompt()?
-            {
-                "generated" => ChangelogStrategy::Generated,
-                _ => ChangelogStrategy::Curated,
-            },
-        )
+                .prompt(),
+        )?;
+        Ok(chosen.map(|chosen| match chosen {
+            "generated" => ChangelogStrategy::Generated,
+            _ => ChangelogStrategy::Curated,
+        }))
     }
 
-    fn github_release_notes(&self, current: &GithubReleaseNotes) -> Result<GithubReleaseNotes> {
+    fn github_release_notes(
+        &self,
+        current: &GithubReleaseNotes,
+    ) -> Result<Option<GithubReleaseNotes>> {
         let choices = vec!["auto-generate", "curated-changelog", "semantic-commits"];
         let default = match current {
             GithubReleaseNotes::AutoGenerate => 0,
             GithubReleaseNotes::CuratedChangelog => 1,
             GithubReleaseNotes::SemanticCommits => 2,
         };
-        Ok(
-            match Select::new("GitHub Release notes:", choices)
+        let chosen = cancellable(
+            Select::new("GitHub Release notes:", choices)
                 .with_starting_cursor(default)
-                .prompt()?
-            {
-                "curated-changelog" => GithubReleaseNotes::CuratedChangelog,
-                "semantic-commits" => GithubReleaseNotes::SemanticCommits,
-                _ => GithubReleaseNotes::AutoGenerate,
-            },
-        )
+                .prompt(),
+        )?;
+        Ok(chosen.map(|chosen| match chosen {
+            "curated-changelog" => GithubReleaseNotes::CuratedChangelog,
+            "semantic-commits" => GithubReleaseNotes::SemanticCommits,
+            _ => GithubReleaseNotes::AutoGenerate,
+        }))
     }
 
-    fn tag_format(&self, current: &str) -> Result<String> {
+    fn tag_format(&self, current: &str) -> Result<Option<String>> {
         let mut choices: Vec<String> = COMMON_TAG_FORMATS
             .iter()
             .map(|format| {
@@ -313,37 +452,47 @@ impl ConfigPrompt for StdinConfigPrompt {
             .iter()
             .position(|format| *format == current)
             .unwrap_or(0);
-        let selected = Select::new("Tag format:", choices)
-            .with_starting_cursor(default)
-            .prompt()?;
+        let selected = cancellable(
+            Select::new("Tag format:", choices)
+                .with_starting_cursor(default)
+                .prompt(),
+        )?;
+        let Some(selected) = selected else {
+            return Ok(None);
+        };
         if selected == "Custom" {
-            Text::new("Custom tag format:")
-                .with_default(current)
-                .prompt()
-                .map_err(Into::into)
+            // Esc out of the custom field goes back to the menu, not out of the edit entirely.
+            cancellable(
+                Text::new("Custom tag format:")
+                    .with_default(current)
+                    .prompt(),
+            )
         } else {
-            Ok(selected
-                .strip_suffix(" (current)")
-                .unwrap_or(&selected)
-                .to_string())
+            Ok(Some(
+                selected
+                    .strip_suffix(" (current)")
+                    .unwrap_or(&selected)
+                    .to_string(),
+            ))
         }
     }
 
-    fn targets(&self, current: &[Target]) -> Result<Vec<Target>> {
+    fn targets(&self, current: &[Target]) -> Result<Option<Vec<Target>>> {
         crate::init::pick_targets("Build targets:", current, crate::init::EDIT_TARGETS_HELP)
     }
 
-    fn toggle(&self, prompt: &str, help: &str, current: bool) -> Result<bool> {
-        Ok(Select::new(prompt, vec!["Yes", "No"])
-            .with_starting_cursor(usize::from(!current))
-            .with_help_message(help)
-            .raw_prompt()?
-            .index
-            == 0)
+    fn toggle(&self, prompt: &str, help: &str, current: bool) -> Result<Option<bool>> {
+        let chosen = cancellable(
+            Select::new(prompt, vec!["Yes", "No"])
+                .with_starting_cursor(usize::from(!current))
+                .with_help_message(help)
+                .raw_prompt(),
+        )?;
+        Ok(chosen.map(|chosen| chosen.index == 0))
     }
 
-    fn text(&self, prompt: &str, current: &str) -> Result<String> {
-        Ok(Text::new(prompt).with_initial_value(current).prompt()?)
+    fn text(&self, prompt: &str, current: &str) -> Result<Option<String>> {
+        cancellable(Text::new(prompt).with_initial_value(current).prompt())
     }
 }
 
@@ -362,7 +511,10 @@ pub fn orchestrate_with_prompt(
         match prompt.action()? {
             ConfigAction::LifecycleHooks => edit_hooks(root, prompt, &mut config)?,
             ConfigAction::Ecosystems => {
-                config.adapters = prompt.ecosystems(&config.adapters)?;
+                let Some(adapters) = prompt.ecosystems(&config.adapters)? else {
+                    continue;
+                };
+                config.adapters = adapters;
                 edit_npm_discovery(root, prompt, &mut config)?;
                 // Enabling an ecosystem is only half an answer: without a block per package there
                 // is no build step, no per-package setting to scope, and — for a package whose
@@ -371,7 +523,7 @@ pub fn orchestrate_with_prompt(
                 report_sync(sync_package_blocks(&mut config, factory, root)?);
                 save(root, &config)?;
             }
-            ConfigAction::Packages => edit_package(root, prompt, &mut config)?,
+            ConfigAction::Packages => edit_package(root, factory, prompt, &mut config)?,
             ConfigAction::GlobalSettings => edit_global(root, prompt, &mut config)?,
             ConfigAction::Exit => break,
         }
@@ -435,7 +587,9 @@ fn edit_npm_discovery(
         .map(|(i, _)| i)
         .collect();
 
-    let chosen = prompt.npm_packages(&found, &defaults)?;
+    let Some(chosen) = prompt.npm_packages(&found, &defaults)? else {
+        return Ok(());
+    };
     config.discovery.npm = chosen
         .into_iter()
         .filter_map(|i| found.get(i))
@@ -463,6 +617,9 @@ fn edit_hooks(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfig
         &format!("Commands for {} (comma-separated):", stage.label()),
         &current_str,
     )?;
+    let Some(edited) = edited else {
+        return Ok(());
+    };
     let new_hooks = parse_csv(&edited);
 
     match stage {
@@ -475,10 +632,33 @@ fn edit_hooks(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfig
     save(root, config)
 }
 
-fn edit_package(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfig) -> Result<()> {
-    let Some(name) = prompt.package(&config.packages)? else {
+/// Edit one package's settings, listing what the repo contains alongside what `release.toml`
+/// already configures.
+///
+/// "I added a package" sends a developer straight here, so this menu re-reads the repo: a package
+/// with no block is offered as `[new]`. Discovery is read-only, though — the file changes only
+/// once the pick has been answered with *release it* or *skip it*. Merely looking at the menu, or
+/// backing out of it, writes nothing, so a package the repo is not ready to release is not adopted
+/// by accident.
+fn edit_package(
+    root: &Path,
+    factory: &dyn AdapterFactory,
+    prompt: &dyn ConfigPrompt,
+    config: &mut ReleaseConfig,
+) -> Result<()> {
+    let discovered = unconfigured_packages(config, factory)?;
+    let new_names: Vec<String> = discovered.iter().map(|d| d.pkg.name.clone()).collect();
+
+    let Some(name) = prompt.package_to_edit(&config.packages, &new_names)? else {
         return Ok(());
     };
+
+    if let Some(new) = discovered.iter().find(|d| d.pkg.name == name) {
+        if !answer_new_package(root, factory, prompt, config, new)? {
+            return Ok(());
+        }
+    }
+
     let Some(idx) = config.packages.iter().position(|p| p.name == name) else {
         return Ok(());
     };
@@ -496,32 +676,48 @@ fn edit_package(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConf
     let name = package.name.clone();
     let name = name.as_str();
     match field {
-        PackageField::Mode => package.mode = prompt.mode(package.mode)?,
-        PackageField::Command => {
-            package.command = prompt.text("Build command:", &package.command)?;
-        }
-        PackageField::Artifacts => {
-            package.artifacts = prompt.text("Artifacts glob:", &package.artifacts)?;
-        }
-        PackageField::Targets => {
-            package.targets = prompt.targets(&package.targets)?;
-            package.matrix = !package.targets.is_empty();
-        }
+        PackageField::Mode => match prompt.mode(package.mode)? {
+            Some(mode) => package.mode = mode,
+            None => return Ok(()),
+        },
+        PackageField::Command => match prompt.text("Build command:", &package.command)? {
+            Some(command) => package.command = command,
+            None => return Ok(()),
+        },
+        PackageField::Artifacts => match prompt.text("Artifacts glob:", &package.artifacts)? {
+            Some(artifacts) => package.artifacts = artifacts,
+            None => return Ok(()),
+        },
+        PackageField::Targets => match prompt.targets(&package.targets)? {
+            Some(targets) => {
+                package.targets = targets;
+                package.matrix = !package.targets.is_empty();
+            }
+            None => return Ok(()),
+        },
         PackageField::Checksums => {
             // Read by `github-release` at release time, so the workflow YAML is unaffected.
-            package.checksums = prompt.toggle(
+            let checksums = prompt.toggle(
                 "Attach a checksums.txt (SHA-256)?",
                 "one combined checksums.txt covering every asset on the release",
                 package.checksums,
             )?;
+            match checksums {
+                Some(checksums) => package.checksums = checksums,
+                None => return Ok(()),
+            }
         }
         PackageField::Attest => {
-            package.attest = prompt.toggle(
+            let attest = prompt.toggle(
                 "Generate signed build provenance?",
                 "proves each asset was built by this repo's workflow from this commit; verified \
                  with `gh attestation verify <file> --repo <owner/repo>`",
                 package.attest,
             )?;
+            match attest {
+                Some(attest) => package.attest = attest,
+                None => return Ok(()),
+            }
             if package.attest {
                 // Unlike checksums, this adds an `attestations: write` permission and a signing
                 // step to the workflow, which only `upgrade` can write.
@@ -530,10 +726,14 @@ fn edit_package(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConf
         }
         PackageField::TagFormat => {
             let current = package.tag_format.as_deref().unwrap_or("");
-            let edited = optional_text(prompt.text(
+            let Some(edited) = prompt.text(
                 &format!("Tag format for {name} (blank = the repo's `{tag_format}`):"),
                 current,
-            )?);
+            )?
+            else {
+                return Ok(());
+            };
+            let edited = optional_text(edited);
             if let Some(format) = &edited {
                 format_tag(format, name, "1.2.3")?;
             }
@@ -541,29 +741,41 @@ fn edit_package(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConf
         }
         PackageField::Changelog => {
             let current = package.changelog.as_deref().unwrap_or("");
-            let edited = optional_text(prompt.text(
+            let Some(edited) = prompt.text(
                 &format!(
                     "Changelog for {name}, relative to the repo root (blank = {scope} scope):"
                 ),
                 current,
-            )?);
-            package.changelog = edited;
+            )?
+            else {
+                return Ok(());
+            };
+            package.changelog = optional_text(edited);
             package.validate_release_identity()?;
         }
         PackageField::GenericManifest => {
             let current = package.manifest.as_deref().unwrap_or("");
-            package.manifest = optional_text(prompt.text("Generic manifest:", current)?);
+            let Some(edited) = prompt.text("Generic manifest:", current)? else {
+                return Ok(());
+            };
+            package.manifest = optional_text(edited);
         }
         PackageField::GenericVersionField => {
             let current = package
                 .version_field
                 .as_deref()
                 .unwrap_or(DEFAULT_VERSION_FIELD);
-            package.version_field = optional_text(prompt.text("Generic version field:", current)?);
+            let Some(edited) = prompt.text("Generic version field:", current)? else {
+                return Ok(());
+            };
+            package.version_field = optional_text(edited);
         }
         PackageField::GenericPublishCommand => {
             let current = package.publish.as_deref().unwrap_or("");
-            package.publish = optional_text(prompt.text("Generic publish command:", current)?);
+            let Some(edited) = prompt.text("Generic publish command:", current)? else {
+                return Ok(());
+            };
+            package.publish = optional_text(edited);
         }
         PackageField::Back => unreachable!(),
     }
@@ -571,20 +783,64 @@ fn edit_package(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConf
     save(root, config)
 }
 
+/// Resolve a `[new]` pick. Returns whether the package now has a block and editing should carry on
+/// into its fields; every outcome that writes something saves before returning, so the answer
+/// survives whatever the caller does next.
+fn answer_new_package(
+    root: &Path,
+    factory: &dyn AdapterFactory,
+    prompt: &dyn ConfigPrompt,
+    config: &mut ReleaseConfig,
+    new: &UnconfiguredPackage,
+) -> Result<bool> {
+    let name = new.pkg.name.as_str();
+    match prompt.new_package(name)? {
+        NewPackageAction::Add => {
+            for hook in adopt_package(config, factory, root, new)? {
+                report_stripped_hook(name, &hook);
+            }
+            println!("Added a [[package]] block for {name}.");
+            save(root, config)?;
+            Ok(true)
+        }
+        NewPackageAction::Skip => {
+            config.skip_publish.push(name.to_string());
+            config.skip_publish.sort();
+            config.skip_publish.dedup();
+            println!(
+                "{name} recorded in skip_publish — this repo will not version or publish it, and \
+                 it will stop being offered here."
+            );
+            save(root, config)?;
+            Ok(false)
+        }
+        NewPackageAction::Back => Ok(false),
+    }
+}
+
 fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfig) -> Result<()> {
     match prompt.global_field()? {
         GlobalField::Provider => {
-            config.provider = prompt.text("Provider:", &config.provider)?;
+            let Some(provider) = prompt.text("Provider:", &config.provider)? else {
+                return Ok(());
+            };
+            config.provider = provider;
             save(root, config)
         }
         GlobalField::SnapshotTag => {
             let current = config.snapshot_tag.as_deref().unwrap_or("");
-            config.snapshot_tag = optional_text(prompt.text("Snapshot tag:", current)?);
+            let Some(edited) = prompt.text("Snapshot tag:", current)? else {
+                return Ok(());
+            };
+            config.snapshot_tag = optional_text(edited);
             save(root, config)
         }
         GlobalField::SkipPublish => {
             let current = config.skip_publish.join(", ");
-            let edited = prompt.text("Skip publish packages (comma-separated):", &current)?;
+            let Some(edited) = prompt.text("Skip publish packages (comma-separated):", &current)?
+            else {
+                return Ok(());
+            };
             config.skip_publish = parse_csv(&edited);
             save(root, config)
         }
@@ -599,10 +855,13 @@ fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfi
                 .get(name)
                 .map(|paths| paths.join(", "))
                 .unwrap_or_default();
-            let edited = prompt.text(
+            let Some(edited) = prompt.text(
                 &format!("Ignored publish paths for {name} (comma-separated globs):"),
                 &current,
-            )?;
+            )?
+            else {
+                return Ok(());
+            };
             config
                 .publish
                 .ignore_paths
@@ -610,29 +869,41 @@ fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfi
             save(root, config)
         }
         GlobalField::TagFormat => {
-            let tag_format = prompt.tag_format(&config.tag_format)?;
+            let Some(tag_format) = prompt.tag_format(&config.tag_format)? else {
+                return Ok(());
+            };
             format_tag(&tag_format, "package", "1.2.3")?;
             config.tag_format = tag_format;
             save(root, config)
         }
         GlobalField::LegacyTagFormats => {
             let current = config.legacy_tag_formats.join(", ");
-            let edited = prompt.text("Legacy tag formats (comma-separated):", &current)?;
-            let legacy_tag_formats = parse_legacy_tag_formats(&edited)?;
-            config.legacy_tag_formats = legacy_tag_formats;
+            let Some(edited) = prompt.text("Legacy tag formats (comma-separated):", &current)?
+            else {
+                return Ok(());
+            };
+            config.legacy_tag_formats = parse_legacy_tag_formats(&edited)?;
             save(root, config)
         }
         GlobalField::ChangelogScope => {
-            config.changelog_scope = prompt.changelog_scope(&config.changelog_scope)?;
+            let Some(scope) = prompt.changelog_scope(&config.changelog_scope)? else {
+                return Ok(());
+            };
+            config.changelog_scope = scope;
             save(root, config)
         }
         GlobalField::ChangelogStrategy => {
-            config.changelog_strategy = prompt.changelog_strategy(&config.changelog_strategy)?;
+            let Some(strategy) = prompt.changelog_strategy(&config.changelog_strategy)? else {
+                return Ok(());
+            };
+            config.changelog_strategy = strategy;
             save(root, config)
         }
         GlobalField::GithubReleaseNotes => {
-            config.github_release_notes =
-                prompt.github_release_notes(&config.github_release_notes)?;
+            let Some(notes) = prompt.github_release_notes(&config.github_release_notes)? else {
+                return Ok(());
+            };
+            config.github_release_notes = notes;
             save(root, config)
         }
         GlobalField::Back => Ok(()),
@@ -652,12 +923,18 @@ impl HookStage {
 }
 
 /// Print what reconciling the package blocks changed, so an edit never silently rewrites the file.
+/// Report a manifest edited to hand the build to the pipeline — a change on disk outside
+/// `release.toml`, so it is never silent.
+fn report_stripped_hook(package: &str, hook: &str) {
+    println!(
+        "Removed npm lifecycle hook `{hook}` from {package}. The release pipeline runs the \
+         build itself — move any custom steps into a `build` script or [hooks] in release.toml."
+    );
+}
+
 fn report_sync(sync: crate::init::PackageSync) {
     for (package, hook) in &sync.stripped_hooks {
-        println!(
-            "Removed npm lifecycle hook `{hook}` from {package}. The release pipeline runs the \
-             build itself — move any custom steps into a `build` script or [hooks] in release.toml."
-        );
+        report_stripped_hook(package, hook);
     }
     if sync.is_empty() {
         return;
@@ -749,6 +1026,57 @@ mod tests {
         }
     }
 
+    /// A factory whose adapter finds one crate on disk — the "I just added a package" state that
+    /// the Packages menu has to reconcile before it can offer anything to edit.
+    struct DiscoversNewCrate;
+    impl AdapterFactory for DiscoversNewCrate {
+        fn make(&self, _: Ecosystem) -> Box<dyn crate::adapter::Adapter> {
+            Box::new(OneCrateAdapter)
+        }
+    }
+
+    struct OneCrateAdapter;
+    impl crate::adapter::Adapter for OneCrateAdapter {
+        fn discover_packages(&self) -> Result<Vec<crate::adapter::Pkg>> {
+            Ok(vec![crate::adapter::Pkg {
+                name: "new-crate".to_string(),
+                version: "0.1.0".to_string(),
+                manifest_path: Path::new("crates/new/Cargo.toml").to_path_buf(),
+                changelog_path: Path::new("crates/new/CHANGELOG.md").to_path_buf(),
+                publishable: true,
+                internal_deps: Vec::new(),
+            }])
+        }
+        fn write_version(&self, _: &crate::adapter::Pkg, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn update_dep_range(&self, _: &crate::adapter::Pkg, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn format_range(&self, _: &str) -> String {
+            unreachable!()
+        }
+        fn resolve_workspace_links(&self, _: &crate::adapter::Pkg) -> Result<()> {
+            unreachable!()
+        }
+        fn update_lockfile(&self, _: &Path) -> Result<()> {
+            unreachable!()
+        }
+        fn dependent_bump(
+            &self,
+            _: crate::adapter::Bump,
+            _: &crate::adapter::DepKind,
+        ) -> crate::adapter::Bump {
+            unreachable!()
+        }
+        fn is_published(&self, _: &crate::adapter::Pkg, _: &str) -> Result<bool> {
+            unreachable!()
+        }
+        fn publish(&self, _: &crate::adapter::Pkg, _: Option<&Path>) -> Result<()> {
+            unreachable!()
+        }
+    }
+
     struct EmptyAdapter;
     impl crate::adapter::Adapter for EmptyAdapter {
         fn discover_packages(&self) -> Result<Vec<crate::adapter::Pkg>> {
@@ -787,6 +1115,12 @@ mod tests {
     struct FakePrompt {
         actions: RefCell<Vec<ConfigAction>>,
         package: RefCell<Option<String>>,
+        /// What to answer when the picked package is one the repo has and `release.toml` does not.
+        new_package: RefCell<NewPackageAction>,
+        /// Every `[new]` name the picker was offered, so a test can assert what was on screen.
+        offered_new: RefCell<Vec<String>>,
+        /// Simulate Esc at every value prompt.
+        esc: RefCell<bool>,
         package_field: RefCell<PackageField>,
         mode: RefCell<Mode>,
         global_field: RefCell<GlobalField>,
@@ -803,6 +1137,9 @@ mod tests {
             Self {
                 actions: RefCell::new(vec![ConfigAction::Exit]),
                 package: RefCell::new(None),
+                new_package: RefCell::new(NewPackageAction::Add),
+                offered_new: RefCell::new(Vec::new()),
+                esc: RefCell::new(false),
                 package_field: RefCell::new(PackageField::Back),
                 mode: RefCell::new(Mode::BuildOnly),
                 global_field: RefCell::new(GlobalField::Back),
@@ -829,12 +1166,12 @@ mod tests {
             &self,
             _found: &[GenericCandidate],
             defaults: &[usize],
-        ) -> Result<Vec<usize>> {
-            Ok(defaults.to_vec())
+        ) -> Result<Option<Vec<usize>>> {
+            Ok(self.answer(defaults.to_vec()))
         }
 
-        fn ecosystems(&self, _current: &[Ecosystem]) -> Result<Vec<Ecosystem>> {
-            Ok(vec![Ecosystem::Npm, Ecosystem::Generic])
+        fn ecosystems(&self, _current: &[Ecosystem]) -> Result<Option<Vec<Ecosystem>>> {
+            Ok(self.answer(vec![Ecosystem::Npm, Ecosystem::Generic]))
         }
 
         fn package<'a>(&self, packages: &'a [PackageEntry]) -> Result<Option<&'a str>> {
@@ -847,47 +1184,83 @@ mod tests {
                 .map(|p| p.name.as_str()))
         }
 
+        fn package_to_edit(
+            &self,
+            configured: &[PackageEntry],
+            new: &[String],
+        ) -> Result<Option<String>> {
+            self.offered_new.borrow_mut().extend_from_slice(new);
+            let Some(name) = self.package.borrow().clone() else {
+                return Ok(None);
+            };
+            let known = configured.iter().any(|p| p.name == name) || new.contains(&name);
+            Ok(known.then_some(name))
+        }
+
+        fn new_package(&self, _name: &str) -> Result<NewPackageAction> {
+            Ok(*self.new_package.borrow())
+        }
+
         fn package_field(&self, _package: &PackageEntry) -> Result<PackageField> {
             Ok(*self.package_field.borrow())
         }
 
-        fn mode(&self, _current: Mode) -> Result<Mode> {
-            Ok(*self.mode.borrow())
+        fn mode(&self, _current: Mode) -> Result<Option<Mode>> {
+            Ok(self.answer(*self.mode.borrow()))
         }
 
         fn global_field(&self) -> Result<GlobalField> {
             Ok(*self.global_field.borrow())
         }
 
-        fn changelog_scope(&self, _current: &ChangelogScope) -> Result<ChangelogScope> {
-            Ok(self.scope.borrow().clone())
+        fn changelog_scope(&self, _current: &ChangelogScope) -> Result<Option<ChangelogScope>> {
+            Ok(self.answer(self.scope.borrow().clone()))
         }
 
-        fn changelog_strategy(&self, _current: &ChangelogStrategy) -> Result<ChangelogStrategy> {
-            Ok(self.strategy.borrow().clone())
+        fn changelog_strategy(
+            &self,
+            _current: &ChangelogStrategy,
+        ) -> Result<Option<ChangelogStrategy>> {
+            Ok(self.answer(self.strategy.borrow().clone()))
         }
 
         fn github_release_notes(
             &self,
             _current: &GithubReleaseNotes,
-        ) -> Result<GithubReleaseNotes> {
-            Ok(self.github_release_notes.borrow().clone())
+        ) -> Result<Option<GithubReleaseNotes>> {
+            Ok(self.answer(self.github_release_notes.borrow().clone()))
         }
 
-        fn tag_format(&self, _current: &str) -> Result<String> {
-            Ok(self.text.borrow_mut().remove(0))
+        fn tag_format(&self, _current: &str) -> Result<Option<String>> {
+            self.typed()
         }
 
-        fn targets(&self, _current: &[Target]) -> Result<Vec<Target>> {
-            Ok(self.targets.borrow().clone())
+        fn targets(&self, _current: &[Target]) -> Result<Option<Vec<Target>>> {
+            Ok(self.answer(self.targets.borrow().clone()))
         }
 
-        fn toggle(&self, _prompt: &str, _help: &str, _current: bool) -> Result<bool> {
-            Ok(*self.toggle.borrow())
+        fn toggle(&self, _prompt: &str, _help: &str, _current: bool) -> Result<Option<bool>> {
+            Ok(self.answer(*self.toggle.borrow()))
         }
 
-        fn text(&self, _prompt: &str, _current: &str) -> Result<String> {
-            Ok(self.text.borrow_mut().remove(0))
+        fn text(&self, _prompt: &str, _current: &str) -> Result<Option<String>> {
+            self.typed()
+        }
+    }
+
+    impl FakePrompt {
+        /// A value prompt's reply: `None` when the test is simulating Esc.
+        fn answer<T>(&self, value: T) -> Option<T> {
+            (!*self.esc.borrow()).then_some(value)
+        }
+
+        /// Same, for the prompts that consume the queued `text` replies — an Esc must not eat one,
+        /// since the user never typed it.
+        fn typed(&self) -> Result<Option<String>> {
+            if *self.esc.borrow() {
+                return Ok(None);
+            }
+            Ok(Some(self.text.borrow_mut().remove(0)))
         }
     }
 
@@ -1009,13 +1382,17 @@ mod tests {
         // The fake prompt returns npm + generic, so keep npm out by asking for generic only.
         struct GenericOnly;
         impl ConfigPrompt for GenericOnly {
-            fn ecosystems(&self, _: &[Ecosystem]) -> Result<Vec<Ecosystem>> {
-                Ok(vec![Ecosystem::Generic])
+            fn ecosystems(&self, _: &[Ecosystem]) -> Result<Option<Vec<Ecosystem>>> {
+                Ok(Some(vec![Ecosystem::Generic]))
             }
             fn action(&self) -> Result<ConfigAction> {
                 Ok(ConfigAction::Exit)
             }
-            fn npm_packages(&self, _: &[GenericCandidate], _: &[usize]) -> Result<Vec<usize>> {
+            fn npm_packages(
+                &self,
+                _: &[GenericCandidate],
+                _: &[usize],
+            ) -> Result<Option<Vec<usize>>> {
                 panic!("npm is disabled — nothing to ask about");
             }
             fn hook_stage(&self) -> Result<HookStage> {
@@ -1024,34 +1401,46 @@ mod tests {
             fn package<'a>(&self, _: &'a [PackageEntry]) -> Result<Option<&'a str>> {
                 unreachable!()
             }
+            fn package_to_edit(&self, _: &[PackageEntry], _: &[String]) -> Result<Option<String>> {
+                unreachable!()
+            }
+            fn new_package(&self, _: &str) -> Result<NewPackageAction> {
+                unreachable!()
+            }
             fn package_field(&self, _: &PackageEntry) -> Result<PackageField> {
                 unreachable!()
             }
-            fn mode(&self, _: Mode) -> Result<Mode> {
+            fn mode(&self, _: Mode) -> Result<Option<Mode>> {
                 unreachable!()
             }
             fn global_field(&self) -> Result<GlobalField> {
                 unreachable!()
             }
-            fn changelog_scope(&self, _: &ChangelogScope) -> Result<ChangelogScope> {
+            fn changelog_scope(&self, _: &ChangelogScope) -> Result<Option<ChangelogScope>> {
                 unreachable!()
             }
-            fn changelog_strategy(&self, _: &ChangelogStrategy) -> Result<ChangelogStrategy> {
+            fn changelog_strategy(
+                &self,
+                _: &ChangelogStrategy,
+            ) -> Result<Option<ChangelogStrategy>> {
                 unreachable!()
             }
-            fn github_release_notes(&self, _: &GithubReleaseNotes) -> Result<GithubReleaseNotes> {
+            fn github_release_notes(
+                &self,
+                _: &GithubReleaseNotes,
+            ) -> Result<Option<GithubReleaseNotes>> {
                 unreachable!()
             }
-            fn tag_format(&self, _: &str) -> Result<String> {
+            fn tag_format(&self, _: &str) -> Result<Option<String>> {
                 unreachable!()
             }
-            fn targets(&self, _: &[Target]) -> Result<Vec<Target>> {
+            fn targets(&self, _: &[Target]) -> Result<Option<Vec<Target>>> {
                 unreachable!()
             }
-            fn toggle(&self, _: &str, _: &str, _: bool) -> Result<bool> {
+            fn toggle(&self, _: &str, _: &str, _: bool) -> Result<Option<bool>> {
                 unreachable!()
             }
-            fn text(&self, _: &str, _: &str) -> Result<String> {
+            fn text(&self, _: &str, _: &str) -> Result<Option<String>> {
                 unreachable!()
             }
         }
@@ -1118,6 +1507,224 @@ mod tests {
             text: RefCell::new(text.into_iter().map(str::to_string).collect()),
             ..FakePrompt::default()
         }
+    }
+
+    fn packages_menu(prompt: FakePrompt) -> FakePrompt {
+        FakePrompt {
+            actions: RefCell::new(vec![ConfigAction::Packages, ConfigAction::Exit]),
+            ..prompt
+        }
+    }
+
+    /// Esc is an undo, not a quit: it abandons the edit in progress and hands the developer back to
+    /// the menu they came from, with the file exactly as it was. Before this, `inquire` reported it
+    /// as an error that unwound the whole session — one stray press and you were back at the shell.
+    #[test]
+    fn esc_abandons_an_edit_without_saving() {
+        let tmp = tempfile::tempdir().unwrap();
+        config().save(tmp.path()).unwrap();
+        let before = std::fs::read_to_string(ReleaseConfig::path(tmp.path())).unwrap();
+
+        // Every menu, each with the field prompt it would land on.
+        let escapes = [
+            (
+                ConfigAction::Packages,
+                GlobalField::Back,
+                PackageField::Command,
+            ),
+            (
+                ConfigAction::Packages,
+                GlobalField::Back,
+                PackageField::Targets,
+            ),
+            (
+                ConfigAction::Packages,
+                GlobalField::Back,
+                PackageField::Mode,
+            ),
+            (
+                ConfigAction::GlobalSettings,
+                GlobalField::Provider,
+                PackageField::Back,
+            ),
+            (
+                ConfigAction::GlobalSettings,
+                GlobalField::TagFormat,
+                PackageField::Back,
+            ),
+            (
+                ConfigAction::GlobalSettings,
+                GlobalField::ChangelogScope,
+                PackageField::Back,
+            ),
+            (
+                ConfigAction::Ecosystems,
+                GlobalField::Back,
+                PackageField::Back,
+            ),
+        ];
+        for (action, global_field, package_field) in escapes {
+            orchestrate_with_prompt(
+                tmp.path(),
+                &NoPackages,
+                &FakePrompt {
+                    actions: RefCell::new(vec![action, ConfigAction::Exit]),
+                    package: RefCell::new(Some("pkg".to_string())),
+                    package_field: RefCell::new(package_field),
+                    global_field: RefCell::new(global_field),
+                    esc: RefCell::new(true),
+                    // Empty: an Esc must not consume a queued reply, and popping from an empty
+                    // queue would panic if it did.
+                    text: RefCell::new(Vec::new()),
+                    ..FakePrompt::default()
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                std::fs::read_to_string(ReleaseConfig::path(tmp.path())).unwrap(),
+                before,
+                "Esc at {action:?}/{global_field:?}/{package_field:?} wrote to release.toml"
+            );
+        }
+    }
+
+    /// Toggling a build-only flag is the one edit whose prompt has no text field to back out of, so
+    /// it gets its own check that Esc leaves the flag alone.
+    #[test]
+    fn esc_leaves_a_toggle_at_its_current_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        config().save(tmp.path()).unwrap();
+
+        orchestrate_with_prompt(
+            tmp.path(),
+            &NoPackages,
+            &FakePrompt {
+                actions: RefCell::new(vec![ConfigAction::Packages, ConfigAction::Exit]),
+                package: RefCell::new(Some("pkg".to_string())),
+                package_field: RefCell::new(PackageField::Checksums),
+                toggle: RefCell::new(true),
+                esc: RefCell::new(true),
+                ..FakePrompt::default()
+            },
+        )
+        .unwrap();
+
+        assert!(!ReleaseConfig::load(tmp.path()).unwrap().packages[0].checksums);
+    }
+
+    /// Adding a package to the repo and reaching for `config` -> Packages is the obvious path, so
+    /// that menu re-reads the repo rather than listing `release.toml` back. Reading is all it does:
+    /// a package shows up as a choice, and choosing nothing changes nothing.
+    #[test]
+    fn packages_menu_lists_a_new_repo_package_without_writing_anything() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut saved = config();
+        saved.adapters = vec![Ecosystem::Cargo];
+        saved.save(tmp.path()).unwrap();
+        let before = std::fs::read_to_string(ReleaseConfig::path(tmp.path())).unwrap();
+
+        let prompt = packages_menu(FakePrompt::default());
+        orchestrate_with_prompt(tmp.path(), &DiscoversNewCrate, &prompt).unwrap();
+
+        assert_eq!(prompt.offered_new.borrow().as_slice(), ["new-crate"]);
+        assert_eq!(
+            std::fs::read_to_string(ReleaseConfig::path(tmp.path())).unwrap(),
+            before,
+            "looking at the menu must not adopt a package"
+        );
+    }
+
+    /// Answering *release it* is the moment the block is written — and the pick then falls straight
+    /// through into the field editor, so a new package can be configured in one visit.
+    #[test]
+    fn releasing_a_new_package_writes_its_block_and_edits_it_in_one_visit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut saved = config();
+        saved.adapters = vec![Ecosystem::Cargo];
+        saved.save(tmp.path()).unwrap();
+
+        orchestrate_with_prompt(
+            tmp.path(),
+            &DiscoversNewCrate,
+            &packages_menu(FakePrompt {
+                package: RefCell::new(Some("new-crate".to_string())),
+                new_package: RefCell::new(NewPackageAction::Add),
+                package_field: RefCell::new(PackageField::Command),
+                text: RefCell::new(vec!["cargo build --release".to_string()]),
+                ..FakePrompt::default()
+            }),
+        )
+        .unwrap();
+
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        let added = cfg.package("new-crate").expect("block written");
+        assert_eq!(added.adapter, Ecosystem::Cargo);
+        assert_eq!(added.command, "cargo build --release");
+        assert_eq!(
+            added.manifest.as_deref(),
+            Some("crates/new/Cargo.toml"),
+            "the block points at the manifest discovery found"
+        );
+        // Packages already configured are untouched by the visit.
+        assert_eq!(cfg.package("pkg").unwrap().command, "old build");
+    }
+
+    /// The other half of the choice: a package this repo will never release is recorded once and
+    /// stops cluttering the menu, instead of being re-offered on every visit.
+    #[test]
+    fn skipping_a_new_package_records_it_and_stops_offering_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut saved = config();
+        saved.adapters = vec![Ecosystem::Cargo];
+        saved.save(tmp.path()).unwrap();
+
+        orchestrate_with_prompt(
+            tmp.path(),
+            &DiscoversNewCrate,
+            &packages_menu(FakePrompt {
+                package: RefCell::new(Some("new-crate".to_string())),
+                new_package: RefCell::new(NewPackageAction::Skip),
+                // Skipping ends the visit: a field prompt here would be a bug.
+                package_field: RefCell::new(PackageField::Command),
+                ..FakePrompt::default()
+            }),
+        )
+        .unwrap();
+
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(cfg.skip_publish, vec!["new-crate".to_string()]);
+        assert!(cfg.package("new-crate").is_none(), "{:?}", cfg.packages);
+
+        let again = packages_menu(FakePrompt::default());
+        orchestrate_with_prompt(tmp.path(), &DiscoversNewCrate, &again).unwrap();
+        assert!(again.offered_new.borrow().is_empty());
+    }
+
+    /// Backing out of the decision is not a decision: nothing is adopted, nothing is skipped, and
+    /// the package is still there to answer next time.
+    #[test]
+    fn backing_out_of_a_new_package_leaves_it_undecided() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut saved = config();
+        saved.adapters = vec![Ecosystem::Cargo];
+        saved.save(tmp.path()).unwrap();
+
+        orchestrate_with_prompt(
+            tmp.path(),
+            &DiscoversNewCrate,
+            &packages_menu(FakePrompt {
+                package: RefCell::new(Some("new-crate".to_string())),
+                new_package: RefCell::new(NewPackageAction::Back),
+                package_field: RefCell::new(PackageField::Command),
+                ..FakePrompt::default()
+            }),
+        )
+        .unwrap();
+
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        assert!(cfg.package("new-crate").is_none());
+        assert!(cfg.skip_publish.is_empty());
     }
 
     #[test]
@@ -1224,14 +1831,20 @@ mod tests {
             fn action(&self) -> Result<ConfigAction> {
                 Ok(ConfigAction::Ecosystems)
             }
-            fn ecosystems(&self, current: &[Ecosystem]) -> Result<Vec<Ecosystem>> {
-                Ok(current
-                    .iter()
-                    .copied()
-                    .filter(|e| *e != Ecosystem::Npm)
-                    .collect())
+            fn ecosystems(&self, current: &[Ecosystem]) -> Result<Option<Vec<Ecosystem>>> {
+                Ok(Some(
+                    current
+                        .iter()
+                        .copied()
+                        .filter(|e| *e != Ecosystem::Npm)
+                        .collect(),
+                ))
             }
-            fn npm_packages(&self, _: &[GenericCandidate], _: &[usize]) -> Result<Vec<usize>> {
+            fn npm_packages(
+                &self,
+                _: &[GenericCandidate],
+                _: &[usize],
+            ) -> Result<Option<Vec<usize>>> {
                 panic!("npm is disabled — discovery must not be asked about");
             }
             fn hook_stage(&self) -> Result<HookStage> {
@@ -1240,34 +1853,46 @@ mod tests {
             fn package<'a>(&self, _: &'a [PackageEntry]) -> Result<Option<&'a str>> {
                 unreachable!()
             }
+            fn package_to_edit(&self, _: &[PackageEntry], _: &[String]) -> Result<Option<String>> {
+                unreachable!()
+            }
+            fn new_package(&self, _: &str) -> Result<NewPackageAction> {
+                unreachable!()
+            }
             fn package_field(&self, _: &PackageEntry) -> Result<PackageField> {
                 unreachable!()
             }
-            fn mode(&self, _: Mode) -> Result<Mode> {
+            fn mode(&self, _: Mode) -> Result<Option<Mode>> {
                 unreachable!()
             }
             fn global_field(&self) -> Result<GlobalField> {
                 unreachable!()
             }
-            fn changelog_scope(&self, _: &ChangelogScope) -> Result<ChangelogScope> {
+            fn changelog_scope(&self, _: &ChangelogScope) -> Result<Option<ChangelogScope>> {
                 unreachable!()
             }
-            fn changelog_strategy(&self, _: &ChangelogStrategy) -> Result<ChangelogStrategy> {
+            fn changelog_strategy(
+                &self,
+                _: &ChangelogStrategy,
+            ) -> Result<Option<ChangelogStrategy>> {
                 unreachable!()
             }
-            fn github_release_notes(&self, _: &GithubReleaseNotes) -> Result<GithubReleaseNotes> {
+            fn github_release_notes(
+                &self,
+                _: &GithubReleaseNotes,
+            ) -> Result<Option<GithubReleaseNotes>> {
                 unreachable!()
             }
-            fn tag_format(&self, _: &str) -> Result<String> {
+            fn tag_format(&self, _: &str) -> Result<Option<String>> {
                 unreachable!()
             }
-            fn targets(&self, _: &[Target]) -> Result<Vec<Target>> {
+            fn targets(&self, _: &[Target]) -> Result<Option<Vec<Target>>> {
                 unreachable!()
             }
-            fn toggle(&self, _: &str, _: &str, _: bool) -> Result<bool> {
+            fn toggle(&self, _: &str, _: &str, _: bool) -> Result<Option<bool>> {
                 unreachable!()
             }
-            fn text(&self, _: &str, _: &str) -> Result<String> {
+            fn text(&self, _: &str, _: &str) -> Result<Option<String>> {
                 unreachable!()
             }
         }
@@ -1275,7 +1900,10 @@ mod tests {
         // One pass, then the loop is broken by the error the second `action()` would raise; run the
         // single edit directly instead so the test does not depend on loop control flow.
         let mut loaded = ReleaseConfig::load(tmp.path()).unwrap();
-        loaded.adapters = KeepMinusNpm.ecosystems(&loaded.adapters).unwrap();
+        loaded.adapters = KeepMinusNpm
+            .ecosystems(&loaded.adapters)
+            .unwrap()
+            .expect("the fake never cancels");
         edit_npm_discovery(tmp.path(), &KeepMinusNpm, &mut loaded).unwrap();
         loaded.save(tmp.path()).unwrap();
 

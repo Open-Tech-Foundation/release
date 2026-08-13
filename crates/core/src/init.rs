@@ -801,7 +801,12 @@ fn release_output(name: &str) -> String {
 /// `already_on` that the registry does *not* know — hand-written into `release.toml` with an
 /// explicit triple — is appended as its own row rather than dropped, so re-editing a config can
 /// never silently discard a custom target.
-pub(crate) fn pick_targets(prompt: &str, already_on: &[Target], help: &str) -> Result<Vec<Target>> {
+/// Esc reports `None` — the caller keeps whatever targets it had.
+pub(crate) fn pick_targets(
+    prompt: &str,
+    already_on: &[Target],
+    help: &str,
+) -> Result<Option<Vec<Target>>> {
     let labels: Vec<String> = TARGET_REGISTRY
         .iter()
         .map(|t| format!("{} - {}-{}", t.label, t.name, t.arch))
@@ -817,17 +822,24 @@ pub(crate) fn pick_targets(prompt: &str, already_on: &[Target], help: &str) -> R
         .map(|(i, _)| i)
         .collect();
 
-    let selected = MultiSelect::new(prompt, labels)
+    let selected = match MultiSelect::new(prompt, labels)
         .with_default(&checked)
         .with_help_message(help)
-        .raw_prompt()?;
-    Ok(selected
-        .iter()
-        .map(|s| {
-            let info = &TARGET_REGISTRY[s.index];
-            Target::resolved(info.name, info.arch)
-        })
-        .collect())
+        .raw_prompt()
+    {
+        Ok(selected) => selected,
+        Err(inquire::error::InquireError::OperationCanceled) => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    Ok(Some(
+        selected
+            .iter()
+            .map(|s| {
+                let info = &TARGET_REGISTRY[s.index];
+                Target::resolved(info.name, info.arch)
+            })
+            .collect(),
+    ))
 }
 
 /// Multi-select build targets for a new package. 32-bit and niche targets are offered but off by
@@ -838,7 +850,9 @@ fn select_targets(prompt: &str) -> Result<Vec<Target>> {
         .filter(|t| t.default_on)
         .map(|t| Target::resolved(t.name, t.arch))
         .collect();
-    pick_targets(prompt, &defaults, INIT_TARGETS_HELP)
+    // `init` is a one-shot wizard with no menu to fall back to, so Esc keeps meaning "cancel".
+    pick_targets(prompt, &defaults, INIT_TARGETS_HELP)?
+        .ok_or_else(|| inquire::error::InquireError::OperationCanceled.into())
 }
 
 /// The preliminary job that checks if a release is needed, guarding the expensive build steps.
@@ -1442,6 +1456,75 @@ fn inline_build_entry(pkg: &Pkg, adapter: Ecosystem, command: String, root: &Pat
     }
 }
 
+/// A package the repo releases that `release.toml` has no `[[package]]` block for.
+///
+/// Kept as a *proposal*, separate from adopting it: the interactive menus offer these as new
+/// choices without writing anything, so seeing a package listed is never the same as deciding to
+/// release it.
+#[derive(Debug, Clone)]
+pub struct UnconfiguredPackage {
+    /// The enabled ecosystem whose adapter found it.
+    pub ecosystem: Ecosystem,
+    /// The discovered package itself.
+    pub pkg: Pkg,
+}
+
+/// Every releasable package the enabled adapters find that has no block yet. Read-only: it touches
+/// neither `release.toml` nor any manifest, so a caller can show the list and still change nothing.
+///
+/// `Generic` is excluded (it has no discovery of its own), as are packages that are unpublishable
+/// or already in `skip_publish` — the repo has already answered for those.
+pub fn unconfigured_packages(
+    config: &ReleaseConfig,
+    factory: &dyn AdapterFactory,
+) -> Result<Vec<UnconfiguredPackage>> {
+    let enabled = config
+        .adapters
+        .iter()
+        .copied()
+        .filter(|eco| *eco != Ecosystem::Generic);
+
+    let mut found = Vec::new();
+    for ecosystem in enabled {
+        let adapter = factory.make_with_discovery(ecosystem, &config.discovery);
+        for pkg in adapter.discover_packages()? {
+            if !pkg.publishable || config.skip_publish.contains(&pkg.name) {
+                continue;
+            }
+            if config.packages.iter().any(|entry| entry.name == pkg.name) {
+                continue;
+            }
+            found.push(UnconfiguredPackage { ecosystem, pkg });
+        }
+    }
+    Ok(found)
+}
+
+/// Write the `[[package]]` block for one discovered package, returning any npm lifecycle hooks
+/// stripped from its manifest. This is the step with side effects — it is called only once
+/// something has decided the repo releases this package.
+pub fn adopt_package(
+    config: &mut ReleaseConfig,
+    factory: &dyn AdapterFactory,
+    root: &Path,
+    new: &UnconfiguredPackage,
+) -> Result<Vec<String>> {
+    let adapter = factory.make_with_discovery(new.ecosystem, &config.discovery);
+    let mut stripped = Vec::new();
+    let entry = match adapter.build_command(&new.pkg)? {
+        Some(command) => {
+            // The pipeline owns the build, so npm's own pack/publish hooks must not re-run it
+            // behind us — the same contract `init` establishes.
+            stripped = adapter.strip_publish_hooks(&new.pkg)?;
+            inline_build_entry(&new.pkg, new.ecosystem, command, root)
+        }
+        None => publish_as_is_entry(&new.pkg, new.ecosystem, root),
+    };
+    config.packages.push(entry);
+    config.packages.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(stripped)
+}
+
 /// Bring `[[package]]` blocks in line with what the enabled adapters actually discover.
 ///
 /// `init` writes a block for every package a repo releases, but `init` is a one-time setup. A repo
@@ -1462,39 +1545,11 @@ pub fn sync_package_blocks(
 ) -> Result<PackageSync> {
     let mut sync = PackageSync::default();
 
-    let enabled: Vec<Ecosystem> = config
-        .adapters
-        .iter()
-        .copied()
-        .filter(|eco| *eco != Ecosystem::Generic)
-        .collect();
-
-    for eco in enabled {
-        let adapter = factory.make_with_discovery(eco, &config.discovery);
-        for pkg in adapter.discover_packages()? {
-            if !pkg.publishable || config.skip_publish.contains(&pkg.name) {
-                continue;
-            }
-            if config.packages.iter().any(|entry| entry.name == pkg.name) {
-                continue;
-            }
-            let entry = match adapter.build_command(&pkg)? {
-                Some(command) => {
-                    // The pipeline owns the build, so npm's own pack/publish hooks must not
-                    // re-run it behind us — the same contract `init` establishes.
-                    sync.stripped_hooks.extend(
-                        adapter
-                            .strip_publish_hooks(&pkg)?
-                            .into_iter()
-                            .map(|hook| (pkg.name.clone(), hook)),
-                    );
-                    inline_build_entry(&pkg, eco, command, root)
-                }
-                None => publish_as_is_entry(&pkg, eco, root),
-            };
-            sync.added.push(entry.name.clone());
-            config.packages.push(entry);
-        }
+    for new in unconfigured_packages(config, factory)? {
+        let hooks = adopt_package(config, factory, root, &new)?;
+        sync.stripped_hooks
+            .extend(hooks.into_iter().map(|hook| (new.pkg.name.clone(), hook)));
+        sync.added.push(new.pkg.name);
     }
 
     config.packages.retain(|entry| {
