@@ -27,6 +27,16 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   and a package's own tag format the repo-wide list with an *inherit* row on top. Free text is kept
   only where the value genuinely is free text: hook commands, build commands, globs, and paths.
 
+- **The interactive prompts are restyled.** `◆` marks the question in progress and `✓` the ones
+  already answered, the question itself is bold, and everything that is context rather than content
+  — help lines, defaults, placeholders — is dimmed instead of competing with it. The option cursor
+  is `❯`, scroll indicators are arrows, and errors get a red `✖`. Esc now renders as `back` rather
+  than `<canceled>`, which read like a failure. List prompts show 12 rows before scrolling instead
+  of 7, so an ordinary monorepo's package list is not a peephole. `config` opens with a one-line
+  summary of what `release.toml` currently says, and the lines it prints between prompts are
+  marked (`✓` written, `›` context, `!` needs attention) rather than bare text — colour is dropped
+  automatically when stdout is not a terminal, so piped output and CI logs stay clean.
+
 - **Esc goes back instead of quitting `config`.** Every prompt reported Esc as an error that
   unwound the whole session, so one stray press dropped you at the shell and lost your place. It
   now abandons the open prompt and returns to the menu above, saving nothing. At the root menu, one

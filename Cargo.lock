@@ -1262,6 +1262,8 @@ dependencies = [
 name = "otf-release-core"
 version = "0.33.0"
 dependencies = [
+ "anstream",
+ "anstyle",
  "anyhow",
  "brotli",
  "flate2",

@@ -6,12 +6,13 @@ use inquire::{MultiSelect, Select, Text};
 
 use crate::config::{
     format_tag, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode,
-    PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS, DEFAULT_VERSION_FIELD,
+    PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS, CONFIG_FILE, DEFAULT_VERSION_FIELD,
 };
 use crate::discover::{declares_npm_workspaces, scan_npm_candidates, GenericCandidate};
 use crate::init::{
     adopt_package, sync_package_blocks, unconfigured_packages, AdapterFactory, UnconfiguredPackage,
 };
+use crate::ui;
 
 /// How a package the repo has but `release.toml` does not is labelled in the picker.
 const NEW_MARKER: &str = "[new]";
@@ -211,6 +212,7 @@ impl ConfigPrompt for StdinConfigPrompt {
         let labels: Vec<String> = found.iter().map(GenericCandidate::label).collect();
         let chosen = cancellable(
             MultiSelect::new("Which of these does this repo release?", labels)
+                .with_page_size(ui::PAGE_SIZE)
                 .with_default(defaults)
                 .with_help_message(
                     "saved as [discovery] npm in release.toml, so version/check/publish all read \
@@ -261,12 +263,17 @@ impl ConfigPrompt for StdinConfigPrompt {
 
     fn package<'a>(&self, packages: &'a [PackageEntry]) -> Result<Option<&'a str>> {
         if packages.is_empty() {
-            println!("No configured packages in release.toml.");
+            ui::warn("No configured packages in release.toml.");
             return Ok(None);
         }
         let mut names: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
         names.push("Back".to_string());
-        let Some(chosen) = cancellable(Select::new("Which package?", names).prompt())? else {
+        let Some(chosen) = cancellable(
+            Select::new("Which package?", names)
+                .with_page_size(ui::PAGE_SIZE)
+                .prompt(),
+        )?
+        else {
             return Ok(None);
         };
         if chosen == "Back" {
@@ -288,7 +295,7 @@ impl ConfigPrompt for StdinConfigPrompt {
         new: &[String],
     ) -> Result<Option<String>> {
         if configured.is_empty() && new.is_empty() {
-            println!("No configured packages in release.toml, and none found in the repo.");
+            ui::warn("No configured packages in release.toml, and none found in the repo.");
             return Ok(None);
         }
         let mut labels: Vec<String> = configured.iter().map(|p| p.name.clone()).collect();
@@ -296,6 +303,7 @@ impl ConfigPrompt for StdinConfigPrompt {
         labels.push("Back".to_string());
         let chosen = cancellable(
             Select::new("Which package?", labels)
+                .with_page_size(ui::PAGE_SIZE)
                 .with_help_message(
                     "packages marked [new] are in this repo but not yet in release.toml — pick one \
                      to release it or skip it for good",
@@ -579,13 +587,13 @@ impl ConfigPrompt for StdinConfigPrompt {
             if chosen == "GitHub" {
                 return Ok(Some("github".to_string()));
             }
-            println!("Only GitHub is fully supported at this moment. Please select GitHub.");
+            ui::warn("Only GitHub is fully supported at this moment. Please select GitHub.");
         }
     }
 
     fn skip_publish(&self, all: &[String], current: &[String]) -> Result<Option<Vec<String>>> {
         if all.is_empty() {
-            println!("No packages found to skip.");
+            ui::warn("No packages found to skip.");
             return Ok(None);
         }
         let checked: Vec<usize> = all
@@ -596,6 +604,7 @@ impl ConfigPrompt for StdinConfigPrompt {
             .collect();
         let chosen = cancellable(
             MultiSelect::new("Packages this repo must not publish:", all.to_vec())
+                .with_page_size(ui::PAGE_SIZE)
                 .with_default(&checked)
                 .with_help_message(
                     "checked packages are never versioned or published, and get no [[package]] \
@@ -619,6 +628,7 @@ impl ConfigPrompt for StdinConfigPrompt {
             .collect();
         let chosen = cancellable(
             MultiSelect::new("Tag formats to read as release history:", choices.to_vec())
+                .with_page_size(ui::PAGE_SIZE)
                 .with_default(&checked)
                 .with_help_message(
                     "new tags still use `tag_format`; these are only read, so a repo that renamed \
@@ -658,6 +668,7 @@ pub fn orchestrate_with_prompt(
     prompt: &dyn ConfigPrompt,
 ) -> Result<()> {
     let mut config = ReleaseConfig::load(root)?;
+    banner(&config);
 
     loop {
         match prompt.action()? {
@@ -684,6 +695,33 @@ pub fn orchestrate_with_prompt(
     Ok(())
 }
 
+/// A one-line orientation before the first menu: which file is being edited and what it currently
+/// says. Opening a config editor and being asked a question with no idea of the starting state is
+/// most of what makes a wizard feel like an interrogation.
+fn banner(config: &ReleaseConfig) {
+    ui::heading(&format!("{CONFIG_FILE} · {}", config.provider));
+    let adapters = if config.adapters.is_empty() {
+        "no ecosystems".to_string()
+    } else {
+        config
+            .adapters
+            .iter()
+            .map(|eco| match eco {
+                Ecosystem::Npm => "npm",
+                Ecosystem::Cargo => "crates.io",
+                Ecosystem::Jsr => "jsr",
+                Ecosystem::Generic => "generic",
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    ui::detail(&format!(
+        "{} package(s) · {adapters} · tags {}",
+        config.packages.len(),
+        config.tag_format
+    ));
+}
+
 /// Settle where npm's packages live, right after npm is enabled.
 ///
 /// Skipped entirely when the repo declares `workspaces` in a root `package.json` — that
@@ -701,26 +739,29 @@ fn edit_npm_discovery(
         return Ok(());
     }
     if declares_npm_workspaces(root) {
-        println!(
+        ui::info(
             "npm packages come from the `workspaces` globs in the root package.json — nothing to \
-             configure here."
+             configure here.",
         );
         return Ok(());
     }
 
     let found = scan_npm_candidates(root);
     if found.is_empty() {
-        println!(
+        ui::warn(
             "No package.json with a name and a version found — npm will discover no packages. \
              Add the package directories to `[discovery] npm` in release.toml by hand, or declare \
-             `workspaces` in a root package.json."
+             `workspaces` in a root package.json.",
         );
         return Ok(());
     }
 
-    println!("\nFound {} npm package(s) in this repo:", found.len());
+    ui::heading(&format!(
+        "Found {} npm package(s) in this repo",
+        found.len()
+    ));
     for c in &found {
-        println!("  {}", c.label());
+        ui::detail(&c.label());
     }
 
     // Start from what is already declared; on a first run nothing is, so the publishable ones are
@@ -873,7 +914,7 @@ fn edit_package(
             if package.attest {
                 // Unlike checksums, this adds an `attestations: write` permission and a signing
                 // step to the workflow, which only `upgrade` can write.
-                println!("Run `otf-release upgrade` to regenerate the workflow with attestation.");
+                ui::warn("Run `otf-release upgrade` to regenerate the workflow with attestation.");
             }
         }
         PackageField::TagFormat => {
@@ -950,7 +991,7 @@ fn answer_new_package(
             for hook in adopt_package(config, factory, root, new)? {
                 report_stripped_hook(name, &hook);
             }
-            println!("Added a [[package]] block for {name}.");
+            ui::ok(&format!("Added a [[package]] block for {name}."));
             save(root, config)?;
             Ok(true)
         }
@@ -958,10 +999,10 @@ fn answer_new_package(
             config.skip_publish.push(name.to_string());
             config.skip_publish.sort();
             config.skip_publish.dedup();
-            println!(
+            ui::ok(&format!(
                 "{name} recorded in skip_publish — this repo will not version or publish it, and \
                  it will stop being offered here."
-            );
+            ));
             save(root, config)?;
             Ok(false)
         }
@@ -1081,10 +1122,10 @@ impl HookStage {
 /// Report a manifest edited to hand the build to the pipeline — a change on disk outside
 /// `release.toml`, so it is never silent.
 fn report_stripped_hook(package: &str, hook: &str) {
-    println!(
+    ui::warn(&format!(
         "Removed npm lifecycle hook `{hook}` from {package}. The release pipeline runs the \
          build itself — move any custom steps into a `build` script or [hooks] in release.toml."
-    );
+    ));
 }
 
 fn report_sync(sync: crate::init::PackageSync) {
@@ -1095,16 +1136,18 @@ fn report_sync(sync: crate::init::PackageSync) {
         return;
     }
     for name in &sync.added {
-        println!("Added a [[package]] block for {name}.");
+        ui::ok(&format!("Added a [[package]] block for {name}."));
     }
     for name in &sync.removed {
-        println!("Removed the [[package]] block for {name} — this repo no longer releases it.");
+        ui::ok(&format!(
+            "Removed the [[package]] block for {name} — this repo no longer releases it."
+        ));
     }
 }
 
 fn save(root: &Path, config: &ReleaseConfig) -> Result<()> {
     config.save(root)?;
-    println!("Saved.");
+    ui::ok("Saved.");
     Ok(())
 }
 
