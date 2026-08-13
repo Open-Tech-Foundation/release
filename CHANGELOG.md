@@ -19,6 +19,14 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ### Changed
 
+- **`config` picks from lists instead of asking you to retype one.** `skip_publish` was a
+  comma-separated text field that made you re-enter every package to change one; it is now a
+  checklist over every package the repo knows about — including ones already skipped, which
+  discovery cannot see precisely because they are skipped. `provider` is the same list `init`
+  offers, `legacy_tag_formats` a checklist of the common patterns plus anything already configured,
+  and a package's own tag format the repo-wide list with an *inherit* row on top. Free text is kept
+  only where the value genuinely is free text: hook commands, build commands, globs, and paths.
+
 - **Esc goes back instead of quitting `config`.** Every prompt reported Esc as an error that
   unwound the whole session, so one stray press dropped you at the shell and lost your place. It
   now abandons the open prompt and returns to the menu above, saving nothing. At the root menu, one

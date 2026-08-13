@@ -91,8 +91,36 @@ Re-running it re-scans and starts from what is already declared, so a package ad
 Repos that already declare their members skip this: that declaration stays the single source of
 truth. See the [npm adapter](../adapters/npm.md#repos-that-declare-no-npm-workspace).
 
+## Pick from a list, don't retype a list
+
+Every setting whose valid values are knowable is a picker, not a text field. Editing
+`skip_publish` checks packages off a list of everything the repo knows about — the blocks it
+configures, what the adapters discover, and whatever is already skipped:
+
+```
+? Packages this repo must not publish:
+  ◉ es-runtime
+  ◉ es-runtime-common
+› ◯ es-runtime-cli
+  ◯ @opentf/esrun-postgres
+[space] toggle, [enter] confirm
+```
+
+Already-skipped packages are on that list for a reason: skipping one is what hides it from the
+adapters, so a list built from discovery alone would show the existing entries as absent and wipe
+them the moment the prompt was confirmed.
+
+The same applies to `provider` (the list `init` offers, so the two commands cannot disagree about
+what is supported), and to `legacy_tag_formats`, which offers the common patterns plus any format
+already configured by hand, minus the live `tag_format` — that one is always read as history
+anyway.
+
 Tag format editing offers the common patterns `v{version}`, `{version}`, `{name}@{version}`, and
-`{name}@v{version}`, plus custom input.
+`{name}@v{version}`, plus custom input. A package's own **Tag format** is the same list with an
+*inherit the repo's* row on top.
+
+Free-text prompts are kept only where the value genuinely is free text: lifecycle hook commands,
+build commands, artifact globs, `publish.ignore_paths`, and changelog paths.
 
 `github_release_notes` controls the body of GitHub Releases created for `build-only` packages:
 `auto-generate`, `curated-changelog`, or `semantic-commits`.
@@ -103,6 +131,7 @@ comma-separated glob patterns for the selected package without requiring manual 
 Under *Packages*, alongside the build fields, each package has a **Tag format** and a **Changelog**
 of its own — for a package that must not share the repo's tag line or changelog scope. Every
 publishable package has a `[[package]]` block, so all of them are reachable here, including ones
-with no build step. Each prompt names the repo-wide value it would otherwise inherit, so leaving it
-blank visibly means "whatever the repo does"; answers are validated before saving. See
+with no build step. Each prompt names the repo-wide value it would otherwise inherit, so choosing
+*inherit* (or leaving the changelog blank) visibly means "whatever the repo does"; answers are
+validated before saving. See
 [configuration.md](../configuration.md#scoped-release-identity).

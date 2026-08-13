@@ -23,6 +23,7 @@ use otf_release_core::config::{
 };
 use otf_release_core::config_cmd::{
     ConfigAction, ConfigPrompt, GlobalField, HookStage, NewPackageAction, PackageField,
+    TagFormatChoice,
 };
 use otf_release_core::discover::GenericCandidate;
 use otf_release_core::init::AdapterFactory;
@@ -105,6 +106,23 @@ impl ConfigPrompt for ConfirmEcosystems {
         unreachable!()
     }
     fn tag_format(&self, _: &str) -> Result<Option<String>> {
+        unreachable!()
+    }
+    fn provider(&self, _: &str) -> Result<Option<String>> {
+        unreachable!()
+    }
+    fn package_tag_format(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<Option<TagFormatChoice>> {
+        unreachable!()
+    }
+    fn skip_publish(&self, _: &[String], _: &[String]) -> Result<Option<Vec<String>>> {
+        unreachable!()
+    }
+    fn legacy_tag_formats(&self, _: &[String], _: &[String]) -> Result<Option<Vec<String>>> {
         unreachable!()
     }
     fn targets(&self, _: &[Target]) -> Result<Option<Vec<Target>>> {

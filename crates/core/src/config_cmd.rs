@@ -50,6 +50,15 @@ pub enum PackageField {
     Back,
 }
 
+/// A package's answer to "which tag line do you own?".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TagFormatChoice {
+    /// Use the repo-wide `tag_format`.
+    Inherit,
+    /// This package tags itself with its own format.
+    Scoped(String),
+}
+
 /// What to do with a package the repo releases that `release.toml` does not mention yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NewPackageAction {
@@ -112,6 +121,27 @@ pub trait ConfigPrompt {
         current: &GithubReleaseNotes,
     ) -> Result<Option<GithubReleaseNotes>>;
     fn tag_format(&self, current: &str) -> Result<Option<String>>;
+    /// Pick a package's own tag format, or inherit the repo's. Offering the same list the
+    /// repo-wide prompt does keeps a scoped format from being a typo away from a broken release.
+    fn package_tag_format(
+        &self,
+        name: &str,
+        repo: &str,
+        current: Option<&str>,
+    ) -> Result<Option<TagFormatChoice>>;
+    /// Pick the git host. Only GitHub is wired up today, so this is a list, not a free-text field
+    /// that happily accepts a typo or a provider with no implementation behind it.
+    fn provider(&self, current: &str) -> Result<Option<String>>;
+    /// Check off the packages this repo must never version or publish. `all` is every package name
+    /// the repo knows about, `current` the ones already skipped.
+    fn skip_publish(&self, all: &[String], current: &[String]) -> Result<Option<Vec<String>>>;
+    /// Check off the older tag formats to keep reading as release history. `choices` are the common
+    /// formats plus whatever is already configured; `current` starts checked.
+    fn legacy_tag_formats(
+        &self,
+        choices: &[String],
+        current: &[String],
+    ) -> Result<Option<Vec<String>>>;
     /// Re-pick a package's build targets, with the configured ones pre-checked.
     fn targets(&self, current: &[Target]) -> Result<Option<Vec<Target>>>;
     /// Flip an on/off package flag, starting on its current value.
@@ -477,6 +507,128 @@ impl ConfigPrompt for StdinConfigPrompt {
         }
     }
 
+    fn package_tag_format(
+        &self,
+        name: &str,
+        repo: &str,
+        current: Option<&str>,
+    ) -> Result<Option<TagFormatChoice>> {
+        let inherit = format!("Inherit the repo's `{repo}`");
+        let mut choices = vec![inherit.clone()];
+        choices.extend(
+            COMMON_TAG_FORMATS
+                .iter()
+                .filter(|format| **format != repo)
+                .map(|format| (*format).to_string()),
+        );
+        // A format already scoped by hand stays on the list, so re-opening the prompt cannot lose
+        // it just because it is not one of the built-ins.
+        if let Some(current) = current.filter(|c| !choices.iter().any(|row| row == c)) {
+            choices.push(current.to_string());
+        }
+        choices.push("Custom".to_string());
+
+        let cursor = current
+            .and_then(|current| choices.iter().position(|row| row == current))
+            .unwrap_or(0);
+        let chosen = cancellable(
+            Select::new(&format!("Tag format for {name}:"), choices)
+                .with_starting_cursor(cursor)
+                .with_help_message(
+                    "a package that must not share the repo's tag line needs `{name}` in its \
+                     format, or two packages collide on one tag",
+                )
+                .prompt(),
+        )?;
+        let Some(chosen) = chosen else {
+            return Ok(None);
+        };
+        if chosen == inherit {
+            return Ok(Some(TagFormatChoice::Inherit));
+        }
+        if chosen == "Custom" {
+            let typed = cancellable(
+                Text::new("Custom tag format:")
+                    .with_default(current.unwrap_or(repo))
+                    .prompt(),
+            )?;
+            return Ok(typed.map(TagFormatChoice::Scoped));
+        }
+        Ok(Some(TagFormatChoice::Scoped(chosen)))
+    }
+
+    fn provider(&self, current: &str) -> Result<Option<String>> {
+        // The same list `init` offers, so the two commands cannot disagree about what is supported.
+        let choices = vec![
+            "GitHub",
+            "GitLab (Coming Soon)",
+            "Bitbucket (Coming Soon)",
+            "Gitea (Coming Soon)",
+            "Codeberg (Coming Soon)",
+        ];
+        loop {
+            let chosen = cancellable(
+                Select::new("Which Git hosting provider do you use?", choices.clone())
+                    .with_starting_cursor(usize::from(current != "github"))
+                    .with_help_message("only GitHub is fully supported today")
+                    .prompt(),
+            )?;
+            let Some(chosen) = chosen else {
+                return Ok(None);
+            };
+            if chosen == "GitHub" {
+                return Ok(Some("github".to_string()));
+            }
+            println!("Only GitHub is fully supported at this moment. Please select GitHub.");
+        }
+    }
+
+    fn skip_publish(&self, all: &[String], current: &[String]) -> Result<Option<Vec<String>>> {
+        if all.is_empty() {
+            println!("No packages found to skip.");
+            return Ok(None);
+        }
+        let checked: Vec<usize> = all
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| current.contains(name))
+            .map(|(i, _)| i)
+            .collect();
+        let chosen = cancellable(
+            MultiSelect::new("Packages this repo must not publish:", all.to_vec())
+                .with_default(&checked)
+                .with_help_message(
+                    "checked packages are never versioned or published, and get no [[package]] \
+                     block — for internal crates, fixtures, and anything released elsewhere",
+                )
+                .raw_prompt(),
+        )?;
+        Ok(chosen.map(|chosen| chosen.iter().map(|o| o.value.clone()).collect()))
+    }
+
+    fn legacy_tag_formats(
+        &self,
+        choices: &[String],
+        current: &[String],
+    ) -> Result<Option<Vec<String>>> {
+        let checked: Vec<usize> = choices
+            .iter()
+            .enumerate()
+            .filter(|(_, format)| current.contains(format))
+            .map(|(i, _)| i)
+            .collect();
+        let chosen = cancellable(
+            MultiSelect::new("Tag formats to read as release history:", choices.to_vec())
+                .with_default(&checked)
+                .with_help_message(
+                    "new tags still use `tag_format`; these are only read, so a repo that renamed \
+                     its tags keeps finding its older releases",
+                )
+                .raw_prompt(),
+        )?;
+        Ok(chosen.map(|chosen| chosen.iter().map(|o| o.value.clone()).collect()))
+    }
+
     fn targets(&self, current: &[Target]) -> Result<Option<Vec<Target>>> {
         crate::init::pick_targets("Build targets:", current, crate::init::EDIT_TARGETS_HELP)
     }
@@ -524,7 +676,7 @@ pub fn orchestrate_with_prompt(
                 save(root, &config)?;
             }
             ConfigAction::Packages => edit_package(root, factory, prompt, &mut config)?,
-            ConfigAction::GlobalSettings => edit_global(root, prompt, &mut config)?,
+            ConfigAction::GlobalSettings => edit_global(root, factory, prompt, &mut config)?,
             ConfigAction::Exit => break,
         }
     }
@@ -725,19 +877,18 @@ fn edit_package(
             }
         }
         PackageField::TagFormat => {
-            let current = package.tag_format.as_deref().unwrap_or("");
-            let Some(edited) = prompt.text(
-                &format!("Tag format for {name} (blank = the repo's `{tag_format}`):"),
-                current,
-            )?
-            else {
+            let chosen =
+                prompt.package_tag_format(name, &tag_format, package.tag_format.as_deref())?;
+            let Some(chosen) = chosen else {
                 return Ok(());
             };
-            let edited = optional_text(edited);
-            if let Some(format) = &edited {
-                format_tag(format, name, "1.2.3")?;
-            }
-            package.tag_format = edited;
+            package.tag_format = match chosen {
+                TagFormatChoice::Inherit => None,
+                TagFormatChoice::Scoped(format) => {
+                    format_tag(&format, name, "1.2.3")?;
+                    Some(format)
+                }
+            };
         }
         PackageField::Changelog => {
             let current = package.changelog.as_deref().unwrap_or("");
@@ -818,10 +969,15 @@ fn answer_new_package(
     }
 }
 
-fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfig) -> Result<()> {
+fn edit_global(
+    root: &Path,
+    factory: &dyn AdapterFactory,
+    prompt: &dyn ConfigPrompt,
+    config: &mut ReleaseConfig,
+) -> Result<()> {
     match prompt.global_field()? {
         GlobalField::Provider => {
-            let Some(provider) = prompt.text("Provider:", &config.provider)? else {
+            let Some(provider) = prompt.provider(&config.provider)? else {
                 return Ok(());
             };
             config.provider = provider;
@@ -836,12 +992,11 @@ fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfi
             save(root, config)
         }
         GlobalField::SkipPublish => {
-            let current = config.skip_publish.join(", ");
-            let Some(edited) = prompt.text("Skip publish packages (comma-separated):", &current)?
-            else {
+            let all = known_package_names(config, factory)?;
+            let Some(skipped) = prompt.skip_publish(&all, &config.skip_publish)? else {
                 return Ok(());
             };
-            config.skip_publish = parse_csv(&edited);
+            config.skip_publish = skipped;
             save(root, config)
         }
         GlobalField::PublishIgnorePaths => {
@@ -877,12 +1032,12 @@ fn edit_global(root: &Path, prompt: &dyn ConfigPrompt, config: &mut ReleaseConfi
             save(root, config)
         }
         GlobalField::LegacyTagFormats => {
-            let current = config.legacy_tag_formats.join(", ");
-            let Some(edited) = prompt.text("Legacy tag formats (comma-separated):", &current)?
+            let choices = legacy_tag_format_choices(config);
+            let Some(chosen) = prompt.legacy_tag_formats(&choices, &config.legacy_tag_formats)?
             else {
                 return Ok(());
             };
-            config.legacy_tag_formats = parse_legacy_tag_formats(&edited)?;
+            config.legacy_tag_formats = validated_tag_formats(chosen)?;
             save(root, config)
         }
         GlobalField::ChangelogScope => {
@@ -960,12 +1115,57 @@ fn parse_csv(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_legacy_tag_formats(text: &str) -> Result<Vec<String>> {
-    let formats = parse_csv(text);
+fn validated_tag_formats(formats: Vec<String>) -> Result<Vec<String>> {
     for format in &formats {
         format_tag(format, "package", "1.2.3")?;
     }
     Ok(formats)
+}
+
+/// The rows offered for `legacy_tag_formats`: the common patterns, plus anything already
+/// configured (here or as the live `tag_format`) so a hand-written custom format is never dropped
+/// just because it is not in the built-in list.
+fn legacy_tag_format_choices(config: &ReleaseConfig) -> Vec<String> {
+    let mut choices: Vec<String> = COMMON_TAG_FORMATS
+        .iter()
+        .map(|f| (*f).to_string())
+        .collect();
+    for format in config
+        .legacy_tag_formats
+        .iter()
+        .chain(std::iter::once(&config.tag_format))
+    {
+        if !choices.contains(format) {
+            choices.push(format.clone());
+        }
+    }
+    // The format writing new tags is not history to read; it is already always consulted.
+    choices.retain(|format| *format != config.tag_format);
+    choices
+}
+
+/// Every package name this repo knows about: the blocks it configures, the packages its adapters
+/// discover, and whatever is already skipped. The union matters — a name already in `skip_publish`
+/// is invisible to discovery (that is the point of skipping it), so building the list from
+/// discovery alone would silently drop every existing entry the moment the picker was confirmed.
+fn known_package_names(
+    config: &ReleaseConfig,
+    factory: &dyn AdapterFactory,
+) -> Result<Vec<String>> {
+    let mut names: Vec<String> = config.skip_publish.clone();
+    names.extend(config.packages.iter().map(|entry| entry.name.clone()));
+    for eco in config
+        .adapters
+        .iter()
+        .copied()
+        .filter(|eco| *eco != Ecosystem::Generic)
+    {
+        let adapter = factory.make_with_discovery(eco, &config.discovery);
+        names.extend(adapter.discover_packages()?.into_iter().map(|pkg| pkg.name));
+    }
+    names.sort();
+    names.dedup();
+    Ok(names)
 }
 
 fn optional_text(text: String) -> Option<String> {
@@ -1121,6 +1321,10 @@ mod tests {
         offered_new: RefCell<Vec<String>>,
         /// Simulate Esc at every value prompt.
         esc: RefCell<bool>,
+        /// What the checklist prompts (skip-publish, legacy tag formats) come back with.
+        checked: RefCell<Vec<String>>,
+        /// Every row a checklist prompt was offered, so a test can assert what was on screen.
+        offered_checks: RefCell<Vec<String>>,
         package_field: RefCell<PackageField>,
         mode: RefCell<Mode>,
         global_field: RefCell<GlobalField>,
@@ -1140,6 +1344,8 @@ mod tests {
                 new_package: RefCell::new(NewPackageAction::Add),
                 offered_new: RefCell::new(Vec::new()),
                 esc: RefCell::new(false),
+                checked: RefCell::new(Vec::new()),
+                offered_checks: RefCell::new(Vec::new()),
                 package_field: RefCell::new(PackageField::Back),
                 mode: RefCell::new(Mode::BuildOnly),
                 global_field: RefCell::new(GlobalField::Back),
@@ -1233,6 +1439,37 @@ mod tests {
 
         fn tag_format(&self, _current: &str) -> Result<Option<String>> {
             self.typed()
+        }
+
+        fn provider(&self, _current: &str) -> Result<Option<String>> {
+            self.typed()
+        }
+
+        fn package_tag_format(
+            &self,
+            _name: &str,
+            _repo: &str,
+            _current: Option<&str>,
+        ) -> Result<Option<TagFormatChoice>> {
+            // The queued reply, with a blank standing in for the "inherit" row.
+            Ok(self.typed()?.map(|typed| match optional_text(typed) {
+                Some(format) => TagFormatChoice::Scoped(format),
+                None => TagFormatChoice::Inherit,
+            }))
+        }
+
+        fn skip_publish(&self, all: &[String], _current: &[String]) -> Result<Option<Vec<String>>> {
+            self.offered_checks.borrow_mut().extend_from_slice(all);
+            Ok(self.answer(self.checked.borrow().clone()))
+        }
+
+        fn legacy_tag_formats(
+            &self,
+            choices: &[String],
+            _current: &[String],
+        ) -> Result<Option<Vec<String>>> {
+            self.offered_checks.borrow_mut().extend_from_slice(choices);
+            Ok(self.answer(self.checked.borrow().clone()))
         }
 
         fn targets(&self, _current: &[Target]) -> Result<Option<Vec<Target>>> {
@@ -1434,6 +1671,27 @@ mod tests {
             fn tag_format(&self, _: &str) -> Result<Option<String>> {
                 unreachable!()
             }
+            fn provider(&self, _: &str) -> Result<Option<String>> {
+                unreachable!()
+            }
+            fn package_tag_format(
+                &self,
+                _: &str,
+                _: &str,
+                _: Option<&str>,
+            ) -> Result<Option<TagFormatChoice>> {
+                unreachable!()
+            }
+            fn skip_publish(&self, _: &[String], _: &[String]) -> Result<Option<Vec<String>>> {
+                unreachable!()
+            }
+            fn legacy_tag_formats(
+                &self,
+                _: &[String],
+                _: &[String],
+            ) -> Result<Option<Vec<String>>> {
+                unreachable!()
+            }
             fn targets(&self, _: &[Target]) -> Result<Option<Vec<Target>>> {
                 unreachable!()
             }
@@ -1514,6 +1772,62 @@ mod tests {
             actions: RefCell::new(vec![ConfigAction::Packages, ConfigAction::Exit]),
             ..prompt
         }
+    }
+
+    /// The skip-publish checklist has to offer packages that discovery cannot see: skipping one is
+    /// exactly what hides it from the adapters. Building the rows from discovery alone would show
+    /// the existing entries as unchecked-and-absent, and confirming the prompt would wipe them.
+    #[test]
+    fn skip_publish_offers_already_skipped_packages_alongside_discovered_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut saved = config();
+        saved.adapters = vec![Ecosystem::Cargo];
+        saved.skip_publish = vec!["retired-crate".to_string()];
+        saved.save(tmp.path()).unwrap();
+
+        let prompt = FakePrompt {
+            actions: RefCell::new(vec![ConfigAction::GlobalSettings, ConfigAction::Exit]),
+            global_field: RefCell::new(GlobalField::SkipPublish),
+            checked: RefCell::new(vec!["retired-crate".to_string(), "new-crate".to_string()]),
+            ..FakePrompt::default()
+        };
+        orchestrate_with_prompt(tmp.path(), &DiscoversNewCrate, &prompt).unwrap();
+
+        // Rows: the skipped one (invisible to discovery), the configured block, the found crate.
+        assert_eq!(
+            prompt.offered_checks.borrow().as_slice(),
+            ["new-crate", "pkg", "retired-crate"]
+        );
+        assert_eq!(
+            ReleaseConfig::load(tmp.path()).unwrap().skip_publish,
+            vec!["retired-crate".to_string(), "new-crate".to_string()]
+        );
+    }
+
+    /// The legacy-format checklist is a closed list of *readable* history, so it must not offer the
+    /// format writing new tags, and must not drop a custom one already configured by hand.
+    #[test]
+    fn legacy_tag_format_rows_keep_custom_entries_and_exclude_the_live_format() {
+        let mut cfg = config();
+        cfg.tag_format = "v{version}".to_string();
+        cfg.legacy_tag_formats = vec!["release-{version}".to_string()];
+
+        let choices = legacy_tag_format_choices(&cfg);
+
+        assert!(choices.contains(&"release-{version}".to_string()));
+        assert!(choices.contains(&"{name}@{version}".to_string()));
+        assert!(
+            !choices.contains(&"v{version}".to_string()),
+            "the live tag_format is already read; offering it as history is noise: {choices:?}"
+        );
+    }
+
+    /// A format that cannot produce a distinct tag is refused at the picker, not written and left
+    /// for `version` to fail on later.
+    #[test]
+    fn legacy_tag_formats_are_validated_before_saving() {
+        assert!(validated_tag_formats(vec!["{name}-latest".to_string()]).is_err());
+        assert!(validated_tag_formats(vec!["v{version}".to_string()]).is_ok());
     }
 
     /// Esc is an undo, not a quit: it abandons the edit in progress and hands the developer back to
@@ -1886,6 +2200,27 @@ mod tests {
             fn tag_format(&self, _: &str) -> Result<Option<String>> {
                 unreachable!()
             }
+            fn provider(&self, _: &str) -> Result<Option<String>> {
+                unreachable!()
+            }
+            fn package_tag_format(
+                &self,
+                _: &str,
+                _: &str,
+                _: Option<&str>,
+            ) -> Result<Option<TagFormatChoice>> {
+                unreachable!()
+            }
+            fn skip_publish(&self, _: &[String], _: &[String]) -> Result<Option<Vec<String>>> {
+                unreachable!()
+            }
+            fn legacy_tag_formats(
+                &self,
+                _: &[String],
+                _: &[String],
+            ) -> Result<Option<Vec<String>>> {
+                unreachable!()
+            }
             fn targets(&self, _: &[Target]) -> Result<Option<Vec<Target>>> {
                 unreachable!()
             }
@@ -2020,11 +2355,11 @@ mod tests {
         orchestrate_with_prompt(
             tmp.path(),
             &NoPackages,
-            &global_prompt(GlobalField::Provider, vec!["github-enterprise"]),
+            &global_prompt(GlobalField::Provider, vec!["github"]),
         )
         .unwrap();
         cfg = ReleaseConfig::load(tmp.path()).unwrap();
-        assert_eq!(cfg.provider, "github-enterprise");
+        assert_eq!(cfg.provider, "github");
 
         orchestrate_with_prompt(
             tmp.path(),
@@ -2038,7 +2373,10 @@ mod tests {
         orchestrate_with_prompt(
             tmp.path(),
             &NoPackages,
-            &global_prompt(GlobalField::SkipPublish, vec!["@scope/old, pkg-internal"]),
+            &FakePrompt {
+                checked: RefCell::new(vec!["@scope/old".to_string(), "pkg-internal".to_string()]),
+                ..global_prompt(GlobalField::SkipPublish, vec![])
+            },
         )
         .unwrap();
         cfg = ReleaseConfig::load(tmp.path()).unwrap();
@@ -2071,7 +2409,10 @@ mod tests {
         orchestrate_with_prompt(
             tmp.path(),
             &NoPackages,
-            &global_prompt(GlobalField::LegacyTagFormats, vec!["{name}@{version}"]),
+            &FakePrompt {
+                checked: RefCell::new(vec!["{name}@{version}".to_string()]),
+                ..global_prompt(GlobalField::LegacyTagFormats, vec![])
+            },
         )
         .unwrap();
         cfg = ReleaseConfig::load(tmp.path()).unwrap();
