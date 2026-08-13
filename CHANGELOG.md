@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-08-13
+
 ### Added
 
 - **`config` → *Packages* now lists packages the repo has but `release.toml` does not**, marked
