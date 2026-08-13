@@ -1453,6 +1453,7 @@ mod tests {
             executable: None,
             include: Vec::new(),
             tag_format: None,
+            legacy_tag_formats: Vec::new(),
             changelog: None,
         }
     }

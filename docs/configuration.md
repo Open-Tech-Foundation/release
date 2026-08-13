@@ -92,7 +92,7 @@ artifacts = "dist/**"
 | --- | --- |
 | `adapters` | Enabled ecosystems: `"npm"`, `"crates.io"`, `"generic"`. Drives which publish/release jobs `init` generates. |
 | `tag_format` | Global git tag format used by `version`, preflight, `publish`, and generated GitHub Release jobs. Must include `{version}`; may include `{name}` for package-scoped tags, e.g. `{name}@{version}`. |
-| `legacy_tag_formats` | Optional older tag formats used only to find prior release history during `version`/preflight and generated changelog notes. New tags are still written with `tag_format`. |
+| `legacy_tag_formats` | Optional older tag formats used only to find prior release history during `version`/preflight and generated changelog notes. New tags are still written with `tag_format`. An entry with no `{name}` matches every package, so in a multi-package repo it belongs in a `[[package]]` block instead. |
 | `otf_release_version` | Optional. Which `otf-release` release the generated workflow installs, as a git tag (`v0.25.0`; a bare `0.25.0` is normalised). Defaults to the version of the binary that generated the workflow — correct for a normal repo, since you ran a released build. Set it only when that assumption breaks, most notably a repo that generates its own workflow from an unreleased tree, where the default would pin to a tag that does not exist yet. |
 | `skip_publish` | Package names never pushed to a registry, even when their manifests look publishable. They are still **versioned** in lockstep with the release — this only suppresses the publish. `init` fills this in automatically: when a repo has a `build-only` package alongside other discovered crates (a Cargo workspace's library crates, say, which carry no `publish = false`), it lists them and records your answer. |
 | `discovery.npm` | Optional. Globs naming npm package **directories**, relative to the repo root. Only for a repo that declares its members nowhere — neither a root `workspaces` field nor `pnpm-workspace.yaml` — typically a polyglot monorepo whose root is another ecosystem's workspace, where adding a root `package.json` with `workspaces` would change how npm/pnpm/bun install the repo. Non-empty ⇒ this *is* the member set and the root `package.json` is not consulted. Written by `init` and by `config` → *Ecosystems*, from a repo scan you confirm. See [npm adapter](./adapters/npm.md#repos-that-declare-no-npm-workspace). |
@@ -230,11 +230,35 @@ tag_format = "{name}@{version}"
 Both fields are optional and independent — set either, both, or neither.
 
 **History does not fall back to the global format.** A package that scopes its `tag_format` reads
-its history through that format plus `legacy_tag_formats`, and deliberately *not* through the
-repo's: `v{version}` matches every `v`-tag in the repo, so keeping it as a fallback would hand this
+its history through that format plus its legacy formats, and deliberately *not* through the repo's:
+`v{version}` matches every `v`-tag in the repo, so keeping it as a fallback would hand this
 package another package's releases as its own history — the collision the setting exists to
-prevent. Migrating a package that *does* have history under the old format is what
-`legacy_tag_formats` is for.
+prevent.
+
+**A nameless legacy format belongs on a package, not on the repo.** The repo-wide
+`legacy_tag_formats` has the same reach: an entry with no `{name}` matches any package that asks,
+so in a multi-package repo it gives *every* package the same release history. A package that has
+never shipped then stops reading as a first release and gets bumped from a version it never
+published. Scope it to the package whose tags it actually wrote:
+
+```toml
+tag_format = "{name}@{version}"
+# no repo-wide legacy_tag_formats
+
+[[package]]
+name       = "es-runtime-cli"
+tag_format = "esrun@{version}"
+# only this crate ever shipped as v0.23.0
+legacy_tag_formats = ["v{version}"]
+
+[[package]]
+name       = "es-runtime-dev-cli"
+tag_format = "esdev@{version}"
+# no legacy list: it has never been released, and must stay that way to preflight
+```
+
+A package's own `legacy_tag_formats` **replaces** the repo-wide list rather than adding to it.
+`doctor` reports a nameless repo-wide entry in a multi-package repo as `shared-legacy-tag-format`.
 
 **When you need one.** Two packages that can be released independently must not format to the same
 tag. If `tag_format` has no `{name}`, that means at most one package may use it — scope every other

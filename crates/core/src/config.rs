@@ -438,6 +438,15 @@ pub struct PackageEntry {
     /// existing release as already shipped, so the second package attaches nothing at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag_format: Option<String>,
+    /// Older formats to read as *this package's* release history.
+    ///
+    /// Declared here rather than repo-wide when the old format carries no `{name}`: `v{version}`
+    /// matches `v0.23.0` for every package that asks, so a repo-wide entry hands one package's
+    /// history to all of them — including packages that have never been released, which then stop
+    /// looking like first releases. Naming it here scopes it to the package that actually owned
+    /// those tags. When present, this replaces `legacy_tag_formats` for this package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legacy_tag_formats: Vec<String>,
     /// Changelog file for this package alone, relative to the repo root, replacing whatever
     /// `changelog_scope` and the adapter would have chosen. The escape for a package whose notes do
     /// not belong where its versioning would put them — a second binary that inherits a lockstep
@@ -489,6 +498,10 @@ impl PackageEntry {
         if let Some(format) = &self.tag_format {
             format_tag(format, &self.name, "1.2.3")
                 .with_context(|| format!("package `{}`: tag_format", self.name))?;
+        }
+        for format in &self.legacy_tag_formats {
+            format_tag(format, &self.name, "1.2.3")
+                .with_context(|| format!("package `{}`: legacy_tag_formats", self.name))?;
         }
         if let Some(changelog) = &self.changelog {
             let path = Path::new(changelog);
@@ -730,6 +743,7 @@ pub struct TagFormats {
     global: String,
     legacy: Vec<String>,
     per_package: HashMap<String, String>,
+    per_package_legacy: HashMap<String, Vec<String>>,
 }
 
 impl TagFormats {
@@ -740,6 +754,7 @@ impl TagFormats {
             global: format.to_string(),
             legacy: Vec::new(),
             per_package: HashMap::new(),
+            per_package_legacy: HashMap::new(),
         }
     }
 
@@ -761,9 +776,16 @@ impl TagFormats {
     /// repo's legacy formats. A package with an override deliberately does not fall back to the
     /// global format — that is the tag line it was moved out of, and matching it again would hand
     /// this package another package's tags as its own history.
+    /// A package that names its own legacy formats uses those *instead of* the repo-wide list.
+    /// That is the escape hatch for a nameless old format: put `v{version}` on the one package
+    /// whose tags it wrote, and every other package correctly reads as having no history under it.
     pub fn history_for(&self, pkg_name: &str) -> Vec<String> {
+        let legacy = self
+            .per_package_legacy
+            .get(pkg_name)
+            .unwrap_or(&self.legacy);
         std::iter::once(self.for_package(pkg_name).to_string())
-            .chain(self.legacy.iter().cloned())
+            .chain(legacy.iter().cloned())
             .collect()
     }
 
@@ -830,6 +852,12 @@ impl ReleaseConfig {
                 .packages
                 .iter()
                 .filter_map(|pkg| Some((pkg.name.clone(), pkg.tag_format.clone()?)))
+                .collect(),
+            per_package_legacy: self
+                .packages
+                .iter()
+                .filter(|pkg| !pkg.legacy_tag_formats.is_empty())
+                .map(|pkg| (pkg.name.clone(), pkg.legacy_tag_formats.clone()))
                 .collect(),
         }
     }
@@ -1020,6 +1048,7 @@ mod tests {
             attest: false,
             include: Vec::new(),
             tag_format: None,
+            legacy_tag_formats: Vec::new(),
             changelog: None,
             executable: None,
         };
@@ -1081,6 +1110,7 @@ mod tests {
                     executable: None,
                     include: vec!["README.md".into(), "LICENSE".into()],
                     tag_format: None,
+                    legacy_tag_formats: Vec::new(),
                     changelog: None,
                 },
                 PackageEntry {
@@ -1102,6 +1132,7 @@ mod tests {
                     executable: None,
                     include: Vec::new(),
                     tag_format: None,
+                    legacy_tag_formats: Vec::new(),
                     changelog: None,
                 },
             ],
@@ -1203,6 +1234,7 @@ mod tests {
             include: Vec::new(),
             executable: None,
             tag_format: None,
+            legacy_tag_formats: Vec::new(),
             changelog: None,
         }
     }
@@ -1223,6 +1255,7 @@ mod tests {
             entry("es-runtime-cli"),
             PackageEntry {
                 tag_format: Some("{name}@{version}".to_string()),
+                legacy_tag_formats: Vec::new(),
                 ..entry("@scope/driver")
             },
         ]);
@@ -1248,6 +1281,7 @@ mod tests {
                 entry("es-runtime-cli"),
                 PackageEntry {
                     tag_format: Some("{name}@{version}".to_string()),
+                    legacy_tag_formats: Vec::new(),
                     ..entry("@scope/driver")
                 },
             ])
@@ -1305,6 +1339,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = config_with(vec![PackageEntry {
             tag_format: Some("{name}@{version}".to_string()),
+            legacy_tag_formats: Vec::new(),
             changelog: Some("packages/driver/CHANGELOG.md".to_string()),
             ..entry("@scope/driver")
         }]);
@@ -1359,6 +1394,57 @@ mod tests {
         assert!(!packages[0].publishable);
         assert!(packages[1].publishable);
         assert_eq!(cfg.build_only_names(), vec!["@scope/manual"]);
+    }
+
+    /// A legacy format with no `{name}` matches any package's tag, so a repo-wide entry hands one
+    /// package's history to every package — including one that has never shipped, which then stops
+    /// reading as a first release. Naming it on the package that owned those tags scopes it.
+    #[test]
+    fn a_packages_own_legacy_formats_replace_the_repo_wide_list() {
+        let mut config = ReleaseConfig {
+            tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: vec!["v{version}".to_string()],
+            ..ReleaseConfig::default()
+        };
+        config.packages = vec![
+            PackageEntry {
+                name: "es-runtime-cli".to_string(),
+                tag_format: Some("esrun@{version}".to_string()),
+                // The crate whose tags `v0.23.0` actually was.
+                legacy_tag_formats: vec!["v{version}".to_string()],
+                ..entry("es-runtime-cli")
+            },
+            PackageEntry {
+                name: "es-runtime-dev-cli".to_string(),
+                tag_format: Some("esdev@{version}".to_string()),
+                ..entry("es-runtime-dev-cli")
+            },
+        ];
+
+        let tags = config.tag_formats();
+        assert_eq!(
+            tags.history_for("es-runtime-cli"),
+            vec!["esrun@{version}".to_string(), "v{version}".to_string()]
+        );
+        // The new crate falls back to the repo-wide list, which is where the ambiguity lives — so
+        // the fix is to keep that list empty and scope the old format to the crate that owned it.
+        assert_eq!(
+            tags.history_for("es-runtime-dev-cli"),
+            vec!["esdev@{version}".to_string(), "v{version}".to_string()]
+        );
+
+        config.legacy_tag_formats.clear();
+        let tags = config.tag_formats();
+        assert_eq!(
+            tags.history_for("es-runtime-cli"),
+            vec!["esrun@{version}".to_string(), "v{version}".to_string()],
+            "the package that owns the old tags keeps reading them"
+        );
+        assert_eq!(
+            tags.history_for("es-runtime-dev-cli"),
+            vec!["esdev@{version}".to_string()],
+            "a package that never shipped under the old format must not inherit its history"
+        );
     }
 
     /// A seeded glob that matches nothing is worse than no glob at all: it looks configured, and

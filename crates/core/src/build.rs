@@ -315,6 +315,7 @@ mod tests {
             artifacts: "target/{triple}/release/{bin}{ext}".into(),
             bin_name: Some("esrun".into()),
             tag_format: None,
+            legacy_tag_formats: Vec::new(),
             changelog: None,
             compress: None,
             manifest: None,

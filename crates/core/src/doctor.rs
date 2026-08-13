@@ -150,7 +150,7 @@ pub fn audit(config: &ReleaseConfig, discovered: &[Discovered], root: &Path) -> 
     changelog_files(config, &released, root, &mut findings);
     matrix_targets(config, &mut findings);
     tool_pin(config, &mut findings);
-    supply_chain(config, &mut findings);
+    supply_chain(config, &released, &mut findings);
     facts(config, &released, &mut findings);
 
     findings.sort_by(|a, b| {
@@ -528,7 +528,7 @@ fn tool_pin(config: &ReleaseConfig, out: &mut Vec<Finding>) {
 
 /// A downloaded binary is only trustworthy if its origin can be proved. Checksums show it arrived
 /// intact; only attestation shows who built it.
-fn supply_chain(config: &ReleaseConfig, out: &mut Vec<Finding>) {
+fn supply_chain(config: &ReleaseConfig, released: &[&Discovered], out: &mut Vec<Finding>) {
     for entry in config.packages.iter().filter(|p| p.is_build_only()) {
         if !entry.checksums {
             out.push(
@@ -560,6 +560,43 @@ fn supply_chain(config: &ReleaseConfig, out: &mut Vec<Finding>) {
                 .fix(
                     "set `attest = true` in its `[[package]]` block, then run `otf-release upgrade \
                      --force` to add the workflow permissions",
+                ),
+            );
+        }
+    }
+
+    // A repo-wide legacy format with no `{name}` matches every package that asks. In a repo with
+    // one package that is exactly right; with several it silently hands one package's tag history
+    // to all of them — including packages that never shipped, which then stop reading as first
+    // releases and get bumped from a version they never published.
+    if released.len() > 1 {
+        let nameless: Vec<&str> = config
+            .legacy_tag_formats
+            .iter()
+            .filter(|format| !format.contains("{name}"))
+            .map(String::as_str)
+            .collect();
+        if !nameless.is_empty() {
+            out.push(
+                Finding::new(
+                    Severity::Warning,
+                    "shared-legacy-tag-format",
+                    format!(
+                        "`legacy_tag_formats` contains {} with no `{{name}}`, and this repo \
+                         releases {} packages. Such a format matches any package's tag, so every \
+                         package reads the same release history — a package that never shipped \
+                         looks released, and is bumped from a version it never published.",
+                        nameless
+                            .iter()
+                            .map(|f| format!("`{f}`"))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        released.len()
+                    ),
+                )
+                .fix(
+                    "move it into the `[[package]]` block of the package whose tags it actually \
+                     wrote, as `legacy_tag_formats`, and drop it from the repo-wide list",
                 ),
             );
         }
@@ -787,6 +824,7 @@ mod tests {
             include: Vec::new(),
             executable: None,
             tag_format: None,
+            legacy_tag_formats: Vec::new(),
             changelog: None,
         }
     }
@@ -798,6 +836,67 @@ mod tests {
             .filter(|f| f.severity == severity)
             .map(|f| f.code)
             .collect()
+    }
+
+    /// The mistake this catches is one I walked a user into: `legacy_tag_formats = ["v{version}"]`
+    /// looks like it restores one crate's history and silently gives it to every crate in the repo.
+    #[test]
+    fn flags_a_repo_wide_legacy_format_that_every_package_would_match() {
+        let mut config = ReleaseConfig {
+            tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: vec!["v{version}".to_string()],
+            ..ReleaseConfig::default()
+        };
+        config.packages = vec![
+            entry("cli", Ecosystem::Cargo),
+            entry("dev-cli", Ecosystem::Cargo),
+        ];
+        let discovered = vec![
+            found(
+                Ecosystem::Cargo,
+                pkg("cli", "0.23.0", "crates/cli/Cargo.toml"),
+                None,
+            ),
+            found(
+                Ecosystem::Cargo,
+                pkg("dev-cli", "0.1.0", "crates/dev-cli/Cargo.toml"),
+                None,
+            ),
+        ];
+
+        let report = audit(&config, &discovered, Path::new("/repo"));
+        assert!(
+            codes(&report, Severity::Warning).contains(&"shared-legacy-tag-format"),
+            "{report:?}"
+        );
+
+        // Scoping it to the package that owned those tags is the fix, and silences it.
+        config.legacy_tag_formats.clear();
+        config.packages[0].legacy_tag_formats = vec!["v{version}".to_string()];
+        let report = audit(&config, &discovered, Path::new("/repo"));
+        assert!(
+            !codes(&report, Severity::Warning).contains(&"shared-legacy-tag-format"),
+            "{report:?}"
+        );
+    }
+
+    /// A single-package repo is exactly where a nameless legacy format is correct.
+    #[test]
+    fn a_single_package_repo_may_use_a_nameless_legacy_format() {
+        let mut config = ReleaseConfig {
+            tag_format: "{name}@{version}".to_string(),
+            legacy_tag_formats: vec!["v{version}".to_string()],
+            ..ReleaseConfig::default()
+        };
+        config.packages = vec![entry("cli", Ecosystem::Cargo)];
+        let discovered = vec![found(
+            Ecosystem::Cargo,
+            pkg("cli", "0.23.0", "crates/cli/Cargo.toml"),
+            None,
+        )];
+
+        let report = audit(&config, &discovered, Path::new("/repo"));
+        assert!(!codes(&report, Severity::Warning).contains(&"shared-legacy-tag-format"));
     }
 
     #[test]

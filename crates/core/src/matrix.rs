@@ -77,6 +77,7 @@ mod tests {
             attest: false,
             executable: None,
             tag_format: None,
+            legacy_tag_formats: Vec::new(),
             changelog: None,
             include: Vec::new(),
         }

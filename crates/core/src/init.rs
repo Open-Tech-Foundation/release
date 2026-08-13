@@ -685,6 +685,7 @@ pub fn orchestrate(
                 executable: None,
                 include: Vec::new(),
                 tag_format: None,
+                legacy_tag_formats: Vec::new(),
                 changelog: None,
             });
         }
@@ -1661,6 +1662,7 @@ fn publish_as_is_entry(pkg: &Pkg, adapter: Ecosystem, root: &Path) -> PackageEnt
         include: Vec::new(),
         executable: None,
         tag_format: None,
+        legacy_tag_formats: Vec::new(),
         changelog: None,
     }
 }
@@ -1981,6 +1983,7 @@ fn configure_generic(
         include,
         executable: None,
         tag_format: None,
+        legacy_tag_formats: Vec::new(),
         changelog: None,
     })
 }
@@ -2218,6 +2221,7 @@ impl InitPrompt for StdinInitPrompt {
             executable: None,
             include: Vec::new(),
             tag_format: None,
+            legacy_tag_formats: Vec::new(),
             changelog: None,
         })
     }
@@ -2623,6 +2627,7 @@ pub(crate) mod tests {
             executable: None,
             include: Vec::new(),
             tag_format: None,
+            legacy_tag_formats: Vec::new(),
             changelog: None,
         }
     }
@@ -2647,6 +2652,7 @@ pub(crate) mod tests {
             executable: None,
             include: Vec::new(),
             tag_format: None,
+            legacy_tag_formats: Vec::new(),
             changelog: None,
         }
     }
@@ -2675,6 +2681,7 @@ pub(crate) mod tests {
             executable: None,
             include: Vec::new(),
             tag_format: None,
+            legacy_tag_formats: Vec::new(),
             changelog: None,
         }
     }
@@ -2810,6 +2817,7 @@ pub(crate) mod tests {
                 executable: None,
                 include: Vec::new(),
                 tag_format: None,
+                legacy_tag_formats: Vec::new(),
                 changelog: None,
             }],
         };
@@ -2862,6 +2870,7 @@ pub(crate) mod tests {
                     executable: None,
                     include: Vec::new(),
                     tag_format: None,
+                    legacy_tag_formats: Vec::new(),
                     changelog: None,
                 },
                 PackageEntry {
@@ -2883,6 +2892,7 @@ pub(crate) mod tests {
                     executable: None,
                     include: Vec::new(),
                     tag_format: None,
+                    legacy_tag_formats: Vec::new(),
                     changelog: None,
                 },
             ],
@@ -3081,6 +3091,7 @@ pub(crate) mod tests {
                 executable: None,
                 include: Vec::new(),
                 tag_format: None,
+                legacy_tag_formats: Vec::new(),
                 changelog: None,
             }],
         };
@@ -3136,6 +3147,7 @@ pub(crate) mod tests {
                 executable: None,
                 include: Vec::new(),
                 tag_format: None,
+                legacy_tag_formats: Vec::new(),
                 changelog: None,
             }],
         }
@@ -3256,6 +3268,7 @@ pub(crate) mod tests {
                 executable: None,
                 include: Vec::new(),
                 tag_format: None,
+                legacy_tag_formats: Vec::new(),
                 changelog: None,
             }],
         };

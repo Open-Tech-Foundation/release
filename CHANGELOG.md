@@ -12,6 +12,14 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ### Added
 
+- **`legacy_tag_formats` can be scoped to one package.** A format with no `{name}` — `v{version}` —
+  matches any package's tag, so the repo-wide list handed one package's release history to every
+  package in the repo. A crate that had never shipped therefore read as already released, stopped
+  being offered as a first release, and was bumped from a version it never published. A
+  `[[package]]` block can now carry its own `legacy_tag_formats`, which replaces the repo-wide list
+  for that package. `doctor` reports a nameless repo-wide entry in a multi-package repo as
+  `shared-legacy-tag-format`.
+
 - **A package that has never shipped can release its current version as-is.** Every available bump
   skipped the version the author had already written down: a crate sitting at `0.1.0` with no tag
   anywhere could only be released as `0.2.0`. `version` now offers an *Initial releases* group,
