@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-08-13
+
 ### Added
 
 - **`doctor` reports a workflow that has no job for a configured package** (`stale-workflow`,
