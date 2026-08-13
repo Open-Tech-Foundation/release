@@ -5,6 +5,8 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
+use crate::ui;
+
 /// A trait for executing lifecycle hook shell commands.
 pub trait HookRunner {
     /// Execute a sequence of shell commands in order.
@@ -17,7 +19,7 @@ pub struct ShHookRunner;
 impl HookRunner for ShHookRunner {
     fn run_hooks(&self, root: &Path, commands: &[String]) -> Result<()> {
         for cmd in commands {
-            println!("> Running hook: {cmd}");
+            ui::step(&format!("hook: {cmd}"));
             let (shell, arg) = if cfg!(windows) {
                 ("powershell", "-Command")
             } else {

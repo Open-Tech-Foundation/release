@@ -137,15 +137,6 @@ pub fn format_violations(violations: &[Violation]) -> String {
     out
 }
 
-/// Render warnings as a CLI block printed before the release flow continues.
-pub fn format_warnings(warnings: &[Warning]) -> String {
-    let mut out = String::from("preflight warnings:\n");
-    for w in warnings {
-        out.push_str(&format!("\n  {}: {}", w.package, w.message));
-    }
-    out
-}
-
 /// A missing changelog counts as empty (the "empty/missing" rule), not an error.
 fn unreleased_is_empty(changelog_path: &Path) -> Result<bool> {
     if !changelog_path.exists() {
@@ -370,23 +361,5 @@ mod tests {
         assert!(out.contains("preflight violations"));
         assert!(out.contains("  core: boom"));
         assert!(out.contains("  cli: bang"));
-    }
-
-    #[test]
-    fn format_warnings_lists_each_package() {
-        let v = vec![
-            Warning {
-                package: "core".into(),
-                message: "heads up".into(),
-            },
-            Warning {
-                package: "cli".into(),
-                message: "draft only".into(),
-            },
-        ];
-        let out = format_warnings(&v);
-        assert!(out.contains("preflight warnings"));
-        assert!(out.contains("  core: heads up"));
-        assert!(out.contains("  cli: draft only"));
     }
 }

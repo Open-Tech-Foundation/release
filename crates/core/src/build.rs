@@ -24,6 +24,7 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::config::{ReleaseConfig, Target};
+use crate::ui;
 
 /// Build one matrix target of `package` and stage its binary under `.artifacts/`.
 ///
@@ -71,11 +72,11 @@ pub fn run(
         })?;
     let dest = staged_path(root, package, target, bin, entry.compress.as_deref());
     stage_binary(&artifact, &dest, entry.compress.as_deref())?;
-    println!(
-        "Staged {} -> {}",
+    ui::ok(&format!(
+        "Staged {} → {}",
         artifact.display(),
         dest.strip_prefix(root).unwrap_or(&dest).display()
-    );
+    ));
     Ok(())
 }
 
@@ -131,7 +132,7 @@ fn run_build_command(root: &Path, command: &str, target: &Target) -> Result<()> 
             cross_linker(&target.triple()),
         );
     }
-    println!("> {command}");
+    ui::step(command);
     let status = cmd
         .status()
         .with_context(|| format!("failed to run build command: {command}"))?;

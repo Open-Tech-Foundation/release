@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use otf_release_core::git::parse_semver;
+use otf_release_core::ui;
 use std::process::Command;
 
 /// Whether the running build is already at or ahead of `latest`, so no update should run.
@@ -17,7 +18,7 @@ fn is_up_to_date(current: &str, latest: &str) -> bool {
 pub fn run() -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
 
-    println!("Checking for updates...");
+    ui::step("Checking for updates…");
 
     // Fetch latest release from GitHub
     let url = "https://api.github.com/repos/Open-Tech-Foundation/release/releases/latest";
@@ -33,17 +34,15 @@ pub fn run() -> Result<()> {
     let latest_version = latest_tag.trim_start_matches('v');
 
     if is_up_to_date(current_version, latest_version) {
-        println!(
-            "You are already using the latest version (v{}).",
-            current_version
-        );
+        ui::ok(&format!(
+            "You are already using the latest version (v{current_version})."
+        ));
         return Ok(());
     }
 
-    println!(
-        "Updating otf-release from v{} to v{}...",
-        current_version, latest_version
-    );
+    ui::step(&format!(
+        "Updating otf-release from v{current_version} to v{latest_version}…"
+    ));
 
     let (shell, arg, cmd) = if cfg!(windows) {
         (
@@ -66,10 +65,9 @@ pub fn run() -> Result<()> {
         .context("failed to execute installation script")?;
 
     if status.success() {
-        println!(
-            "Successfully updated otf-release from v{} to v{}!",
-            current_version, latest_version
-        );
+        ui::ok(&format!(
+            "Updated otf-release from v{current_version} to v{latest_version}."
+        ));
     } else {
         anyhow::bail!("Installation script failed with status: {}", status);
     }

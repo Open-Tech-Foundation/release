@@ -6,6 +6,7 @@ use crate::config::ReleaseConfig;
 use crate::git;
 use crate::graph::Graph;
 use crate::publish;
+use crate::ui;
 
 pub fn run(adapter: &dyn Adapter, root: &Path, config: &ReleaseConfig) -> Result<()> {
     let tag = config.snapshot_tag.as_deref().unwrap_or("snapshot");
@@ -32,7 +33,7 @@ pub fn run(adapter: &dyn Adapter, root: &Path, config: &ReleaseConfig) -> Result
     }
 
     if new_versions.is_empty() {
-        println!("No publishable packages found for snapshot.");
+        ui::warn("No publishable packages found for snapshot.");
         return Ok(());
     }
 

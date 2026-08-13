@@ -21,6 +21,7 @@ use crate::graph::Graph;
 use crate::preflight;
 use crate::prompt::{Candidate, Prompt, StdinPrompt};
 use crate::summary::{self, Plan, RangeUpdate, VersionChange};
+use crate::ui;
 
 /// Options for a `version` run (wired up by the CLI crate).
 #[derive(Debug, Clone, Default)]
@@ -135,7 +136,7 @@ pub fn orchestrate_many(
     hook_runner: &dyn crate::hooks::HookRunner,
 ) -> Result<()> {
     if adapters.is_empty() {
-        println!("Nothing to release: no adapters are enabled.");
+        ui::warn("Nothing to release: no adapters are enabled.");
         return Ok(());
     }
 
@@ -185,7 +186,12 @@ pub fn orchestrate_many(
         },
     )?;
     if !report.warnings.is_empty() {
-        println!("{}", preflight::format_warnings(&report.warnings));
+        // One marked line per warning, rather than one `!` on a paragraph whose remaining lines
+        // then read as unrelated output.
+        ui::warn("preflight warnings");
+        for warning in &report.warnings {
+            ui::detail(&format!("{}: {}", warning.package, warning.message));
+        }
         println!();
     }
     if !report.violations.is_empty() {
@@ -212,7 +218,7 @@ pub fn orchestrate_many(
         .filter(|p| p.publishable && !empties[p.name.as_str()])
         .collect();
     if pending.is_empty() {
-        println!("Nothing to release: no package has [Unreleased] notes.");
+        ui::warn("Nothing to release: no package has [Unreleased] notes.");
         return Ok(());
     }
 
@@ -255,7 +261,7 @@ pub fn orchestrate_many(
 
     let selected = prompt.choose_bumps(&candidates)?;
     if selected.is_empty() {
-        println!("Nothing selected.");
+        ui::info("Nothing selected.");
         return Ok(());
     }
 
@@ -291,7 +297,7 @@ pub fn orchestrate_many(
     }
 
     if new_versions.is_empty() {
-        println!("Nothing to release: no selected package was publishable.");
+        ui::warn("Nothing to release: no selected package was publishable.");
         return Ok(());
     }
 
@@ -437,7 +443,7 @@ pub fn orchestrate_many(
     )? {
         git.reset_hard()?;
         git.checkout_branch(&branch)?;
-        println!("Cancelled. Generated release changes were discarded.");
+        ui::info("Cancelled. Generated release changes were discarded.");
         return Ok(());
     }
 
@@ -445,36 +451,44 @@ pub fn orchestrate_many(
     git.add_all()?;
     git.commit(&commit_title)?;
     git.push_branch(&release_branch)?;
-    println!("{}", release_branch_ready(&commit_title, &release_branch));
+    ui::heading("Release branch ready");
+    ui::detail(&format!("commit created: {commit_title}"));
+    ui::detail(&format!("branch pushed: origin/{release_branch}"));
 
     if opts.skip_pr {
-        println!("PR: skipped because GitHub CLI is unavailable.");
-        println!("    Manually open a PR for `{release_branch}` on GitHub.");
+        ui::warn("PR skipped because GitHub CLI is unavailable.");
+        ui::detail(&format!(
+            "open a PR for `{release_branch}` on GitHub by hand"
+        ));
     } else {
         forge.open_pr(&release_branch, &commit_title, &summary_text)?;
-        println!("PR: opened from `{release_branch}`.");
+        ui::ok(&format!("PR opened from `{release_branch}`."));
     }
     if prompt.confirm_post_release_cleanup(&release_branch)? {
         git.return_to_default_branch(&branch)?;
         git.delete_local_branch(&release_branch)?;
-        println!("Returned to `{branch}` and deleted local branch `{release_branch}`.");
+        ui::ok(&format!(
+            "Returned to `{branch}` and deleted local branch `{release_branch}`."
+        ));
     } else {
-        println!("{}", post_release_next_steps(&release_branch));
+        ui::heading("Post-release cleanup");
+        for step in post_release_steps(&release_branch) {
+            ui::detail(&step);
+        }
+        ui::detail("deletes only the local release branch, after the pushed PR branch exists");
     }
 
     Ok(())
 }
 
-fn release_branch_ready(commit_title: &str, release_branch: &str) -> String {
-    format!(
-        "\nRelease branch ready:\n  Commit created: {commit_title}\n  Branch pushed: origin/{release_branch}"
-    )
-}
-
-fn post_release_next_steps(release_branch: &str) -> String {
-    format!(
-        "\nPost-release cleanup:\n  git switch main\n  git pull --tags\n  git branch -D {release_branch}\n\nThis deletes only the local release branch after the pushed PR branch exists."
-    )
+/// The commands to run after the release PR merges, one per line so the caller can render them as
+/// indented detail rather than embedding layout in a string.
+fn post_release_steps(release_branch: &str) -> Vec<String> {
+    vec![
+        "git switch main".to_string(),
+        "git pull --tags".to_string(),
+        format!("git branch -D {release_branch}"),
+    ]
 }
 
 /// Raise every bumped member of each lockstep group to the strongest bump in its group, so
@@ -1217,19 +1231,15 @@ mod tests {
 
     #[test]
     fn post_release_next_steps_return_to_main_and_delete_local_branch() {
-        let out = post_release_next_steps("release/2026-06-28");
-        assert!(out.contains("git switch main"));
-        assert!(out.contains("git pull --tags"));
-        assert!(out.contains("git branch -D release/2026-06-28"));
-        assert!(out.contains("local release branch"));
-    }
-
-    #[test]
-    fn release_branch_ready_summarizes_completed_git_steps() {
-        let out = release_branch_ready("chore(release): pkg@1.2.3", "release/2026-06-28");
-        assert!(out.contains("Release branch ready"));
-        assert!(out.contains("Commit created: chore(release): pkg@1.2.3"));
-        assert!(out.contains("Branch pushed: origin/release/2026-06-28"));
+        let steps = post_release_steps("release/2026-06-28");
+        assert_eq!(
+            steps,
+            vec![
+                "git switch main".to_string(),
+                "git pull --tags".to_string(),
+                "git branch -D release/2026-06-28".to_string(),
+            ]
+        );
     }
 
     #[test]

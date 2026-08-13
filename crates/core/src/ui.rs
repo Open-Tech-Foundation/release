@@ -66,49 +66,67 @@ pub fn install_render_config() {
     inquire::set_global_render_config(rc);
 }
 
-fn styled(style: Style, marker: &str, message: &str) {
-    anstream::println!(
-        "{}{marker}{} {message}",
-        style.render(),
-        style.render_reset()
-    );
+/// The palette every command paints with. Exposed as [`anstyle::Style`] values, not as printers,
+/// so a command that assembles a report into a `String` (`doctor`) uses exactly the same colours as
+/// one that prints a line at a time.
+///
+/// Anything built with these must go out through `anstream`, which decides at write time whether
+/// the terminal gets the escape sequences or the pipe gets plain text.
+pub const OK: Style = Style::new().fg_color(Some(anstyle::Color::Ansi(AnsiColor::BrightGreen)));
+pub const INFO: Style = Style::new().fg_color(Some(anstyle::Color::Ansi(AnsiColor::BrightCyan)));
+pub const WARN: Style = Style::new().fg_color(Some(anstyle::Color::Ansi(AnsiColor::BrightYellow)));
+pub const DANGER: Style = Style::new().fg_color(Some(anstyle::Color::Ansi(AnsiColor::BrightRed)));
+pub const DIM: Style = Style::new().fg_color(Some(anstyle::Color::Ansi(AnsiColor::BrightBlack)));
+pub const BOLD: Style = Style::new().effects(Effects::BOLD);
+
+/// The marker each severity carries, so `doctor`'s report and a command's status lines agree about
+/// what a check, a bang and a cross mean.
+pub const OK_MARK: &str = "✓";
+pub const INFO_MARK: &str = "›";
+pub const WARN_MARK: &str = "!";
+pub const DANGER_MARK: &str = "✖";
+
+/// Wrap `text` in `style`, for output assembled into a `String` before printing.
+pub fn paint(style: Style, text: &str) -> String {
+    format!("{}{text}{}", style.render(), style.render_reset())
+}
+
+fn line(style: Style, marker: &str, message: &str) {
+    anstream::println!("{} {message}", paint(style, marker));
 }
 
 /// Something was written or completed.
 pub fn ok(message: &str) {
-    styled(
-        Style::new().fg_color(Some(AnsiColor::BrightGreen.into())),
-        "✓",
-        message,
-    );
+    line(OK, OK_MARK, message);
 }
 
 /// A fact worth stating that is not a result — what a prompt found, what a list contains.
 pub fn info(message: &str) {
-    styled(
-        Style::new().fg_color(Some(AnsiColor::BrightCyan.into())),
-        "›",
-        message,
-    );
+    line(INFO, INFO_MARK, message);
 }
 
 /// Something the user should act on, but which is not an error.
 pub fn warn(message: &str) {
-    styled(
-        Style::new().fg_color(Some(AnsiColor::BrightYellow.into())),
-        "!",
-        message,
-    );
+    line(WARN, WARN_MARK, message);
 }
 
-/// A continuation line under [`info`]/[`ok`], indented to line up under the message.
+/// Something failed or will fail. Goes to stdout with the surrounding narrative; a command that
+/// aborts reports through `anyhow` and the CLI's error printer instead.
+pub fn danger(message: &str) {
+    line(DANGER, DANGER_MARK, message);
+}
+
+/// A step about to run, or one that just did: the running commentary of a long operation.
+pub fn step(message: &str) {
+    anstream::println!("{} {message}", paint(DIM, "·"));
+}
+
+/// A continuation line under a status line, indented to line up under the message.
 pub fn detail(message: &str) {
-    let dim = Style::new().fg_color(Some(AnsiColor::BrightBlack.into()));
-    anstream::println!("  {}{message}{}", dim.render(), dim.render_reset());
+    anstream::println!("  {}", paint(DIM, message));
 }
 
 /// A section break: a blank line, then the title in bold.
 pub fn heading(title: &str) {
-    let bold = Style::new().effects(Effects::BOLD);
-    anstream::println!("\n{}{title}{}", bold.render(), bold.render_reset());
+    anstream::println!("\n{}", paint(BOLD, title));
 }

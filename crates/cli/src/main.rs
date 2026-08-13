@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anstyle::{AnsiColor, Effects, Style};
+use anstyle::Effects;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -16,6 +16,7 @@ use otf_release_adapters::npm::NpmAdapter;
 use otf_release_core::adapter::Adapter;
 use otf_release_core::config::{Discovery, Ecosystem, ReleaseConfig, DEFAULT_VERSION_FIELD};
 use otf_release_core::init::AdapterFactory;
+use otf_release_core::ui;
 use otf_release_core::{init, publish, upgrade, version};
 
 mod self_update;
@@ -219,12 +220,15 @@ fn main() -> ExitCode {
 }
 
 fn print_error(err: &anyhow::Error) {
-    let danger = Style::new()
-        .fg_color(Some(AnsiColor::BrightRed.into()))
-        .effects(Effects::BOLD);
-    anstream::eprintln!("{}Error:{} {err}", danger.render(), danger.render_reset());
+    // Same palette as every other line the tool prints, so an error looks like part of the
+    // interface rather than a stack trace that escaped.
+    let danger = ui::DANGER.effects(Effects::BOLD);
+    anstream::eprintln!(
+        "{} {err}",
+        ui::paint(danger, &format!("{} Error:", ui::DANGER_MARK))
+    );
     for cause in err.chain().skip(1) {
-        anstream::eprintln!("  caused by: {cause}");
+        anstream::eprintln!("  {}", ui::paint(ui::DIM, &format!("caused by: {cause}")));
     }
 }
 
@@ -267,7 +271,7 @@ fn run() -> Result<()> {
                 .map(|(eco, adapter)| (*eco, adapter.as_ref()))
                 .collect();
             let report = otf_release_core::doctor::run(&adapter_refs, &root, &config)?;
-            print!("{}", otf_release_core::doctor::render(&report));
+            anstream::print!("{}", otf_release_core::doctor::render(&report));
             // A non-zero exit makes `doctor` usable as a CI gate, not just a human report.
             let failed = report.has_errors()
                 || (strict && report.count(otf_release_core::doctor::Severity::Warning) > 0);

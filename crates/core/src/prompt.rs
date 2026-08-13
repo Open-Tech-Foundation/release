@@ -8,6 +8,7 @@ use anyhow::Result;
 use inquire::{MultiSelect, Select};
 
 use crate::adapter::{Bump, Pkg};
+use crate::ui;
 
 /// One release candidate: the package plus the head of each version line it can advance.
 ///
@@ -71,7 +72,7 @@ impl Prompt for StdinPrompt {
                 break;
             }
             let chosen = choose_bump_group(label, &remaining, Some(&bump))?;
-            println!("{}", group_summary(label, &chosen, remaining.len()));
+            ui::info(&group_summary(label, &chosen, remaining.len()));
             let chosen_set: HashSet<String> = chosen.into_iter().collect();
             for cand in &remaining {
                 if chosen_set.contains(&cand.pkg.name) {
@@ -83,10 +84,11 @@ impl Prompt for StdinPrompt {
 
         if !remaining.is_empty() {
             let chosen = choose_bump_group("Other release types", &remaining, None)?;
-            println!(
-                "{}",
-                group_summary("Other release types", &chosen, remaining.len())
-            );
+            ui::info(&group_summary(
+                "Other release types",
+                &chosen,
+                remaining.len(),
+            ));
             let chosen_set: HashSet<String> = chosen.into_iter().collect();
             for cand in &remaining {
                 if chosen_set.contains(&cand.pkg.name) {
@@ -136,6 +138,7 @@ fn choose_bump_group(
     }
     println!();
     let chosen = MultiSelect::new(&format!("{label} releases"), choices)
+        .with_page_size(ui::PAGE_SIZE)
         .with_help_message("↑↓ move · space toggle · enter confirm")
         .raw_prompt()?;
 

@@ -28,6 +28,7 @@ use crate::changelog;
 use crate::config::{GithubReleaseNotes, PackageEntry, ReleaseConfig, TagFormats};
 use crate::forge::{Forge, GhForge, ReleaseNotes};
 use crate::git::{GitRepo, RepoState};
+use crate::ui;
 
 /// Options for a `github-release` run.
 #[derive(Debug, Clone, Default)]
@@ -97,7 +98,7 @@ pub fn orchestrate(
     };
 
     if selected.is_empty() {
-        println!("No build-only packages to release.");
+        ui::info("No build-only packages to release.");
         return Ok(());
     }
 
@@ -138,25 +139,25 @@ pub fn orchestrate(
 
         // A dry run previews the plan and never touches the forge, so it works without `gh`.
         if opts.dry_run {
-            println!("Would create release {tag}:");
+            ui::info(&format!("Would create release {tag}:"));
             match &notes {
-                ReleaseNotes::Body(_) => println!("  notes: curated"),
-                ReleaseNotes::Generate => println!("  notes: GitHub-generated"),
+                ReleaseNotes::Body(_) => ui::detail("notes: curated"),
+                ReleaseNotes::Generate => ui::detail("notes: GitHub-generated"),
             }
             for asset in &assets {
-                println!("  asset: {}", asset.display());
+                ui::detail(&format!("asset: {}", asset.display()));
             }
             continue;
         }
 
         // Idempotent: a re-run after a partial failure skips a release that already shipped.
         if forge.release_exists(&tag)? {
-            println!("Release {tag} already exists; nothing to do.");
+            ui::info(&format!("Release {tag} already exists; nothing to do."));
             continue;
         }
 
         forge.create_release_with_assets(&tag, &tag, &notes, Some("main"), &assets)?;
-        println!("Released {tag} ({} asset(s))", assets.len());
+        ui::ok(&format!("Released {tag} ({} asset(s))", assets.len()));
     }
 
     Ok(())

@@ -29,6 +29,19 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   and a package's own tag format the repo-wide list with an *inherit* row on top. Free text is kept
   only where the value genuinely is free text: hook commands, build commands, globs, and paths.
 
+- **Every command's output is styled, not just `config`'s.** `doctor` was the worst of it — a plain
+  wall of text where the severity of a finding was a word you had to read. Its groups now carry the
+  severity's colour and a marker (`✖` error, `!` warning, `›` suggestion, `·` info), the finding
+  code is bold so the thing you grep for stands out from the prose, and the closing tally takes the
+  colour of the worst thing in it. `init`, `version`, `publish`, `github-release`, `build`,
+  `upgrade`, `snapshot`, hooks and `self-update` all print through the same marked helpers, and
+  errors from any command use the same palette rather than looking like an escaped stack trace.
+
+  Machine-readable output is deliberately untouched: `check` still prints bare `true`/`false` and
+  `matrix` still prints bare JSON, so nothing that a workflow parses gained a decoration. Colour is
+  dropped whenever stdout is not a terminal, so a `doctor` run redirected to a file or read by CI
+  stays plain text.
+
 - **The interactive prompts are restyled.** `◆` marks the question in progress and `✓` the ones
   already answered, the question itself is bold, and everything that is context rather than content
   — help lines, defaults, placeholders — is dimmed instead of competing with it. The option cursor

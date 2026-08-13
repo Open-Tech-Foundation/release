@@ -25,6 +25,7 @@ use anyhow::Result;
 
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{Ecosystem, ReleaseConfig};
+use crate::ui;
 
 /// How much a finding costs if ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -629,16 +630,20 @@ fn rel(root: &Path, path: &Path) -> String {
 }
 
 /// Render a report for the terminal. Grouped by severity, worst first, with a one-line tally.
+///
+/// Styling is baked into the returned string rather than printed here, so the caller can send it
+/// through `anstream` — which strips the escape sequences when stdout is a pipe. A `doctor` run
+/// redirected to a file or read by CI stays plain text.
 pub fn render(report: &Report) -> String {
     let mut s = String::new();
     let groups = [
-        (Severity::Error, "Errors"),
-        (Severity::Warning, "Warnings"),
-        (Severity::Suggestion, "Suggestions"),
-        (Severity::Info, "Info"),
+        (Severity::Error, "Errors", ui::DANGER, ui::DANGER_MARK),
+        (Severity::Warning, "Warnings", ui::WARN, ui::WARN_MARK),
+        (Severity::Suggestion, "Suggestions", ui::INFO, ui::INFO_MARK),
+        (Severity::Info, "Info", ui::DIM, "·"),
     ];
 
-    for (severity, heading) in groups {
+    for (severity, heading, style, mark) in groups {
         let group: Vec<&Finding> = report
             .findings
             .iter()
@@ -647,11 +652,22 @@ pub fn render(report: &Report) -> String {
         if group.is_empty() {
             continue;
         }
-        s.push_str(&format!("\n{heading}\n"));
+        // The heading carries the severity's colour, so a wall of findings is scannable by band
+        // rather than by reading every line.
+        s.push_str(&format!(
+            "\n{}\n",
+            ui::paint(style.bold(), &format!("{heading} ({})", group.len()))
+        ));
         for finding in group {
-            s.push_str(&format!("  [{}] {}\n", finding.code, finding.message));
+            // The code is what you grep for and what the docs index; give it the weight.
+            s.push_str(&format!(
+                "  {} {} {}\n",
+                ui::paint(style, mark),
+                ui::paint(ui::BOLD, finding.code),
+                finding.message
+            ));
             if let Some(fix) = &finding.fix {
-                s.push_str(&format!("      fix: {fix}\n"));
+                s.push_str(&format!("      {} {fix}\n", ui::paint(ui::DIM, "fix:")));
             }
         }
     }
@@ -661,11 +677,28 @@ pub fn render(report: &Report) -> String {
         report.count(Severity::Warning),
         report.count(Severity::Suggestion),
     );
+    // The tally takes the colour of the worst thing in it, so the last line of a long report is
+    // the verdict and not just arithmetic.
+    let verdict = if errors > 0 {
+        ui::DANGER
+    } else if warnings > 0 {
+        ui::WARN
+    } else {
+        ui::DIM
+    };
     s.push_str(&format!(
-        "\n{errors} error(s), {warnings} warning(s), {suggestions} suggestion(s).\n"
+        "\n{}\n",
+        ui::paint(
+            verdict,
+            &format!("{errors} error(s), {warnings} warning(s), {suggestions} suggestion(s).")
+        )
     ));
     if errors == 0 && warnings == 0 {
-        s.push_str("Release setup looks healthy.\n");
+        s.push_str(&format!(
+            "{} {}\n",
+            ui::paint(ui::OK, ui::OK_MARK),
+            "Release setup looks healthy."
+        ));
     }
     s
 }

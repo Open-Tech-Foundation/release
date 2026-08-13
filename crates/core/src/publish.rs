@@ -14,6 +14,7 @@ use crate::config::{ChangelogLayout, TagFormats, DEFAULT_TAG_FORMAT};
 use crate::forge::{Forge, GhForge};
 use crate::git::{GitOps, GitRepo};
 use crate::graph::Graph;
+use crate::ui;
 
 /// Options for a `publish` run.
 #[derive(Debug, Clone)]
@@ -177,21 +178,21 @@ pub fn orchestrate_many(
     let has_work = plans.iter().any(|plan| !plan.pending.is_empty());
 
     if !has_work {
-        println!("Nothing to publish: every package is already published and tagged.");
+        ui::info("Nothing to publish: every package is already published and tagged.");
         return Ok(());
     }
 
     if opts.dry_run {
-        println!("Would publish (in dependency order):");
+        ui::info("Would publish (in dependency order):");
         for plan in &plans {
             for p in &plan.pending {
                 if p.needs_publish {
-                    println!("  {}@{}", p.pkg.name, p.pkg.version);
+                    ui::detail(&format!("{}@{}", p.pkg.name, p.pkg.version));
                 } else {
-                    println!(
-                        "  {}@{} (already published — tag/release only)",
+                    ui::detail(&format!(
+                        "{}@{} (already published — tag/release only)",
                         p.pkg.name, p.pkg.version
-                    );
+                    ));
                 }
             }
         }
@@ -244,9 +245,9 @@ pub fn orchestrate_many(
             }
 
             if p.needs_publish {
-                println!("Published {}", p.tag);
+                ui::ok(&format!("Published {}", p.tag));
             } else {
-                println!("Tagged {} (already published)", p.tag);
+                ui::ok(&format!("Tagged {} (already published)", p.tag));
             }
         }
     }

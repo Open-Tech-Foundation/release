@@ -27,6 +27,7 @@ use crate::config::{
 use crate::discover::{
     declares_npm_workspaces, scan_generic_candidates, scan_npm_candidates, GenericCandidate,
 };
+use crate::ui;
 
 /// The git tag of the `otf-release` that generated a workflow. Generated jobs pin to this rather
 /// than tracking `main`/`latest`, so what runs in a consumer's CI changes only when they merge a
@@ -337,12 +338,13 @@ impl TagFormatSuggestion {
 /// A short, friendly preamble so a first-time dev knows what `init` will ask and that nothing is
 /// locked in — every answer has a default and is editable afterward.
 fn print_intro() {
-    println!("\notf-release init — configure releases for this repo.\n");
-    println!(
-        "  • Writes release.toml (the editable source of truth) and a GitHub release workflow."
+    ui::heading("otf-release init — configure releases for this repo");
+    ui::detail("writes release.toml (the editable source of truth) and a GitHub release workflow");
+    ui::detail("Enter accepts the default in (parentheses); a hint sits under each prompt");
+    ui::detail(
+        "nothing is permanent — re-run init, edit release.toml, or use `otf-release config`",
     );
-    println!("  • Press Enter to accept the default shown in (parentheses); a hint sits under each prompt.");
-    println!("  • Nothing is permanent — re-run init, edit release.toml by hand, or use `otf-release config`.\n");
+    println!();
 }
 
 fn suggest_tag_format(root: &Path, publishable_count: usize) -> TagFormatSuggestion {
@@ -458,15 +460,20 @@ pub(crate) fn resolve_discovery(
 
     let found = scan_npm_candidates(root);
     if found.is_empty() {
-        println!(
-            "No package.json with a name and a version found — npm will discover no packages.              Add the package directories to `[discovery] npm` in release.toml, or declare              `workspaces` in a root package.json."
+        ui::warn(
+            "No package.json with a name and a version found — npm will discover no packages. \
+             Add the package directories to `[discovery] npm` in release.toml, or declare \
+             `workspaces` in a root package.json.",
         );
         return Ok(discovery);
     }
 
-    println!("\nFound {} npm package(s) in this repo:", found.len());
+    ui::heading(&format!(
+        "Found {} npm package(s) in this repo",
+        found.len()
+    ));
     for c in &found {
-        println!("  {}", c.label());
+        ui::detail(&c.label());
     }
     let chosen = prompt.select_npm_packages(&found)?;
     discovery.npm = chosen
@@ -512,7 +519,7 @@ pub fn orchestrate(
             }
         }
         for note in factory.discovery_notes(eco, &discovery)? {
-            println!("{note}");
+            ui::info(&note);
         }
     }
 
@@ -532,7 +539,7 @@ pub fn orchestrate(
 
                 let suggested_exports = detect_jsr_exports_default(pkg_dir);
 
-                println!("\nScaffolding jsr.json for package: {}", npm_pkg.name);
+                ui::heading(&format!("Scaffolding jsr.json for {}", npm_pkg.name));
                 let (name, exports) = prompt.prompt_jsr_scaffold(
                     &suggested_name,
                     &npm_pkg.version,
@@ -547,7 +554,10 @@ pub fn orchestrate(
 
                 let content = serde_json::to_string_pretty(&jsr_json)?;
                 std::fs::write(&jsr_path, content)?;
-                println!("Created default jsr.json at {}", jsr_path.display());
+                ui::ok(&format!(
+                    "Created default jsr.json at {}",
+                    jsr_path.display()
+                ));
                 created_any = true;
             }
             if created_any {
@@ -557,7 +567,7 @@ pub fn orchestrate(
             }
         } else {
             let suggested_exports = detect_jsr_exports_default(root);
-            println!("\nScaffolding a new JSR package at the repository root");
+            ui::heading("Scaffolding a new JSR package at the repository root");
             let (name, exports) =
                 prompt.prompt_jsr_scaffold("@scope/my-package", "0.1.0", suggested_exports)?;
             let jsr_path = root.join("jsr.json");
@@ -568,7 +578,10 @@ pub fn orchestrate(
             });
             let content = serde_json::to_string_pretty(&jsr_json)?;
             std::fs::write(&jsr_path, content)?;
-            println!("Created default jsr.json at {}", jsr_path.display());
+            ui::ok(&format!(
+                "Created default jsr.json at {}",
+                jsr_path.display()
+            ));
             jsr_adapter.discover_packages()?
         };
 
@@ -589,9 +602,9 @@ pub fn orchestrate(
     if enabled.contains(&Ecosystem::Cargo) && cargo_refs.is_empty() {
         // Silence here reads as "this init has no build step", when it actually means discovery
         // came back empty — say so rather than skipping the questions without a word.
-        println!(
+        ui::warn(
             "No publishable crates found — skipping the build-step questions. Add `[[package]]` \
-             entries to release.toml by hand, or re-run init once the crates are in place."
+             entries to release.toml by hand, or re-run init once the crates are in place.",
         );
     }
     let build_names = prompt.select_build_packages(&cargo_refs)?;
@@ -613,12 +626,12 @@ pub fn orchestrate(
         for pkg in &npm_publishable {
             let removed = npm.strip_publish_hooks(pkg)?;
             if !removed.is_empty() {
-                println!(
+                ui::warn(&format!(
                     "Removed npm lifecycle hook(s) from {}: {}. The release pipeline runs the build \
                      itself — move any custom steps into a `build` script or [hooks] in release.toml.",
                     pkg.name,
                     removed.join(", ")
-                );
+                ));
             }
             if let Some(command) = npm.build_command(pkg)? {
                 packages.push(inline_build_entry(pkg, Ecosystem::Npm, command, root));
@@ -747,7 +760,7 @@ pub fn orchestrate(
     let toml_path = ReleaseConfig::path(root);
     if write_allowed(&toml_path, opts.force, prompt)? {
         config.save(root)?;
-        println!("Wrote {}", toml_path.display());
+        ui::ok(&format!("Wrote {}", toml_path.display()));
     }
 
     // 2. Generate the workflow from it.
@@ -757,7 +770,7 @@ pub fn orchestrate(
         fs::create_dir_all(yml_path.parent().unwrap())
             .with_context(|| format!("creating {}", yml_path.parent().unwrap().display()))?;
         fs::write(&yml_path, yaml).with_context(|| format!("writing {}", yml_path.display()))?;
-        println!("Wrote {}", yml_path.display());
+        ui::ok(&format!("Wrote {}", yml_path.display()));
     }
 
     Ok(())
@@ -766,7 +779,7 @@ pub fn orchestrate(
 /// Whether we may write `path`: true unless it exists, isn't forced, and the user declines.
 fn write_allowed(path: &Path, force: bool, prompt: &dyn InitPrompt) -> Result<bool> {
     if path.exists() && !force && !prompt.confirm_overwrite(path)? {
-        println!("Left existing {} unchanged.", path.display());
+        ui::info(&format!("Left existing {} unchanged.", path.display()));
         return Ok(false);
     }
     Ok(true)
@@ -2302,7 +2315,7 @@ impl InitPrompt for StdinInitPrompt {
             if ans == "GitHub" {
                 return Ok("github".to_string());
             } else {
-                println!("Only GitHub is fully supported at this moment. Please select GitHub.");
+                ui::warn("Only GitHub is fully supported at this moment. Please select GitHub.");
             }
         }
     }

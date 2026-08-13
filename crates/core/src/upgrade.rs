@@ -8,6 +8,7 @@ use inquire::Confirm;
 
 use crate::config::ReleaseConfig;
 use crate::init::render_workflow_for_root;
+use crate::ui;
 
 /// Options for an `upgrade` run.
 #[derive(Debug, Clone, Default)]
@@ -35,7 +36,7 @@ pub fn orchestrate(root: &Path, opts: &UpgradeOptions) -> Result<()> {
     fs::create_dir_all(yml_path.parent().unwrap())
         .with_context(|| format!("creating {}", yml_path.parent().unwrap().display()))?;
     fs::write(&yml_path, yaml).with_context(|| format!("writing {}", yml_path.display()))?;
-    println!("Upgraded {}", yml_path.display());
+    ui::ok(&format!("Upgraded {}", yml_path.display()));
 
     Ok(())
 }
