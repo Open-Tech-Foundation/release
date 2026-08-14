@@ -23,7 +23,8 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::config::{
     format_tag, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode,
-    ReleaseConfig, Target, COMMON_TAG_FORMATS, CONFIG_FILE, DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
+    ReleaseConfig, Setup, Target, COMMON_TAG_FORMATS, CONFIG_FILE, DEFAULT_VERSION_FIELD,
+    TARGET_REGISTRY,
 };
 use crate::init::{
     adopt_package, sync_package_blocks, unconfigured_packages, AdapterFactory, UnconfiguredPackage,
@@ -47,6 +48,9 @@ pub enum Field {
     Ecosystems,
     SkipPublish,
     Hook(HookStage),
+    SetupUses,
+    SetupWith,
+    SetupRun,
     /// Open the detail view for a configured package.
     OpenPackage(String),
     /// Decide whether a package the repo has but `release.toml` does not is released or skipped.
@@ -128,6 +132,14 @@ fn or_inherit(value: Option<&String>, inherited: &str) -> String {
     match value {
         Some(v) => v.clone(),
         None => format!("(repo default: {inherited})"),
+    }
+}
+
+fn none_if_empty(value: String) -> String {
+    if value.is_empty() {
+        "(none)".to_string()
+    } else {
+        value
     }
 }
 
@@ -255,6 +267,30 @@ fn settings_entries(config: &ReleaseConfig, new_packages: &[String]) -> Vec<Entr
             "shell commands run around the release, comma-separated",
         ));
     }
+
+    out.push(Entry::Header("Build setup".into()));
+    out.push(row(
+        "Action",
+        config
+            .setup
+            .uses
+            .clone()
+            .unwrap_or_else(|| "(none)".to_string()),
+        Field::SetupUses,
+        "an action run before every build, e.g. ./.github/actions/setup-tsr",
+    ));
+    out.push(row(
+        "Action inputs",
+        none_if_empty(config.setup.format_with()),
+        Field::SetupWith,
+        "inputs for the action above, as key=value pairs",
+    ));
+    out.push(row(
+        "Script",
+        list_or_none(&config.setup.run),
+        Field::SetupRun,
+        "shell commands run before every build, comma-separated",
+    ));
 
     out.push(Entry::Header(format!(
         "Packages ({})",
@@ -767,6 +803,21 @@ fn open_editor(app: &mut App) -> Result<()> {
             &hook_commands(config, *stage).join(", "),
             Field::Hook(*stage),
         ),
+        Field::SetupUses => text(
+            "Setup action (blank for none)",
+            config.setup.uses.as_deref().unwrap_or_default(),
+            Field::SetupUses,
+        ),
+        Field::SetupWith => text(
+            "Setup action inputs (key=value, comma-separated)",
+            &config.setup.format_with(),
+            Field::SetupWith,
+        ),
+        Field::SetupRun => text(
+            "Setup commands (comma-separated)",
+            &config.setup.run.join(", "),
+            Field::SetupRun,
+        ),
         other => package_editor(app, other.clone())?,
     };
     app.modal = Some(modal);
@@ -1168,6 +1219,15 @@ fn apply_text(app: &mut App, field: Field, buffer: String) -> Result<()> {
         },
         Field::SnapshotTag => app.config.snapshot_tag = optional(&buffer),
         Field::Hook(stage) => set_hook_commands(&mut app.config, stage, parse_csv(&buffer)),
+        Field::SetupUses => app.config.setup.uses = optional(&buffer),
+        Field::SetupWith => match Setup::parse_with(&buffer) {
+            Ok(with) => app.config.setup.with = with,
+            Err(err) => {
+                app.status = Some(format!("Not saved: {err}"));
+                return Ok(());
+            }
+        },
+        Field::SetupRun => app.config.setup.run = parse_csv(&buffer),
         Field::PkgCommand
         | Field::PkgArtifacts
         | Field::PkgChangelog
@@ -1493,6 +1553,21 @@ mod tests {
         assert_eq!(value_of(&entries, "Strategy"), "curated");
         // A package's row summarises it rather than making you open it to find out.
         assert_eq!(value_of(&entries, "@x/sdk"), "npm · publish");
+    }
+
+    #[test]
+    fn setup_rows_show_the_action_and_its_inputs() {
+        let mut cfg = config();
+        cfg.setup = Setup {
+            uses: Some("./.github/actions/setup-tsr".into()),
+            with: Setup::parse_with("esdev=true").unwrap(),
+            run: Vec::new(),
+        };
+        let entries = build(&cfg, &View::Settings, &[]);
+
+        assert_eq!(value_of(&entries, "Action"), "./.github/actions/setup-tsr");
+        assert_eq!(value_of(&entries, "Action inputs"), "esdev=true");
+        assert_eq!(value_of(&entries, "Script"), "(none)");
     }
 
     /// Unset values read as what the repo will actually do, not as blanks — the parenthesised form

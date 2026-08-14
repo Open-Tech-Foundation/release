@@ -16,7 +16,7 @@ use anyhow::Result;
 use otf_release_adapters::npm::NpmAdapter;
 use otf_release_core::adapter::Adapter;
 use otf_release_core::config::{
-    ChangelogScope, Ecosystem, GithubReleaseNotes, PackageEntry, ReleaseConfig,
+    ChangelogScope, Ecosystem, GithubReleaseNotes, PackageEntry, ReleaseConfig, Setup,
 };
 use otf_release_core::discover::GenericCandidate;
 use otf_release_core::init::{
@@ -98,6 +98,14 @@ impl InitPrompt for NpmOnlyPrompt {
     fn prompt_github_release_notes(&self) -> Result<GithubReleaseNotes> {
         Ok(GithubReleaseNotes::AutoGenerate)
     }
+    /// The repo builds through a task runner installed by a composite action it already has.
+    fn prompt_setup(&self) -> Result<Setup> {
+        Ok(Setup {
+            uses: Some("./.github/actions/setup-tsr".into()),
+            with: Setup::parse_with("esdev=true")?,
+            run: Vec::new(),
+        })
+    }
 }
 
 #[test]
@@ -149,6 +157,19 @@ fn npm_init_injects_inline_build_and_strips_publish_hooks() {
     assert!(yml.contains("      - name: Build @acme/lib\n"));
     assert!(yml.contains("        run: npm run build\n"));
     assert!(yml.contains("        working-directory: packages/lib\n"));
+
+    // 4. The setup action runs as its own step *before* the build, so the PATH it exports reaches
+    //    the build — the thing an install folded into `command` cannot do.
+    let setup_step =
+        "      - uses: ./.github/actions/setup-tsr\n        with:\n          esdev: \"true\"\n";
+    assert!(yml.contains(setup_step), "yml:\n{yml}");
+    assert!(
+        yml.find(setup_step).unwrap() < yml.find("      - name: Build @acme/lib\n").unwrap(),
+        "setup must precede the build it provisions"
+    );
+    // `true` stays a string: an action input is always a string, and `inputs.esdev == 'true'`
+    // would never match a YAML boolean.
+    assert!(!yml.contains("esdev: true\n"));
     assert!(yml.contains("        run: otf-release publish --package @acme/lib\n"));
     assert!(
         !yml.contains("--artifacts-dir"),

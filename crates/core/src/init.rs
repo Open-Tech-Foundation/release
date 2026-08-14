@@ -10,18 +10,18 @@
 //! interactive choices go through the [`InitPrompt`] trait, and package discovery through the
 //! [`AdapterFactory`] trait, so the flow is testable.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use inquire::{MultiSelect, Select, Text};
+use inquire::{Confirm, MultiSelect, Select, Text};
 
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{
     default_ignore_paths, ArchiveFormat, ChangelogScope, ChangelogStrategy, Discovery, Ecosystem,
-    GithubReleaseNotes, Mode, PackageEntry, ReleaseConfig, Target, COMMON_TAG_FORMATS,
+    GithubReleaseNotes, Mode, PackageEntry, ReleaseConfig, Setup, Target, COMMON_TAG_FORMATS,
     DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
 };
 use crate::discover::{
@@ -313,6 +313,10 @@ pub trait InitPrompt {
     fn prompt_changelog_scope(&self) -> Result<ChangelogScope>;
     /// Ask how GitHub Release bodies should be generated.
     fn prompt_github_release_notes(&self) -> Result<GithubReleaseNotes>;
+    /// Ask for a repo-wide setup step to run before every build. Asked only when some package
+    /// actually has a build command — a repo whose packages all publish as-is has no build to
+    /// precede. Returning [`Setup::default`] means "none", which writes no `[setup]` block.
+    fn prompt_setup(&self) -> Result<Setup>;
 }
 
 /// Wire up the real prompt and run the generator.
@@ -772,6 +776,16 @@ pub fn orchestrate(
     }
     packages.sort_by(|a, b| a.name.cmp(&b.name));
 
+    // Only worth asking when there is a build to precede: a repo whose packages all publish as-is
+    // has no step for a setup step to run before.
+    let setup = if packages.iter().any(|p| !p.command.trim().is_empty()) {
+        let setup = prompt.prompt_setup()?;
+        setup.validate("[setup]")?;
+        setup
+    } else {
+        Setup::default()
+    };
+
     let tag_suggestion = suggest_tag_format(root, publishable.len());
     let tag_format = prompt.tag_format(&tag_suggestion)?;
     crate::config::format_tag(&tag_format, "package", "1.2.3")?;
@@ -780,6 +794,7 @@ pub fn orchestrate(
     let config = ReleaseConfig {
         otf_release_version: None,
         hooks: crate::config::Hooks::default(),
+        setup,
         publish: crate::config::PublishConfig {
             ignore_paths: publish_ignore_paths_seed(&publishable, &packages, &ecosystem_of),
         },
@@ -942,6 +957,7 @@ fn render_check_release_job(s: &mut String, config: &ReleaseConfig) {
     s.push_str("        with:\n");
     s.push_str("          fetch-depth: 0\n");
     push_install_otf_release(s, &pin);
+    render_global_setup(s, config);
     // The gate delegates to the binary, like every other job (`matrix`/`build`/`publish`): the tool
     // reads each package's version and tag with the *same* logic it publishes with, so the gate can
     // never drift. It prints `true` when any configured package has an untagged version to release.
@@ -1127,7 +1143,7 @@ fn render_workflow_with_npm_install(config: &ReleaseConfig, npm: &NpmInstall) ->
         .iter()
         .filter(|p| has_build(p) && !p.builds_inline())
     {
-        render_build_job(&mut s, entry, npm, &pin);
+        render_build_job(&mut s, config, entry, npm, &pin);
     }
 
     for entry in config
@@ -1171,7 +1187,7 @@ fn render_workflow_with_npm_install(config: &ReleaseConfig, npm: &NpmInstall) ->
             } else {
                 vec![build_job(&entry.name)]
             };
-            render_github_release(&mut s, &needs, entry, &pin);
+            render_github_release(&mut s, config, &needs, entry, &pin);
         }
     }
 
@@ -1186,11 +1202,63 @@ fn rel_path(root: &Path, path: &Path) -> String {
 }
 
 /// One build job: matrix or single runner, runs the package's command, uploads its artifacts.
-fn render_build_job(s: &mut String, entry: &PackageEntry, npm: &NpmInstall, pin: &str) {
+/// A double-quoted YAML scalar, so an action input is always passed as the string it is.
+///
+/// Unquoted, `esdev = "true"` would round-trip into the workflow as a YAML boolean and reach the
+/// action as one; action inputs are strings, and the `inputs.esdev == 'true'` comparison such an
+/// action does would then never match.
+fn yaml_quoted(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+/// The configured [`Setup`] as workflow steps, emitted after the toolchain steps and immediately
+/// before the build that needs them.
+///
+/// Being a step of its own is the whole point: `$GITHUB_PATH` writes — the action's or the
+/// script's — apply to *subsequent* steps of the job, so the build that follows sees the installed
+/// tool on PATH with no inline `PATH=` prefix. `guard` carries the same `if:` that gates the
+/// job's other host-side steps, which is empty for every job that has no VM targets.
+fn render_setup_step(s: &mut String, setup: &Setup, guard: &str) {
+    if let Some(uses) = &setup.uses {
+        s.push_str(&format!("      - uses: {uses}\n"));
+        s.push_str(guard);
+        if !setup.with.is_empty() {
+            s.push_str("        with:\n");
+            for (key, value) in &setup.with {
+                s.push_str(&format!("          {key}: {}\n", yaml_quoted(value)));
+            }
+        }
+    }
+    if !setup.run.is_empty() {
+        s.push_str("      - name: Setup\n");
+        s.push_str(guard);
+        s.push_str("        shell: bash\n");
+        s.push_str("        run: |\n");
+        for line in &setup.run {
+            s.push_str(&format!("          {line}\n"));
+        }
+    }
+}
+
+/// The repo's setup step, for a job with no `if:` guard to carry.
+fn render_global_setup(s: &mut String, config: &ReleaseConfig) {
+    if let Some(setup) = config.setup_step() {
+        render_setup_step(s, setup, "");
+    }
+}
+
+fn render_build_job(
+    s: &mut String,
+    config: &ReleaseConfig,
+    entry: &PackageEntry,
+    npm: &NpmInstall,
+    pin: &str,
+) {
     if entry.matrix {
-        render_matrix_build_jobs(s, entry, npm, pin);
+        render_matrix_build_jobs(s, config, entry, npm, pin);
     } else {
-        render_single_build_job(s, entry, npm);
+        render_single_build_job(s, config, entry, npm);
     }
 }
 
@@ -1273,7 +1341,13 @@ fn render_vm_build_step(s: &mut String, entry: &PackageEntry, os: &str, rust: bo
 /// job that fans out over `fromJSON(...)` and calls `otf-release build` per target. The tool — not
 /// hand-written YAML — owns the triple/runner/cross/stage_as reconciliation, so there are no
 /// `# edit me` markers.
-fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm: &NpmInstall, pin: &str) {
+fn render_matrix_build_jobs(
+    s: &mut String,
+    config: &ReleaseConfig,
+    entry: &PackageEntry,
+    npm: &NpmInstall,
+    pin: &str,
+) {
     let name = &entry.name;
     let art_slug = slug(name);
     let matrix_job = format!("matrix-{art_slug}");
@@ -1291,6 +1365,7 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm: &NpmInsta
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n");
     push_install_otf_release(s, pin);
+    render_global_setup(s, config);
     s.push_str("      - id: set\n");
     s.push_str(&format!(
         "        run: echo \"matrix=$(otf-release matrix --package {name})\" >> \"$GITHUB_OUTPUT\"\n\n"
@@ -1339,6 +1414,11 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm: &NpmInsta
         npm.push_install(s, Some(entry));
     }
     push_install_otf_release_cross_platform(s, pin);
+    // Host-side only, like every toolchain step above it: a VM target's build runs inside the
+    // guest, which installs what it needs through the VM step's own `prepare:`.
+    if let Some(setup) = config.setup_step() {
+        render_setup_step(s, setup, &host_only);
+    }
     s.push_str(&format!("      - name: Build {name}\n"));
     s.push_str(&host_only);
     s.push_str(&format!(
@@ -1368,7 +1448,12 @@ fn render_matrix_build_jobs(s: &mut String, entry: &PackageEntry, npm: &NpmInsta
 }
 
 /// A non-matrix package builds on one runner with its plain command.
-fn render_single_build_job(s: &mut String, entry: &PackageEntry, npm: &NpmInstall) {
+fn render_single_build_job(
+    s: &mut String,
+    config: &ReleaseConfig,
+    entry: &PackageEntry,
+    npm: &NpmInstall,
+) {
     let job = build_job(&entry.name);
     let art_slug = slug(&entry.name);
     s.push_str(&format!("  {job}:\n"));
@@ -1394,6 +1479,7 @@ fn render_single_build_job(s: &mut String, entry: &PackageEntry, npm: &NpmInstal
         // Generic is language-agnostic: no toolchain is assumed — the command sets up its own.
         Ecosystem::Generic => {}
     }
+    render_global_setup(s, config);
     s.push_str(&format!("      - name: Build {}\n", entry.name));
     s.push_str(&format!("        run: {}\n", entry.command));
     s.push_str("      - uses: actions/upload-artifact@v4\n");
@@ -1496,6 +1582,9 @@ fn render_publish_job(
         npm.push_install(s, None);
     }
     push_install_otf_release(s, pin);
+    // This job is where `pre_publish`/`post_publish` hooks and every generic `publish` command
+    // actually run, so `scope = "all"` matters most here.
+    render_global_setup(s, config);
     s.push_str("      - name: Publish\n");
     s.push_str("        run: otf-release publish");
     for package in excluded_packages {
@@ -1749,6 +1838,7 @@ fn render_package_publish_job(
         // then publish. npm packs the freshly built output from this same runner — no artifact
         // upload/download, and npm's own pack/publish lifecycle hooks were stripped at init time.
         npm.push_install(s, Some(entry));
+        render_global_setup(s, config);
         s.push_str(&format!("      - name: Build {name}\n"));
         s.push_str(&format!("        run: {}\n", entry.command));
         if let Some(dir) = package_workdir(entry) {
@@ -1768,6 +1858,9 @@ fn render_package_publish_job(
         if entry.adapter == Ecosystem::Npm {
             npm.push_install(s, Some(entry));
         }
+        // Only this branch: the inline branch already emitted the step before its build, and
+        // installing the same tool twice in one job is wasted runtime.
+        render_global_setup(s, config);
     }
     push_install_otf_release(s, pin);
     s.push_str("      - name: Publish\n");
@@ -1795,7 +1888,13 @@ fn render_package_publish_job(
 /// binaries into OS/arch assets, and creates the Release — all in the binary, idempotently. The
 /// YAML stays a thin, stable call (no inline `gh`/`awk`/`jq`), exactly like the registry
 /// `publish` job. No registry push.
-fn render_github_release(s: &mut String, needs: &[String], entry: &PackageEntry, pin: &str) {
+fn render_github_release(
+    s: &mut String,
+    config: &ReleaseConfig,
+    needs: &[String],
+    entry: &PackageEntry,
+    pin: &str,
+) {
     s.push_str(&format!("  github-release-{}:\n", slug(&entry.name)));
     let mut actual_needs = vec!["check-release".to_string()];
     actual_needs.extend_from_slice(needs);
@@ -1810,6 +1909,7 @@ fn render_github_release(s: &mut String, needs: &[String], entry: &PackageEntry,
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
     let staged = download_artifacts(s, needs);
     push_install_otf_release(s, pin);
+    render_global_setup(s, config);
     s.push_str("      - name: Create GitHub Release\n");
     s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     if staged {
@@ -2053,6 +2153,21 @@ const COMMAND_HELP: &str =
     "runs in CI for each target; {triple} {ext} {bin} are substituted per platform";
 const ARTIFACTS_HELP: &str =
     "path to the binary the command produced; {triple} {ext} {bin} expand per target";
+const SETUP_HELP: &str =
+    "a task runner, a bundler with its own install.sh, a private toolchain — anything your build \
+     commands, hooks, or publish commands call that GitHub's runner has no step for. It runs in \
+     every job before the work, so PATH it exports reaches what follows";
+const SETUP_KIND_HELP: &str =
+    "an action is preferred when the repo has one: its other workflows already use it, so there is \
+     one definition of how the tool is installed rather than two that can drift";
+const SETUP_USES_HELP: &str =
+    "exactly what a workflow would write: ./.github/actions/setup-tsr for a local composite \
+     action, or owner/repo@v1 for a published one";
+const SETUP_WITH_HELP: &str =
+    "the action's inputs, e.g. esdev=true — each is passed as a string, like every action input";
+const SETUP_RUN_HELP: &str =
+    "run as one step before the build, e.g. curl -fsSL https://example.com/install.sh | bash, \
+     echo \"$HOME/.tool/bin\" >> \"$GITHUB_PATH\"";
 const TAG_FORMAT_HELP: &str =
     "e.g. v{version} (single package) or {name}@{version} (per-package tags in a monorepo)";
 const CHANGELOG_SCOPE_HELP: &str =
@@ -2428,6 +2543,65 @@ impl InitPrompt for StdinInitPrompt {
             Ok(GithubReleaseNotes::AutoGenerate)
         }
     }
+
+    fn prompt_setup(&self) -> Result<Setup> {
+        let wants = Confirm::new("Does this repo build through a tool the runner doesn't ship?")
+            .with_default(false)
+            .with_help_message(SETUP_HELP)
+            .prompt()?;
+        if !wants {
+            return Ok(Setup::default());
+        }
+
+        let how = Select::new(
+            "How is that tool installed?",
+            vec![
+                "A composite action (this repo already has one)",
+                "Shell commands",
+            ],
+        )
+        .with_help_message(SETUP_KIND_HELP)
+        .prompt()?;
+
+        if how.starts_with("A composite") {
+            let uses = Text::new("Action reference:")
+                .with_help_message(SETUP_USES_HELP)
+                .prompt()?;
+            let with = Text::new("Inputs (key=value, comma-separated, blank for none):")
+                .with_help_message(SETUP_WITH_HELP)
+                .prompt()?;
+            Ok(Setup {
+                uses: non_blank(&uses),
+                with: Setup::parse_with(&with)?,
+                run: Vec::new(),
+            })
+        } else {
+            let run = Text::new("Commands (comma-separated):")
+                .with_help_message(SETUP_RUN_HELP)
+                .prompt()?;
+            Ok(Setup {
+                uses: None,
+                with: BTreeMap::new(),
+                run: split_commands(&run),
+            })
+        }
+    }
+}
+
+/// `Some` for a value the user actually typed, `None` for whitespace.
+fn non_blank(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Split the comma-separated command list the prompts and the config editor collect.
+pub(crate) fn split_commands(input: &str) -> Vec<String> {
+    input
+        .split(',')
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 #[cfg(test)]
@@ -2503,6 +2677,8 @@ pub(crate) mod tests {
         skip_publish: Vec<String>,
         /// What it was *offered* — `None` when the prompt was never reached.
         skip_offered: RefCell<Option<Vec<String>>>,
+        /// What `prompt_setup` returns; empty by default, so most tests generate no setup step.
+        setup: Setup,
     }
     impl InitPrompt for FakePrompt {
         fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
@@ -2561,6 +2737,9 @@ pub(crate) mod tests {
         }
         fn prompt_github_release_notes(&self) -> Result<GithubReleaseNotes> {
             Ok(GithubReleaseNotes::AutoGenerate)
+        }
+        fn prompt_setup(&self) -> Result<Setup> {
+            Ok(self.setup.clone())
         }
     }
 
@@ -2727,6 +2906,23 @@ pub(crate) mod tests {
         }
     }
 
+    /// One job's YAML, from its header to the next job's. A job header is the only line indented
+    /// exactly two spaces, which is what separates it from every step and key inside it.
+    fn job_body(workflow: &str, job: &str) -> String {
+        let mut lines = workflow
+            .lines()
+            .skip_while(|line| line.trim_end() != format!("  {job}:"));
+        let header = lines.next().unwrap_or_else(|| {
+            panic!("no job `{job}` in:\n{workflow}");
+        });
+        std::iter::once(header)
+            .chain(lines.take_while(|line| {
+                !(line.starts_with("  ") && !line.starts_with("   ") && line.trim().ends_with(':'))
+            }))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn slug_is_job_safe() {
         assert_eq!(slug("@x/cli"), "x-cli");
@@ -2755,6 +2951,130 @@ pub(crate) mod tests {
         assert!(out.contains("  id-token: write\n"), "{out}");
     }
 
+    /// A matrix package's setup runs on the host, before `otf-release build`, so an installer that
+    /// writes `$GITHUB_PATH` reaches the build step the normal way.
+    #[test]
+    fn setup_runs_before_a_matrix_build() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            setup: Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                with: Setup::parse_with("esdev=true").unwrap(),
+                run: Vec::new(),
+            },
+            packages: vec![cargo_build_only("cli")],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+        let step =
+            "      - uses: ./.github/actions/setup-tsr\n        with:\n          esdev: \"true\"\n";
+        assert!(out.contains(step), "{out}");
+        assert!(
+            out.find(step).unwrap() < out.find("      - name: Build cli\n").unwrap(),
+            "setup must precede the build it provisions: {out}"
+        );
+    }
+
+    /// A VM target builds inside the guest, which installs its own toolchain through the VM step's
+    /// `prepare:`. Running the host's setup for those rows would install a tool nothing uses.
+    #[test]
+    fn setup_is_gated_off_for_vm_targets() {
+        let mut entry = cargo_build_only("cli");
+        entry
+            .targets
+            .push(crate::config::Target::resolved("freebsd", "x86_64"));
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            setup: Setup {
+                run: vec!["curl -fsSL https://example.com/install.sh | bash".into()],
+                ..Setup::default()
+            },
+            packages: vec![entry],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+        assert!(
+            out.contains("      - name: Setup\n        if: ${{ !matrix.vm }}\n"),
+            "{out}"
+        );
+    }
+
+    /// Every job, exactly once. Builds are not the only place the tool is needed: `pre_publish`
+    /// hooks and a generic package's `publish` command are executed by `otf-release publish`,
+    /// inside a publish job, and are themselves written in whatever this step installs.
+    #[test]
+    fn the_setup_step_reaches_every_job_exactly_once() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            setup: Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                ..Setup::default()
+            },
+            packages: vec![cargo_build_only("cli")],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+
+        // Every job this config emits: the gate, the matrix emitter, the build, and the release.
+        for job in [
+            "check-release",
+            "matrix-cli",
+            "build-cli",
+            "github-release-cli",
+        ] {
+            assert!(
+                job_body(&out, job).contains("setup-tsr"),
+                "{job} must install the tool: {out}"
+            );
+        }
+        assert_eq!(
+            out.matches("setup-tsr").count(),
+            4,
+            "no job installs it twice: {out}"
+        );
+    }
+
+    /// An inline-build publish job installs the tool before its build, and that one step also
+    /// serves the publish that follows — the job must not install it twice.
+    #[test]
+    fn an_inline_publish_job_installs_the_tool_once() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            setup: Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                ..Setup::default()
+            },
+            packages: vec![PackageEntry {
+                name: "@x/sdk".into(),
+                adapter: Ecosystem::Npm,
+                mode: Mode::Publish,
+                matrix: false,
+                targets: Vec::new(),
+                command: "npm run build".into(),
+                artifacts: String::new(),
+                ..cargo_build_only("@x/sdk")
+            }],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+        assert_eq!(
+            job_body(&out, "publish-x-sdk").matches("setup-tsr").count(),
+            1,
+            "the inline job installs it once, before the build: {out}"
+        );
+    }
+
+    #[test]
+    fn no_setup_configured_emits_no_step() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            packages: vec![cargo_build_only("cli")],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+        assert!(!out.contains("- name: Setup\n"), "{out}");
+    }
+
     #[test]
     fn npm_only_renders_publish_job_no_release() {
         let config = ReleaseConfig {
@@ -2769,6 +3089,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
@@ -2810,6 +3131,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
@@ -2864,6 +3186,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
@@ -2918,6 +3241,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Jsr],
@@ -2998,6 +3322,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
@@ -3045,6 +3370,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
@@ -3080,6 +3406,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Cargo],
@@ -3146,6 +3473,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
@@ -3204,6 +3532,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Root,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Cargo],
@@ -3324,6 +3653,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Npm],
@@ -3421,6 +3751,7 @@ pub(crate) mod tests {
                 changelog_scope: ChangelogScope::Root,
                 github_release_notes: notes,
                 hooks: crate::config::Hooks::default(),
+                setup: Default::default(),
                 publish: crate::config::PublishConfig::default(),
                 secrets: Default::default(),
                 adapters: vec![Ecosystem::Cargo],
@@ -3454,6 +3785,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Generic],
@@ -3489,6 +3821,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Cargo],
@@ -3523,6 +3856,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Generic],
@@ -3557,6 +3891,7 @@ pub(crate) mod tests {
             changelog_scope: ChangelogScope::Package,
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             hooks: crate::config::Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],

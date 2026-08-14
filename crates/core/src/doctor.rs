@@ -145,6 +145,7 @@ pub fn audit(config: &ReleaseConfig, discovered: &[Discovered], root: &Path) -> 
 
     tag_collisions(config, &released, &mut findings);
     stale_workflow(config, root, &mut findings);
+    setup_actions(config, root, &mut findings);
     missing_blocks(config, &released, &mut findings);
     stale_blocks(config, discovered, &mut findings);
     unbuilt_publishes(config, &released, &mut findings);
@@ -181,6 +182,10 @@ fn stale_workflow(config: &ReleaseConfig, root: &Path, out: &mut Vec<Finding>) {
     for entry in &config.packages {
         let job = match () {
             _ if entry.is_build_only() => format!("github-release-{}", slug(&entry.name)),
+            // An inline-build package has no `build-` job by design: the generator builds it inside
+            // its own publish job. Expecting one here reported every freshly generated npm
+            // workflow as stale — a clean `init` failing its own check.
+            _ if entry.builds_inline() => format!("publish-{}", slug(&entry.name)),
             _ if !entry.command.trim().is_empty() => format!("build-{}", slug(&entry.name)),
             // A block with no build rides the catch-all publish job and needs no job of its own.
             _ => continue,
@@ -207,6 +212,43 @@ fn stale_workflow(config: &ReleaseConfig, root: &Path, out: &mut Vec<Finding>) {
             .fix("run `otf-release upgrade --force` and commit the regenerated workflow"),
         );
     }
+}
+
+/// A `setup` step pointing at a local composite action that is not in the repo.
+///
+/// GitHub resolves `uses: ./path` against the checkout, and a path that is not there fails the job
+/// at startup with "Can't find 'action.yml'" — before the build, before anything that would say
+/// which package was misconfigured. The path is in `release.toml` and the action is on disk, so the
+/// mismatch is visible here, long before a release run.
+fn setup_actions(config: &ReleaseConfig, root: &Path, out: &mut Vec<Finding>) {
+    // Only a local action is checkable; a published `owner/repo@v1` is resolved by GitHub.
+    let Some(uses) = config
+        .setup
+        .uses
+        .as_deref()
+        .filter(|uses| uses.starts_with("./"))
+    else {
+        return;
+    };
+
+    let dir = root.join(uses.trim_start_matches("./"));
+    if dir.join("action.yml").is_file() || dir.join("action.yaml").is_file() {
+        return;
+    }
+    out.push(
+        Finding::new(
+            Severity::Error,
+            "setup-action-missing",
+            format!(
+                "`setup.uses` points at `{uses}`, which has no `action.yml` in this repo. Every \
+                 job in the workflow runs it, so the whole release fails at startup."
+            ),
+        )
+        .fix(format!(
+            "create `{uses}/action.yml`, correct the path in release.toml, or replace `uses` \
+             with `run` commands"
+        )),
+    );
 }
 
 /// Two packages that format to the same tag is the quietest failure this tool has: nothing errors,
@@ -826,7 +868,7 @@ pub fn tally(report: &Report) -> HashMap<Severity, usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ChangelogScope, Discovery, Mode, PackageEntry, Target};
+    use crate::config::{ChangelogScope, Discovery, Mode, PackageEntry, Setup, Target};
     use std::path::PathBuf;
 
     fn pkg(name: &str, version: &str, manifest: &str) -> Pkg {
@@ -931,6 +973,162 @@ mod tests {
             !finding.message.contains("es-runtime-cli (expected"),
             "the package that does have a job must not be listed: {finding:?}"
         );
+    }
+
+    /// An inline-build npm package has no `build-` job by design — the generator builds it inside
+    /// `publish-<slug>`. This check used to demand one anyway, so a workflow `init` had just
+    /// written failed its own audit and `upgrade --force` could never clear it.
+    #[test]
+    fn an_inline_build_package_is_matched_by_its_publish_job() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workflows = tmp.path().join(".github/workflows");
+        std::fs::create_dir_all(&workflows).unwrap();
+
+        let mut config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            ..ReleaseConfig::default()
+        };
+        config.packages = vec![PackageEntry {
+            command: "npm run build".into(),
+            ..entry("@acme/lib", Ecosystem::Npm)
+        }];
+        // Exactly what the generator emits for it: a publish job, no build job.
+        std::fs::write(
+            workflows.join("release.yml"),
+            "jobs:\n  publish-acme-lib:\n    runs-on: ubuntu-latest\n",
+        )
+        .unwrap();
+
+        let report = audit(&config, &[], tmp.path());
+        assert!(!codes(&report, Severity::Error).contains(&"stale-workflow"));
+    }
+
+    /// The same package really added after the last `upgrade` is still caught — the fix narrowed
+    /// which job name is expected, it did not stop checking.
+    #[test]
+    fn an_inline_build_package_with_no_publish_job_is_still_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workflows = tmp.path().join(".github/workflows");
+        std::fs::create_dir_all(&workflows).unwrap();
+
+        let mut config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            ..ReleaseConfig::default()
+        };
+        config.packages = vec![PackageEntry {
+            command: "npm run build".into(),
+            ..entry("@acme/lib", Ecosystem::Npm)
+        }];
+        std::fs::write(workflows.join("release.yml"), "jobs:\n  check-release:\n").unwrap();
+
+        let report = audit(&config, &[], tmp.path());
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.code == "stale-workflow")
+            .expect("a package with no job at all is still reported");
+        assert!(finding.message.contains("publish-acme-lib"), "{finding:?}");
+    }
+
+    /// `save` then `load` must survive a `[setup]` intact. A struct mixing scalars with a nested
+    /// map is where TOML serialization goes wrong — a table emitted before the values that follow
+    /// it is not valid TOML, and the failure would land in the user's committed config.
+    #[test]
+    fn a_setup_block_round_trips_through_release_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            setup: Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                with: Setup::parse_with("esdev=true, quiet=false").unwrap(),
+                run: vec!["echo hi".into()],
+            },
+            ..ReleaseConfig::default()
+        };
+        config.packages = vec![entry("@acme/lib", Ecosystem::Npm)];
+
+        config.save(tmp.path()).unwrap();
+        let loaded = ReleaseConfig::load(tmp.path()).unwrap();
+
+        assert_eq!(loaded.setup, config.setup);
+    }
+
+    /// An empty `[setup]` is not written at all, so enabling the feature does not churn the config
+    /// of every repo that never asked for it.
+    #[test]
+    fn an_empty_setup_is_not_serialized() {
+        let tmp = tempfile::tempdir().unwrap();
+        ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            ..ReleaseConfig::default()
+        }
+        .save(tmp.path())
+        .unwrap();
+
+        let text = std::fs::read_to_string(tmp.path().join("release.toml")).unwrap();
+        assert!(!text.contains("[setup]"), "{text}");
+    }
+
+    /// `uses: ./…` is resolved against the checkout, so a path that is not in the repo fails the
+    /// job at startup — before the build, and with no mention of which package caused it.
+    #[test]
+    fn flags_a_setup_action_that_is_not_in_the_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            setup: Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                ..Setup::default()
+            },
+            ..ReleaseConfig::default()
+        };
+
+        let report = audit(&config, &[], tmp.path());
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.code == "setup-action-missing")
+            .expect("a missing local action is reported");
+        assert_eq!(finding.severity, Severity::Error);
+        assert!(finding.message.contains("setup-tsr"), "{finding:?}");
+    }
+
+    #[test]
+    fn a_setup_action_that_exists_is_not_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let action = tmp.path().join(".github/actions/setup-tsr");
+        std::fs::create_dir_all(&action).unwrap();
+        std::fs::write(action.join("action.yml"), "runs:\n  using: composite\n").unwrap();
+
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            setup: Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                ..Setup::default()
+            },
+            ..ReleaseConfig::default()
+        };
+
+        let report = audit(&config, &[], tmp.path());
+        assert!(!codes(&report, Severity::Error).contains(&"setup-action-missing"));
+    }
+
+    /// A published action is resolved by GitHub, not from the checkout, so there is nothing on disk
+    /// to look for and reporting it would be a false alarm on every repo that uses one.
+    #[test]
+    fn a_published_setup_action_is_not_checked_against_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            setup: Setup {
+                uses: Some("acme/setup-tsr@v1".into()),
+                ..Setup::default()
+            },
+            ..ReleaseConfig::default()
+        };
+
+        let report = audit(&config, &[], tmp.path());
+        assert!(!codes(&report, Severity::Error).contains(&"setup-action-missing"));
     }
 
     /// No workflow at all is `init`'s problem, not this check's — reporting it here would fire on

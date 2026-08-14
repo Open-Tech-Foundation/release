@@ -41,6 +41,14 @@ post_version = ["python3 scripts/sync-docs.py"]
 pre_publish = ["npm run test"]
 post_publish = ["curl -X POST ..."]
 
+# A step run in EVERY job, before the work, for a tool the runner does not ship and no adapter
+# knows about. `uses` and `run` are independent — either, or both.
+[setup]
+uses = "./.github/actions/setup-tsr"   # local composite action, or "owner/repo@v1"
+with = { esdev = "true" }              # the action's inputs
+# run = ["curl -fsSL https://example.com/install.sh | bash",
+#        'echo "$HOME/.tool/bin" >> "$GITHUB_PATH"']
+
 # Zero or more packages that need built artifacts before publish/release.
 # A publishable package with no entry here is published as-is by its adapter.
 [[package]]
@@ -102,6 +110,9 @@ artifacts = "dist/**"
 | `publish.ignore_paths` | Optional per-package path globs. If a package has commits since its last tag, `[Unreleased]` is empty, and **every** changed file matches one of these globs, the release flow prints a warning and continues instead of aborting. |
 | `changelog_scope` | Where curated release notes live: `"root"` uses the root `CHANGELOG.md` for every package; `"package"` uses each package's adapter-discovered `CHANGELOG.md`. |
 | `github_release_notes` | GitHub Release body source for `build-only` packages: `"auto-generate"` lets GitHub generate notes, `"curated-changelog"` copies root notes in root scope or combines released sections from all configured package changelogs in package scope, and `"semantic-commits"` writes a commit list since the previous matching `tag_format` tag. `init` asks for this and `config` can edit it later. |
+| `setup.uses` | Optional. An action run in **every** job before the work it does, written exactly as a workflow would: `./.github/actions/setup-tsr` for a local composite action, `owner/repo@v1` for a published one. See [Build setup](#build-setup). |
+| `setup.with` | Optional. Inputs for `setup.uses`, emitted as the step's `with:` block. Each is passed as a string, like every action input. |
+| `setup.run` | Optional. Shell commands run as one step in every job, for a repo with no composite action to point at. |
 | `[[package]]` | One block per package this repo releases. `init` writes one for every publishable package it finds — a package that needs no build step gets a block carrying only its identity, so there is always somewhere to scope its settings. |
 | `name` | The package name as discovered by its adapter. |
 | `adapter` | The owning ecosystem (`"npm"` / `"crates.io"` / `"generic"`). |
@@ -285,6 +296,62 @@ describe what the repo releases.
 the repo-wide value named in the prompt so blank visibly means "whatever the repo does". Values are
 validated when `release.toml` is loaded, so a format with no `{version}` or a changelog path outside
 the repo fails at parse time rather than mid-release.
+
+## Build setup
+
+Some repos build and publish through a tool GitHub's runner does not ship and no adapter knows
+about: a task runner, a bundler installed by its own `install.sh`, a private toolchain. `[setup]`
+is one step emitted into **every** job, before the work that job does.
+
+```toml
+[setup]
+uses = "./.github/actions/setup-tsr"
+with = { esdev = "true" }
+```
+
+```yaml
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: ./.github/actions/setup-tsr      # ← [setup]
+        with:
+          esdev: "true"
+      - name: Build @scope/lib
+        run: npm run build
+```
+
+**Why it is a step and not a hook or a longer `command`.** Hooks cannot do this: `pre_publish` is
+executed by `otf-release publish` at runtime, which is *after* the build step in the same job, so
+nothing a hook does can provision what the build already needed — and it is the wrong way round
+anyway, since the hooks are themselves written in the tool a setup step installs. Folding the
+install into `command` does work — the string is emitted verbatim into `run:` — but it is the wrong
+home twice over. `command` is also what `otf-release build` runs on a contributor's machine, so an
+installer buried there executes outside CI; and everything crammed into one `run:` block cannot use
+`$GITHUB_PATH`, whose writes only reach *later* steps, forcing an inline `PATH=…` prefix.
+
+A step of its own has neither problem. `$GITHUB_PATH` behaves normally, and a composite action's
+PATH exports reach what follows — the same mechanism that already works in a hand-written workflow,
+which is why pointing at an action the repo already has is the preferred form. Re-spelling that
+action's installer as `run` lines would fork the definition it exists to keep single.
+
+**Every job, once.** Builds are not the only place the tool is needed: `pre_publish`/`post_publish`
+hooks and a generic package's `publish` command are executed by `otf-release publish` inside a
+publish job, so a repo whose hooks are `tsr test` would break if the step were build-only. The step
+is emitted at most once per job — an inline-build publish job installs it before its build, and that
+one step also serves the publish that follows.
+
+There is deliberately **no per-package override**. The tool a repo builds through is a property of
+the repo, and every job needs it on the same terms; unlike `tag_format`, no failure mode calls for
+splitting it per package. For a matrix package the step is gated to host-side rows — a VM target
+builds inside the guest, which installs its own toolchain through the VM step's `prepare:`.
+
+`doctor` reports a `uses: ./…` path with no `action.yml` in the repo (`setup-action-missing`,
+error): GitHub resolves it against the checkout and fails the job at startup. A published
+`owner/repo@v1` is resolved by GitHub, so it is not checked against disk.
+
+`init` asks for this once, when some package has a build command. `otf-release config` → *Build
+setup* edits it.
 
 ## The `generic` adapter
 

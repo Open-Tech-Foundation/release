@@ -24,7 +24,7 @@
 //! artifacts = "dist/**"
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -560,6 +560,103 @@ pub struct Hooks {
     pub post_publish: Vec<String>,
 }
 
+/// A step emitted into every job the workflow runs, before the work that job does.
+///
+/// The escape hatch for a pipeline that needs a tool the runner does not ship and no adapter knows
+/// about — a task runner, a bundler installed by its own `install.sh`, a private toolchain. Such a
+/// tool cannot be installed by a [hook](Hooks): hooks are executed by `otf-release publish` at
+/// runtime, which is *after* the build step in the same job, so nothing a hook does can provision
+/// what the build already needed. It is also the wrong way round — the hooks are themselves
+/// written in the tool a setup step installs.
+///
+/// Folding the install into [`command`](PackageEntry::command) works — the string is emitted
+/// verbatim into `run:` — but it is the wrong home for it twice over. `command` is also what
+/// `otf-release build` runs on a contributor's machine, so an installer buried there executes
+/// outside CI; and everything crammed into one `run:` block cannot use `$GITHUB_PATH`, whose writes
+/// only reach *later* steps. A setup step is a step of its own that precedes the build, so
+/// `echo … >> "$GITHUB_PATH"` behaves normally and a composite action's PATH exports reach the
+/// build — the same mechanism that already works in a hand-written workflow.
+///
+/// ```toml
+/// [setup]                                  # every job in the repo
+/// uses = "./.github/actions/setup-tsr"
+/// with = { esdev = "true" }
+/// ```
+///
+/// `uses` and `run` are independent: either alone, or both (the action first, then the script).
+///
+/// Repo-wide, with no per-package override: the tool a repo builds and publishes through is a
+/// property of the repo, and every job needs it on the same terms.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Setup {
+    /// An action to run, exactly as a workflow would reference it: a local composite action
+    /// (`./.github/actions/setup-tsr`) or a published one (`owner/repo@v1`).
+    ///
+    /// A local path is the common case and the reason this field exists rather than a list of
+    /// shell lines: the repo usually already has the action, driving its other workflows, and
+    /// re-spelling its installer here would fork the very definition it exists to keep single.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uses: Option<String>,
+    /// Inputs for `uses`, emitted as the step's `with:` block. Ordered, so regenerating an
+    /// unchanged config cannot reorder the workflow.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub with: BTreeMap<String, String>,
+    /// Shell lines run as a step, for a repo with no composite action to point at. Emitted as one
+    /// multi-line `run:` block, so `$GITHUB_PATH` writes here reach the build step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub run: Vec<String>,
+}
+
+impl Setup {
+    /// Whether this setup emits nothing. `with` alone does not count — it configures `uses`.
+    pub fn is_empty(&self) -> bool {
+        self.uses.is_none() && self.run.is_empty()
+    }
+
+    /// Parse `with` inputs written as `key=value` pairs on one line, the shape both `init` and the
+    /// config editor collect them in. Blank entries are skipped so a trailing comma is harmless.
+    pub fn parse_with(input: &str) -> Result<BTreeMap<String, String>> {
+        let mut out = BTreeMap::new();
+        for pair in input.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let (key, value) = pair
+                .split_once('=')
+                .with_context(|| format!("`{pair}` is not a key=value pair"))?;
+            let key = key.trim();
+            if key.is_empty() {
+                bail!("`{pair}` has no input name before the `=`");
+            }
+            out.insert(key.to_string(), value.trim().to_string());
+        }
+        Ok(out)
+    }
+
+    /// `with` rendered back into the one-line `key=value` form [`parse_with`](Self::parse_with)
+    /// reads, so the editor shows what it will accept.
+    pub fn format_with(&self) -> String {
+        self.with
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Reject a shape that would generate invalid or misleading YAML.
+    pub fn validate(&self, context: &str) -> Result<()> {
+        if !self.with.is_empty() && self.uses.is_none() {
+            bail!("{context}: `with` configures `uses`, but no `uses` is set");
+        }
+        if let Some(uses) = &self.uses {
+            if uses.trim().is_empty() {
+                bail!("{context}: `uses` cannot be blank");
+            }
+        }
+        if self.run.iter().any(|line| line.trim().is_empty()) {
+            bail!("{context}: `run` cannot contain a blank line");
+        }
+        Ok(())
+    }
+}
+
 /// Publish policy knobs that affect release gating.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PublishConfig {
@@ -688,6 +785,10 @@ pub struct ReleaseConfig {
     /// Global lifecycle hooks.
     #[serde(default)]
     pub hooks: Hooks,
+    /// A setup step run before **every** package's build, for tooling the whole repo builds
+    /// through. A package can replace it with [`PackageEntry::setup`].
+    #[serde(default, skip_serializing_if = "Setup::is_empty")]
+    pub setup: Setup,
     /// Publish path-ignore policy keyed by package name.
     #[serde(default)]
     pub publish: PublishConfig,
@@ -769,6 +870,7 @@ impl Default for ReleaseConfig {
             adapters: Vec::new(),
             skip_publish: Vec::new(),
             hooks: Hooks::default(),
+            setup: Setup::default(),
             publish: PublishConfig::default(),
             secrets: Secrets::default(),
             discovery: Discovery::default(),
@@ -927,6 +1029,11 @@ impl ReleaseConfig {
         }
     }
 
+    /// The setup step every job runs, or `None` when none is configured.
+    pub fn setup_step(&self) -> Option<&Setup> {
+        (!self.setup.is_empty()).then_some(&self.setup)
+    }
+
     /// The `[[package]]` block for a name, if the repo declares one.
     pub fn package(&self, name: &str) -> Option<&PackageEntry> {
         self.packages.iter().find(|pkg| pkg.name == name)
@@ -936,6 +1043,7 @@ impl ReleaseConfig {
     /// repo. Called on load, so a hand-edited `release.toml` fails at parse time rather than
     /// mid-release.
     fn validate_packages(&self) -> Result<()> {
+        self.setup.validate("[setup]")?;
         for pkg in &self.packages {
             pkg.validate_release_identity()?;
         }
@@ -1137,6 +1245,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             adapters: vec![Ecosystem::Npm, Ecosystem::Cargo],
             hooks: Hooks::default(),
+            setup: Default::default(),
             publish: PublishConfig {
                 ignore_paths: HashMap::from([(
                     "docs-site".into(),
@@ -1259,6 +1368,7 @@ mod tests {
             github_release_notes: GithubReleaseNotes::AutoGenerate,
             adapters: vec![Ecosystem::Cargo],
             hooks: Hooks::default(),
+            setup: Default::default(),
             publish: PublishConfig::default(),
             secrets: Default::default(),
             packages: vec![],

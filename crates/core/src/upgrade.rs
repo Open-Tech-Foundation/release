@@ -62,6 +62,7 @@ mod tests {
             adapters: vec![Ecosystem::Npm],
             skip_publish: Vec::new(),
             hooks: Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             packages: vec![PackageEntry {
@@ -121,6 +122,7 @@ mod tests {
             adapters: vec![Ecosystem::Npm],
             skip_publish: Vec::new(),
             hooks: Hooks::default(),
+            setup: Default::default(),
             publish: crate::config::PublishConfig::default(),
             secrets: Default::default(),
             packages: vec![PackageEntry {

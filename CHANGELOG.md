@@ -8,6 +8,29 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Added
+
+- **`[setup]` — one step run in every job of the generated workflow**, for a repo that builds and
+  publishes through a tool the runner does not ship and no adapter knows about (a task runner, a
+  bundler with its own `install.sh`, a private toolchain). It takes `uses` + `with` to point at a
+  composite action the repo already has, or `run` commands. Neither existing mechanism could do
+  this: hooks are executed by `otf-release publish` *after* the build step in the same job — and
+  are themselves written in the tool — while an install folded into `command` both runs on
+  contributors' machines via `otf-release build` and cannot use `$GITHUB_PATH`, whose writes only
+  reach later steps. As its own step it can, so a composite action's PATH exports reach what
+  follows. Emitted at most once per job. `init` asks for it and `config` → *Build setup* edits it.
+
+- **`doctor` reports a setup action that is not in the repo** (`setup-action-missing`, error).
+  GitHub resolves `uses: ./…` against the checkout and fails the job at startup.
+
+### Fixed
+
+- **`doctor` no longer reports a freshly generated npm workflow as stale.** `stale-workflow`
+  expected a `build-<pkg>` job for every package with a build command, but an inline-build package
+  has none by design — the generator builds it inside `publish-<pkg>`. A workflow `init` had just
+  written failed its own audit, and `upgrade --force` could never clear it. The check now expects
+  the publish job for those packages, and still reports one that has no job at all.
+
 ## [0.36.0] - 2026-08-13
 
 ### Added
