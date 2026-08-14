@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-08-14
+
 ### Added
 
 - **`[setup]` — one step run in every job of the generated workflow**, for a repo that builds and
