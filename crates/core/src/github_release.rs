@@ -735,6 +735,7 @@ mod tests {
             tag_format: None,
             legacy_tag_formats: Vec::new(),
             changelog: None,
+            setup: None,
         }
     }
 
@@ -832,6 +833,7 @@ mod tests {
             tag_format: Some("{name}@{version}".to_string()),
             legacy_tag_formats: Vec::new(),
             changelog: Some("crates/dev-cli/CHANGELOG.md".to_string()),
+            setup: None,
             ..build_only_entry("es-dev-cli", "esdev")
         });
 

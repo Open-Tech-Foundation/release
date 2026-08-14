@@ -317,6 +317,7 @@ mod tests {
             tag_format: None,
             legacy_tag_formats: Vec::new(),
             changelog: None,
+            setup: None,
             compress: None,
             manifest: None,
             version_field: None,

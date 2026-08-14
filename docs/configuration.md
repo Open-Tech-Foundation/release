@@ -113,6 +113,7 @@ artifacts = "dist/**"
 | `setup.uses` | Optional. An action run in **every** job before the work it does, written exactly as a workflow would: `./.github/actions/setup-tsr` for a local composite action, `owner/repo@v1` for a published one. See [Build setup](#build-setup). |
 | `setup.with` | Optional. Inputs for `setup.uses`, emitted as the step's `with:` block. Each is passed as a string, like every action input. |
 | `setup.run` | Optional. Shell commands run as one step in every job, for a repo with no composite action to point at. |
+| `[package.setup]` | Optional. A setup step for one package's jobs, **replacing** the repo-wide `[setup]` rather than adding to it. An empty table opts that package's jobs out — the escape for a package whose platforms the repo-wide installer does not support. |
 | `[[package]]` | One block per package this repo releases. `init` writes one for every publishable package it finds — a package that needs no build step gets a block carrying only its identity, so there is always somewhere to scope its settings. |
 | `name` | The package name as discovered by its adapter. |
 | `adapter` | The owning ecosystem (`"npm"` / `"crates.io"` / `"generic"`). |
@@ -341,10 +342,25 @@ publish job, so a repo whose hooks are `tsr test` would break if the step were b
 is emitted at most once per job — an inline-build publish job installs it before its build, and that
 one step also serves the publish that follows.
 
-There is deliberately **no per-package override**. The tool a repo builds through is a property of
-the repo, and every job needs it on the same terms; unlike `tag_format`, no failure mode calls for
-splitting it per package. For a matrix package the step is gated to host-side rows — a VM target
-builds inside the guest, which installs its own toolchain through the VM step's `prepare:`.
+**Opting a package out.** A `[package.setup]` block replaces the repo-wide one in that package's own
+jobs (`build-`, `matrix-`, `publish-`, `github-release-`); an empty table means "no step at all
+there". Jobs that belong to no package — the release gate and the catch-all publish — always use the
+repo-wide block.
+
+This is not decoration. A repo-wide installer is not automatically runnable everywhere its packages
+build: a task runner installed by a `curl | bash` script that supports Linux, macOS, and FreeBSD
+will *fail the job* on the `windows-latest` leg of a Rust matrix build, at a step that build never
+needed. Opting those packages out is the fix:
+
+```toml
+[[package]]
+name = "es-runtime-cli"
+# … cross-compiles to Windows, where the repo-wide installer cannot run
+[package.setup]
+```
+
+For a matrix package the step is also gated to host-side rows — a VM target builds inside the guest,
+which installs its own toolchain through the VM step's `prepare:`.
 
 `doctor` reports a `uses: ./…` path with no `action.yml` in the repo (`setup-action-missing`,
 error): GitHub resolves it against the checkout and fails the job at startup. A published

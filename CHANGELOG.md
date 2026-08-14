@@ -20,6 +20,11 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   reach later steps. As its own step it can, so a composite action's PATH exports reach what
   follows. Emitted at most once per job. `init` asks for it and `config` → *Build setup* edits it.
 
+  A `[package.setup]` block replaces it in one package's own jobs, and an empty table opts that
+  package out — needed when the repo-wide installer cannot run everywhere: a `curl | bash` task
+  runner supporting Linux/macOS/FreeBSD fails the `windows-latest` leg of a Rust matrix build, at a
+  step that build never needed. Jobs belonging to no package always use the repo-wide block.
+
 - **`doctor` reports a setup action that is not in the repo** (`setup-action-missing`, error).
   GitHub resolves `uses: ./…` against the checkout and fails the job at startup.
 

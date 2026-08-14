@@ -23,8 +23,8 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::config::{
     format_tag, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode,
-    ReleaseConfig, Setup, Target, COMMON_TAG_FORMATS, CONFIG_FILE, DEFAULT_VERSION_FIELD,
-    TARGET_REGISTRY,
+    PackageEntry, ReleaseConfig, Setup, Target, COMMON_TAG_FORMATS, CONFIG_FILE,
+    DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
 };
 use crate::init::{
     adopt_package, sync_package_blocks, unconfigured_packages, AdapterFactory, UnconfiguredPackage,
@@ -66,6 +66,9 @@ pub enum Field {
     PkgManifest,
     PkgVersionField,
     PkgPublishCommand,
+    PkgSetupUses,
+    PkgSetupWith,
+    PkgSetupRun,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,6 +396,36 @@ fn package_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
         "platforms to build for; selecting none turns the matrix off",
     ));
 
+    out.push(Entry::Header("Build setup".into()));
+    let own = pkg.setup.as_ref();
+    out.push(row(
+        "Action",
+        match own {
+            Some(setup) => setup.uses.clone().unwrap_or_else(|| "(none)".into()),
+            None => inherited_setup(config, |s| s.uses.clone().unwrap_or_else(|| "none".into())),
+        },
+        Field::PkgSetupUses,
+        "this package's own setup, replacing the repo-wide one; blank everything to opt out",
+    ));
+    out.push(row(
+        "Action inputs",
+        match own {
+            Some(setup) => none_if_empty(setup.format_with()),
+            None => inherited_setup(config, |s| none_if_empty(s.format_with())),
+        },
+        Field::PkgSetupWith,
+        "inputs for the action above, as key=value pairs",
+    ));
+    out.push(row(
+        "Script",
+        match own {
+            Some(setup) => list_or_none(&setup.run),
+            None => inherited_setup(config, |s| list_or_none(&s.run)),
+        },
+        Field::PkgSetupRun,
+        "this package's own setup commands, replacing the repo-wide ones",
+    ));
+
     if pkg.is_build_only() {
         out.push(Entry::Header("Release assets".into()));
         out.push(row(
@@ -454,6 +487,21 @@ fn package_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
     }
 
     out
+}
+
+/// The setup this package's jobs actually run — its own block, or the repo-wide one.
+fn effective_setup<'a>(config: &'a ReleaseConfig, pkg: &'a PackageEntry) -> &'a Setup {
+    pkg.setup.as_ref().unwrap_or(&config.setup)
+}
+
+/// What a package with no `[package.setup]` gets, labelled as inherited so the row cannot be
+/// mistaken for a value set on the package.
+fn inherited_setup(config: &ReleaseConfig, show: impl Fn(&Setup) -> String) -> String {
+    if config.setup.is_empty() {
+        "(none)".to_string()
+    } else {
+        format!("(repo default: {})", show(&config.setup))
+    }
 }
 
 fn yes_no(on: bool) -> String {
@@ -844,6 +892,26 @@ fn package_editor(app: &App, field: Field) -> Result<Modal> {
             Field::PkgMode,
         ),
         Field::PkgCommand => text("Build command", &pkg.command, Field::PkgCommand),
+        // Seeded from the effective setup, so editing one field of an inherited block keeps the
+        // rest of it instead of silently dropping what the package was already getting.
+        Field::PkgSetupUses => text(
+            "Setup action for this package (blank for none)",
+            effective_setup(&app.config, pkg)
+                .uses
+                .as_deref()
+                .unwrap_or_default(),
+            Field::PkgSetupUses,
+        ),
+        Field::PkgSetupWith => text(
+            "Setup action inputs (key=value, comma-separated)",
+            &effective_setup(&app.config, pkg).format_with(),
+            Field::PkgSetupWith,
+        ),
+        Field::PkgSetupRun => text(
+            "Setup commands for this package (comma-separated)",
+            &effective_setup(&app.config, pkg).run.join(", "),
+            Field::PkgSetupRun,
+        ),
         Field::PkgArtifacts => text("Artifacts glob", &pkg.artifacts, Field::PkgArtifacts),
         Field::PkgTargets => {
             let on: Vec<String> = pkg
@@ -1233,7 +1301,10 @@ fn apply_text(app: &mut App, field: Field, buffer: String) -> Result<()> {
         | Field::PkgChangelog
         | Field::PkgManifest
         | Field::PkgVersionField
-        | Field::PkgPublishCommand => return apply_package_text(app, field, buffer),
+        | Field::PkgPublishCommand
+        | Field::PkgSetupUses
+        | Field::PkgSetupWith
+        | Field::PkgSetupRun => return apply_package_text(app, field, buffer),
         _ => return Ok(()),
     }
     app.save()
@@ -1243,6 +1314,9 @@ fn apply_package_text(app: &mut App, field: Field, buffer: String) -> Result<()>
     let View::Package(name) = app.view.clone() else {
         return Ok(());
     };
+    // Read before the packages are borrowed mutably; a package's first setup edit starts from
+    // whatever the repo-wide block was already giving it.
+    let repo_setup = app.config.setup.clone();
     let Some(pkg) = app.config.packages.iter_mut().find(|p| p.name == name) else {
         return Ok(());
     };
@@ -1260,6 +1334,23 @@ fn apply_package_text(app: &mut App, field: Field, buffer: String) -> Result<()>
         Field::PkgManifest => pkg.manifest = optional(&buffer),
         Field::PkgVersionField => pkg.version_field = optional(&buffer),
         Field::PkgPublishCommand => pkg.publish = optional(&buffer),
+        Field::PkgSetupUses | Field::PkgSetupWith | Field::PkgSetupRun => {
+            let mut setup = pkg.setup.clone().unwrap_or(repo_setup);
+            match field {
+                Field::PkgSetupUses => setup.uses = optional(&buffer),
+                Field::PkgSetupRun => setup.run = parse_csv(&buffer),
+                _ => match Setup::parse_with(&buffer) {
+                    Ok(with) => setup.with = with,
+                    Err(err) => {
+                        app.status = Some(format!("Not saved: {err}"));
+                        return Ok(());
+                    }
+                },
+            }
+            // An emptied override is stored, not dropped: it is how a package opts out of a
+            // repo-wide setup, and dropping it would hand the repo default straight back.
+            pkg.setup = Some(setup);
+        }
         _ => return Ok(()),
     }
     app.save()
@@ -1516,6 +1607,7 @@ mod tests {
             tag_format: None,
             legacy_tag_formats: Vec::new(),
             changelog: None,
+            setup: None,
         }
     }
 

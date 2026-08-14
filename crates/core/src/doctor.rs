@@ -221,34 +221,39 @@ fn stale_workflow(config: &ReleaseConfig, root: &Path, out: &mut Vec<Finding>) {
 /// which package was misconfigured. The path is in `release.toml` and the action is on disk, so the
 /// mismatch is visible here, long before a release run.
 fn setup_actions(config: &ReleaseConfig, root: &Path, out: &mut Vec<Finding>) {
-    // Only a local action is checkable; a published `owner/repo@v1` is resolved by GitHub.
-    let Some(uses) = config
-        .setup
-        .uses
-        .as_deref()
-        .filter(|uses| uses.starts_with("./"))
-    else {
-        return;
-    };
+    // One finding per distinct path: the repo-wide block is shared by most packages, and
+    // reporting it once per package would bury everything else.
+    let mut seen: Vec<&str> = Vec::new();
+    let referenced = std::iter::once(&config.setup)
+        .chain(config.packages.iter().filter_map(|p| p.setup.as_ref()))
+        .filter_map(|setup| setup.uses.as_deref())
+        // Only a local action is checkable; a published `owner/repo@v1` is resolved by GitHub.
+        .filter(|uses| uses.starts_with("./"));
 
-    let dir = root.join(uses.trim_start_matches("./"));
-    if dir.join("action.yml").is_file() || dir.join("action.yaml").is_file() {
-        return;
-    }
-    out.push(
-        Finding::new(
-            Severity::Error,
-            "setup-action-missing",
-            format!(
+    for uses in referenced {
+        if seen.contains(&uses) {
+            continue;
+        }
+        seen.push(uses);
+        let dir = root.join(uses.trim_start_matches("./"));
+        if dir.join("action.yml").is_file() || dir.join("action.yaml").is_file() {
+            continue;
+        }
+        out.push(
+            Finding::new(
+                Severity::Error,
+                "setup-action-missing",
+                format!(
                 "`setup.uses` points at `{uses}`, which has no `action.yml` in this repo. Every \
-                 job in the workflow runs it, so the whole release fails at startup."
-            ),
-        )
-        .fix(format!(
-            "create `{uses}/action.yml`, correct the path in release.toml, or replace `uses` \
-             with `run` commands"
-        )),
-    );
+                     job that runs it fails at startup, before doing any work."
+                ),
+            )
+            .fix(format!(
+                "create `{uses}/action.yml`, correct the path in release.toml, or replace \
+                 `uses` with `run` commands"
+            )),
+        );
+    }
 }
 
 /// Two packages that format to the same tag is the quietest failure this tool has: nothing errors,
@@ -916,6 +921,7 @@ mod tests {
             tag_format: None,
             legacy_tag_formats: Vec::new(),
             changelog: None,
+            setup: None,
         }
     }
 

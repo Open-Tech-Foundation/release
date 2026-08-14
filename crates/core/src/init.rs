@@ -708,6 +708,7 @@ pub fn orchestrate(
                 tag_format: None,
                 legacy_tag_formats: Vec::new(),
                 changelog: None,
+                setup: None,
             });
         }
     }
@@ -1241,10 +1242,21 @@ fn render_setup_step(s: &mut String, setup: &Setup, guard: &str) {
     }
 }
 
-/// The repo's setup step, for a job with no `if:` guard to carry.
+/// The repo-wide setup step, for a job that belongs to no package: the release gate and the
+/// catch-all publish. Both run hooks or commands the repo wrote, so they take the repo's block.
 fn render_global_setup(s: &mut String, config: &ReleaseConfig) {
     if let Some(setup) = config.setup_step() {
         render_setup_step(s, setup, "");
+    }
+}
+
+/// The setup step for one package's own jobs, which its `[package.setup]` can replace or switch
+/// off. A repo-wide task runner is not automatically right for every package's jobs: a Rust CLI
+/// cross-compiling to Windows beside JS packages that build through it gets a step that cannot run
+/// there at all.
+fn render_package_setup(s: &mut String, config: &ReleaseConfig, entry: &PackageEntry, guard: &str) {
+    if let Some(setup) = config.setup_for(entry) {
+        render_setup_step(s, setup, guard);
     }
 }
 
@@ -1365,7 +1377,7 @@ fn render_matrix_build_jobs(
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n");
     push_install_otf_release(s, pin);
-    render_global_setup(s, config);
+    render_package_setup(s, config, entry, "");
     s.push_str("      - id: set\n");
     s.push_str(&format!(
         "        run: echo \"matrix=$(otf-release matrix --package {name})\" >> \"$GITHUB_OUTPUT\"\n\n"
@@ -1416,9 +1428,7 @@ fn render_matrix_build_jobs(
     push_install_otf_release_cross_platform(s, pin);
     // Host-side only, like every toolchain step above it: a VM target's build runs inside the
     // guest, which installs what it needs through the VM step's own `prepare:`.
-    if let Some(setup) = config.setup_step() {
-        render_setup_step(s, setup, &host_only);
-    }
+    render_package_setup(s, config, entry, &host_only);
     s.push_str(&format!("      - name: Build {name}\n"));
     s.push_str(&host_only);
     s.push_str(&format!(
@@ -1479,7 +1489,7 @@ fn render_single_build_job(
         // Generic is language-agnostic: no toolchain is assumed — the command sets up its own.
         Ecosystem::Generic => {}
     }
-    render_global_setup(s, config);
+    render_package_setup(s, config, entry, "");
     s.push_str(&format!("      - name: Build {}\n", entry.name));
     s.push_str(&format!("        run: {}\n", entry.command));
     s.push_str("      - uses: actions/upload-artifact@v4\n");
@@ -1785,6 +1795,7 @@ fn publish_as_is_entry(pkg: &Pkg, adapter: Ecosystem, root: &Path) -> PackageEnt
         tag_format: None,
         legacy_tag_formats: Vec::new(),
         changelog: None,
+        setup: None,
     }
 }
 
@@ -1838,7 +1849,7 @@ fn render_package_publish_job(
         // then publish. npm packs the freshly built output from this same runner — no artifact
         // upload/download, and npm's own pack/publish lifecycle hooks were stripped at init time.
         npm.push_install(s, Some(entry));
-        render_global_setup(s, config);
+        render_package_setup(s, config, entry, "");
         s.push_str(&format!("      - name: Build {name}\n"));
         s.push_str(&format!("        run: {}\n", entry.command));
         if let Some(dir) = package_workdir(entry) {
@@ -1860,7 +1871,7 @@ fn render_package_publish_job(
         }
         // Only this branch: the inline branch already emitted the step before its build, and
         // installing the same tool twice in one job is wasted runtime.
-        render_global_setup(s, config);
+        render_package_setup(s, config, entry, "");
     }
     push_install_otf_release(s, pin);
     s.push_str("      - name: Publish\n");
@@ -1909,7 +1920,7 @@ fn render_github_release(
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
     let staged = download_artifacts(s, needs);
     push_install_otf_release(s, pin);
-    render_global_setup(s, config);
+    render_package_setup(s, config, entry, "");
     s.push_str("      - name: Create GitHub Release\n");
     s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     if staged {
@@ -2122,6 +2133,7 @@ fn configure_generic(
         tag_format: None,
         legacy_tag_formats: Vec::new(),
         changelog: None,
+        setup: None,
     })
 }
 
@@ -2376,6 +2388,7 @@ impl InitPrompt for StdinInitPrompt {
             tag_format: None,
             legacy_tag_formats: Vec::new(),
             changelog: None,
+            setup: None,
         })
     }
 
@@ -2847,6 +2860,7 @@ pub(crate) mod tests {
             tag_format: None,
             legacy_tag_formats: Vec::new(),
             changelog: None,
+            setup: None,
         }
     }
 
@@ -2873,6 +2887,7 @@ pub(crate) mod tests {
             tag_format: None,
             legacy_tag_formats: Vec::new(),
             changelog: None,
+            setup: None,
         }
     }
 
@@ -2903,6 +2918,7 @@ pub(crate) mod tests {
             tag_format: None,
             legacy_tag_formats: Vec::new(),
             changelog: None,
+            setup: None,
         }
     }
 
@@ -3032,6 +3048,61 @@ pub(crate) mod tests {
             4,
             "no job installs it twice: {out}"
         );
+    }
+
+    /// The case the per-package override exists for, and the one that made it necessary: a repo
+    /// whose JS packages build through a task runner installed by a repo-wide block, beside a Rust
+    /// CLI that cross-compiles to Windows — where that installer (`uname -s` -> MINGW64) exits
+    /// non-zero and would fail a job that never needed it.
+    #[test]
+    fn an_empty_package_setup_keeps_the_repo_wide_step_out_of_that_packages_jobs() {
+        let mut cli = cargo_build_only("cli");
+        cli.setup = Some(Setup::default());
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            setup: Setup {
+                uses: Some("./.github/actions/tsr".into()),
+                ..Setup::default()
+            },
+            packages: vec![cli],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+
+        for job in ["matrix-cli", "build-cli", "github-release-cli"] {
+            assert!(
+                !job_body(&out, job).contains("actions/tsr"),
+                "{job} opted out and must not run it: {out}"
+            );
+        }
+        // The gate belongs to no package, so it still takes the repo-wide block.
+        assert!(
+            job_body(&out, "check-release").contains("actions/tsr"),
+            "{out}"
+        );
+    }
+
+    /// A package's own block replaces the repo-wide one in its jobs rather than stacking with it.
+    #[test]
+    fn a_package_setup_replaces_the_repo_wide_one() {
+        let mut cli = cargo_build_only("cli");
+        cli.setup = Some(Setup {
+            uses: Some("./.github/actions/setup-zig".into()),
+            ..Setup::default()
+        });
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            setup: Setup {
+                uses: Some("./.github/actions/tsr".into()),
+                ..Setup::default()
+            },
+            packages: vec![cli],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+        let build = job_body(&out, "build-cli");
+        assert!(build.contains("setup-zig"), "{out}");
+        assert!(!build.contains("actions/tsr"), "both must not run: {out}");
     }
 
     /// An inline-build publish job installs the tool before its build, and that one step also
@@ -3213,6 +3284,7 @@ pub(crate) mod tests {
                 tag_format: None,
                 legacy_tag_formats: Vec::new(),
                 changelog: None,
+                setup: None,
             }],
         };
         let out = render_workflow(&config);
@@ -3269,6 +3341,7 @@ pub(crate) mod tests {
                     tag_format: None,
                     legacy_tag_formats: Vec::new(),
                     changelog: None,
+                    setup: None,
                 },
                 PackageEntry {
                     name: "jsr-no-build".to_string(),
@@ -3292,6 +3365,7 @@ pub(crate) mod tests {
                     tag_format: None,
                     legacy_tag_formats: Vec::new(),
                     changelog: None,
+                    setup: None,
                 },
             ],
         };
@@ -3500,6 +3574,7 @@ pub(crate) mod tests {
                 tag_format: None,
                 legacy_tag_formats: Vec::new(),
                 changelog: None,
+                setup: None,
             }],
         };
         let out = render_workflow(&config);
@@ -3559,6 +3634,7 @@ pub(crate) mod tests {
                 tag_format: None,
                 legacy_tag_formats: Vec::new(),
                 changelog: None,
+                setup: None,
             }],
         }
     }
@@ -3683,6 +3759,7 @@ pub(crate) mod tests {
                 tag_format: None,
                 legacy_tag_formats: Vec::new(),
                 changelog: None,
+                setup: None,
             }],
         };
         let out = render_workflow(&config);

@@ -80,6 +80,7 @@ mod tests {
             tag_format: None,
             legacy_tag_formats: Vec::new(),
             changelog: None,
+            setup: None,
             include: Vec::new(),
         }
     }

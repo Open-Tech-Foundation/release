@@ -462,6 +462,14 @@ pub struct PackageEntry {
     /// workspace version but keeps release notes of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changelog: Option<String>,
+    /// A setup step for this package's own jobs, **replacing** the repo-wide
+    /// [`ReleaseConfig::setup`] rather than adding to it.
+    ///
+    /// The case this exists for is a polyglot repo: the JS packages build through a task runner
+    /// the repo-wide block installs, while a Rust CLI beside them cross-compiles to Windows, where
+    /// that installer does not run at all. An empty `[package.setup]` opts such a package out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<Setup>,
 }
 
 impl PackageEntry {
@@ -585,8 +593,8 @@ pub struct Hooks {
 ///
 /// `uses` and `run` are independent: either alone, or both (the action first, then the script).
 ///
-/// Repo-wide, with no per-package override: the tool a repo builds and publishes through is a
-/// property of the repo, and every job needs it on the same terms.
+/// Repo-wide, overridable per package by [`PackageEntry::setup`]. Jobs that belong to no package
+/// (the release gate, the catch-all publish) always use the repo-wide block.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Setup {
     /// An action to run, exactly as a workflow would reference it: a local composite action
@@ -1029,9 +1037,21 @@ impl ReleaseConfig {
         }
     }
 
-    /// The setup step every job runs, or `None` when none is configured.
+    /// The setup step for a job that belongs to no package — the release gate and the catch-all
+    /// publish. Always the repo-wide block.
     pub fn setup_step(&self) -> Option<&Setup> {
         (!self.setup.is_empty()).then_some(&self.setup)
+    }
+
+    /// The setup step for one package's own jobs: its `[package.setup]` if it declares one,
+    /// otherwise the repo-wide block. `None` when neither would emit anything.
+    ///
+    /// A package's block *replaces* the repo-wide one rather than appending to it, so a package
+    /// whose jobs must not run the shared step says so once, with an empty table, instead of
+    /// undoing it.
+    pub fn setup_for<'a>(&'a self, entry: &'a PackageEntry) -> Option<&'a Setup> {
+        let setup = entry.setup.as_ref().unwrap_or(&self.setup);
+        (!setup.is_empty()).then_some(setup)
     }
 
     /// The `[[package]]` block for a name, if the repo declares one.
@@ -1046,6 +1066,9 @@ impl ReleaseConfig {
         self.setup.validate("[setup]")?;
         for pkg in &self.packages {
             pkg.validate_release_identity()?;
+            if let Some(setup) = &pkg.setup {
+                setup.validate(&format!("package `{}`: [package.setup]", pkg.name))?;
+            }
         }
         Ok(())
     }
@@ -1211,6 +1234,7 @@ mod tests {
             tag_format: None,
             legacy_tag_formats: Vec::new(),
             changelog: None,
+            setup: None,
             executable: None,
         };
 
@@ -1276,6 +1300,7 @@ mod tests {
                     tag_format: None,
                     legacy_tag_formats: Vec::new(),
                     changelog: None,
+                    setup: None,
                 },
                 PackageEntry {
                     name: "docs-site".into(),
@@ -1299,6 +1324,7 @@ mod tests {
                     tag_format: None,
                     legacy_tag_formats: Vec::new(),
                     changelog: None,
+                    setup: None,
                 },
             ],
         };
@@ -1404,6 +1430,7 @@ mod tests {
             tag_format: None,
             legacy_tag_formats: Vec::new(),
             changelog: None,
+            setup: None,
         }
     }
 
@@ -1475,6 +1502,7 @@ mod tests {
         let root = Path::new("/repo");
         let scoped = PackageEntry {
             changelog: Some("crates/dev-cli/CHANGELOG.md".to_string()),
+            setup: None,
             ..entry("es-dev-cli")
         };
 
@@ -1509,6 +1537,7 @@ mod tests {
             tag_format: Some("{name}@{version}".to_string()),
             legacy_tag_formats: Vec::new(),
             changelog: Some("packages/driver/CHANGELOG.md".to_string()),
+            setup: None,
             ..entry("@scope/driver")
         }]);
         cfg.save(tmp.path()).unwrap();
