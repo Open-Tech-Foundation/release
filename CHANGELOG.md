@@ -8,6 +8,43 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Added
+
+- **`[[setup]]` — the setup step is now a list**, so one job can run several. Real release
+  pipelines do not have one setup step: a polyglot repo's npm packages may build through a task
+  runner *and* a repo-local CLI, while the Rust matrix beside them needs only the first. The single
+  `uses` this replaces could only serve that through a wrapper composite action per combination,
+  forking the very definition that pointing `uses` at an action the repo already has exists to keep
+  single. Steps run in the order the blocks appear.
+
+  A `[[package.setup]]` list still **replaces** the repo-wide one rather than appending to it, and
+  `setup = []` opts a package out entirely. Replace and not append is deliberate: the commonest
+  reason a package declares a list is that it must run *less* than the repo does, and appending
+  cannot express removal.
+
+- **`setup.targets` — confine a step to the matrix rows it supports.** A repo-wide installer is not
+  automatically runnable everywhere its packages build; naming the triples it does support beats
+  making the whole package opt out of a step its other legs want. Emitted as a
+  `contains(fromJSON(…), matrix.triple)` guard, combined with the existing VM guard when both
+  apply. It selects matrix rows, so a step naming `targets` is left out of a job that has no matrix
+  rather than emitted with a guard that could never be true.
+
+- **`doctor` reports three ways a `targets` filter goes wrong**, all of them silent in CI:
+  `setup-targets-unknown` (warning) for a triple no package it applies to builds, which never
+  matches and skips the step on every row; `setup-targets-never-runs` (warning) for a filter on a
+  step no matrix package receives, which is emitted in no job at all; and
+  `setup-targets-redundant` (suggestion) for a filter naming every triple those packages build.
+
+### Changed
+
+- **`init` keeps asking for setup steps until you say there are no more**, and `config` → *Build
+  setup* edits the list — one row per field per step, with an *Add step* row at the end. Blanking a
+  step's action and script removes it from the list.
+
+- **`release.toml` is written with `[[setup]]` array tables.** A single `[setup]` table still
+  parses, read as a one-step list, so an existing config keeps working unchanged; the first save
+  from `config` rewrites it in the list form.
+
 ## [0.37.0] - 2026-08-14
 
 ### Added

@@ -16,7 +16,7 @@ use anyhow::Result;
 use otf_release_adapters::npm::NpmAdapter;
 use otf_release_core::adapter::Adapter;
 use otf_release_core::config::{
-    ChangelogScope, Ecosystem, GithubReleaseNotes, PackageEntry, ReleaseConfig, Setup,
+    ChangelogScope, Ecosystem, GithubReleaseNotes, PackageEntry, ReleaseConfig, Setup, SetupSteps,
 };
 use otf_release_core::discover::GenericCandidate;
 use otf_release_core::init::{
@@ -99,12 +99,13 @@ impl InitPrompt for NpmOnlyPrompt {
         Ok(GithubReleaseNotes::AutoGenerate)
     }
     /// The repo builds through a task runner installed by a composite action it already has.
-    fn prompt_setup(&self) -> Result<Setup> {
+    fn prompt_setup(&self) -> Result<SetupSteps> {
         Ok(Setup {
             uses: Some("./.github/actions/setup-tsr".into()),
             with: Setup::parse_with("esdev=true")?,
-            run: Vec::new(),
-        })
+            ..Setup::default()
+        }
+        .into())
     }
 }
 

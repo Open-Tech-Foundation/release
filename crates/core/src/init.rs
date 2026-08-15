@@ -10,7 +10,7 @@
 //! interactive choices go through the [`InitPrompt`] trait, and package discovery through the
 //! [`AdapterFactory`] trait, so the flow is testable.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -21,8 +21,8 @@ use inquire::{Confirm, MultiSelect, Select, Text};
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{
     default_ignore_paths, ArchiveFormat, ChangelogScope, ChangelogStrategy, Discovery, Ecosystem,
-    GithubReleaseNotes, Mode, PackageEntry, ReleaseConfig, Setup, Target, COMMON_TAG_FORMATS,
-    DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
+    GithubReleaseNotes, Mode, PackageEntry, ReleaseConfig, Setup, SetupSteps, Target,
+    COMMON_TAG_FORMATS, DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
 };
 use crate::discover::{
     declares_npm_workspaces, scan_generic_candidates, scan_npm_candidates, GenericCandidate,
@@ -315,8 +315,8 @@ pub trait InitPrompt {
     fn prompt_github_release_notes(&self) -> Result<GithubReleaseNotes>;
     /// Ask for a repo-wide setup step to run before every build. Asked only when some package
     /// actually has a build command — a repo whose packages all publish as-is has no build to
-    /// precede. Returning [`Setup::default`] means "none", which writes no `[setup]` block.
-    fn prompt_setup(&self) -> Result<Setup>;
+    /// precede. Returning an empty [`SetupSteps`] means "none", which writes no `[setup]` block.
+    fn prompt_setup(&self) -> Result<SetupSteps>;
 }
 
 /// Wire up the real prompt and run the generator.
@@ -784,7 +784,7 @@ pub fn orchestrate(
         setup.validate("[setup]")?;
         setup
     } else {
-        Setup::default()
+        SetupSteps::default()
     };
 
     let tag_suggestion = suggest_tag_format(root, publishable.len());
@@ -1220,10 +1220,13 @@ fn yaml_quoted(value: &str) -> String {
 /// script's — apply to *subsequent* steps of the job, so the build that follows sees the installed
 /// tool on PATH with no inline `PATH=` prefix. `guard` carries the same `if:` that gates the
 /// job's other host-side steps, which is empty for every job that has no VM targets.
-fn render_setup_step(s: &mut String, setup: &Setup, guard: &str) {
+fn render_setup_step(s: &mut String, setup: &Setup, guard: Option<&str>) {
+    let guard = guard
+        .map(|cond| format!("        if: ${{{{ {cond} }}}}\n"))
+        .unwrap_or_default();
     if let Some(uses) = &setup.uses {
         s.push_str(&format!("      - uses: {uses}\n"));
-        s.push_str(guard);
+        s.push_str(&guard);
         if !setup.with.is_empty() {
             s.push_str("        with:\n");
             for (key, value) in &setup.with {
@@ -1233,7 +1236,7 @@ fn render_setup_step(s: &mut String, setup: &Setup, guard: &str) {
     }
     if !setup.run.is_empty() {
         s.push_str("      - name: Setup\n");
-        s.push_str(guard);
+        s.push_str(&guard);
         s.push_str("        shell: bash\n");
         s.push_str("        run: |\n");
         for line in &setup.run {
@@ -1242,21 +1245,69 @@ fn render_setup_step(s: &mut String, setup: &Setup, guard: &str) {
     }
 }
 
-/// The repo-wide setup step, for a job that belongs to no package: the release gate and the
-/// catch-all publish. Both run hooks or commands the repo wrote, so they take the repo's block.
-fn render_global_setup(s: &mut String, config: &ReleaseConfig) {
-    if let Some(setup) = config.setup_step() {
-        render_setup_step(s, setup, "");
+/// The `if:` expression gating one setup step, or `None` for an unconditional one.
+///
+/// Two independent reasons a setup step is conditional, and a job can have both: `host` is the
+/// job's own host-side guard, which keeps every toolchain step off a VM row, and the step's
+/// `targets` filter confines an installer to the matrix rows whose triple it supports.
+fn setup_guard(setup: &Setup, host: Option<&str>) -> Option<String> {
+    let targets = (!setup.targets.is_empty()).then(|| {
+        let list = setup
+            .targets
+            .iter()
+            .map(|triple| format!("\"{triple}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("contains(fromJSON('[{list}]'), matrix.triple)")
+    });
+    match (host, targets) {
+        (None, None) => None,
+        (Some(host), None) => Some(host.to_string()),
+        (None, Some(targets)) => Some(targets),
+        (Some(host), Some(targets)) => Some(format!("{host} && {targets}")),
     }
 }
 
-/// The setup step for one package's own jobs, which its `[package.setup]` can replace or switch
+/// One job's setup steps, in order.
+///
+/// `matrix` says whether the job has rows to filter: without one there is no `matrix.triple` to
+/// test *and* no target being built for a triple-filtered installer to be needed by, so a step
+/// naming `targets` is left out rather than guarded. `doctor` reports a filter that leaves a step
+/// with nowhere to run, so this cannot silently swallow one.
+fn render_setup_steps(s: &mut String, steps: &SetupSteps, host: Option<&str>, matrix: bool) {
+    for step in steps.emitting() {
+        if !step.targets.is_empty() && !matrix {
+            continue;
+        }
+        render_setup_steps_one(s, step, host);
+    }
+}
+
+fn render_setup_steps_one(s: &mut String, step: &Setup, host: Option<&str>) {
+    render_setup_step(s, step, setup_guard(step, host).as_deref());
+}
+
+/// The repo-wide setup steps, for a job that belongs to no package: the release gate and the
+/// catch-all publish. Both run hooks or commands the repo wrote, so they take the repo's list.
+fn render_global_setup(s: &mut String, config: &ReleaseConfig) {
+    if let Some(setup) = config.setup_step() {
+        render_setup_steps(s, setup, None, false);
+    }
+}
+
+/// The setup steps for one package's own jobs, which its `[package.setup]` can replace or switch
 /// off. A repo-wide task runner is not automatically right for every package's jobs: a Rust CLI
 /// cross-compiling to Windows beside JS packages that build through it gets a step that cannot run
 /// there at all.
-fn render_package_setup(s: &mut String, config: &ReleaseConfig, entry: &PackageEntry, guard: &str) {
+fn render_package_setup(
+    s: &mut String,
+    config: &ReleaseConfig,
+    entry: &PackageEntry,
+    host: Option<&str>,
+    matrix: bool,
+) {
     if let Some(setup) = config.setup_for(entry) {
-        render_setup_step(s, setup, guard);
+        render_setup_steps(s, setup, host, matrix);
     }
 }
 
@@ -1377,7 +1428,7 @@ fn render_matrix_build_jobs(
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n");
     push_install_otf_release(s, pin);
-    render_package_setup(s, config, entry, "");
+    render_package_setup(s, config, entry, None, false);
     s.push_str("      - id: set\n");
     s.push_str(&format!(
         "        run: echo \"matrix=$(otf-release matrix --package {name})\" >> \"$GITHUB_OUTPUT\"\n\n"
@@ -1406,6 +1457,9 @@ fn render_matrix_build_jobs(
     } else {
         "        if: ${{ !matrix.vm }}\n".to_string()
     };
+    // The same guard as an expression, for setup steps that may have to `&&` a `targets` filter
+    // onto it.
+    let host_cond = (!vm_oses.is_empty()).then_some("!matrix.vm");
 
     // Cross prep is driven by the selected target set and each matrix row's `cross` flag.
     if entry.targets.iter().any(|target| target.is_cross()) {
@@ -1428,7 +1482,7 @@ fn render_matrix_build_jobs(
     push_install_otf_release_cross_platform(s, pin);
     // Host-side only, like every toolchain step above it: a VM target's build runs inside the
     // guest, which installs what it needs through the VM step's own `prepare:`.
-    render_package_setup(s, config, entry, &host_only);
+    render_package_setup(s, config, entry, host_cond, true);
     s.push_str(&format!("      - name: Build {name}\n"));
     s.push_str(&host_only);
     s.push_str(&format!(
@@ -1489,7 +1543,7 @@ fn render_single_build_job(
         // Generic is language-agnostic: no toolchain is assumed — the command sets up its own.
         Ecosystem::Generic => {}
     }
-    render_package_setup(s, config, entry, "");
+    render_package_setup(s, config, entry, None, false);
     s.push_str(&format!("      - name: Build {}\n", entry.name));
     s.push_str(&format!("        run: {}\n", entry.command));
     s.push_str("      - uses: actions/upload-artifact@v4\n");
@@ -1849,7 +1903,7 @@ fn render_package_publish_job(
         // then publish. npm packs the freshly built output from this same runner — no artifact
         // upload/download, and npm's own pack/publish lifecycle hooks were stripped at init time.
         npm.push_install(s, Some(entry));
-        render_package_setup(s, config, entry, "");
+        render_package_setup(s, config, entry, None, false);
         s.push_str(&format!("      - name: Build {name}\n"));
         s.push_str(&format!("        run: {}\n", entry.command));
         if let Some(dir) = package_workdir(entry) {
@@ -1871,7 +1925,7 @@ fn render_package_publish_job(
         }
         // Only this branch: the inline branch already emitted the step before its build, and
         // installing the same tool twice in one job is wasted runtime.
-        render_package_setup(s, config, entry, "");
+        render_package_setup(s, config, entry, None, false);
     }
     push_install_otf_release(s, pin);
     s.push_str("      - name: Publish\n");
@@ -1920,7 +1974,7 @@ fn render_github_release(
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
     let staged = download_artifacts(s, needs);
     push_install_otf_release(s, pin);
-    render_package_setup(s, config, entry, "");
+    render_package_setup(s, config, entry, None, false);
     s.push_str("      - name: Create GitHub Release\n");
     s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     if staged {
@@ -2172,6 +2226,9 @@ const SETUP_HELP: &str =
 const SETUP_KIND_HELP: &str =
     "an action is preferred when the repo has one: its other workflows already use it, so there is \
      one definition of how the tool is installed rather than two that can drift";
+const SETUP_MORE_HELP: &str =
+    "steps run in the order given, so put an installer before anything that calls what it \
+     installed. A package can replace the whole list with its own [package.setup]";
 const SETUP_USES_HELP: &str =
     "exactly what a workflow would write: ./.github/actions/setup-tsr for a local composite \
      action, or owner/repo@v1 for a published one";
@@ -2557,15 +2614,34 @@ impl InitPrompt for StdinInitPrompt {
         }
     }
 
-    fn prompt_setup(&self) -> Result<Setup> {
+    fn prompt_setup(&self) -> Result<SetupSteps> {
         let wants = Confirm::new("Does this repo build through a tool the runner doesn't ship?")
             .with_default(false)
             .with_help_message(SETUP_HELP)
             .prompt()?;
         if !wants {
-            return Ok(Setup::default());
+            return Ok(SetupSteps::default());
         }
 
+        // A repo that needs one such tool often needs two — a task runner and the CLI its own
+        // scripts are written in. Asking again is cheaper than sending someone to hand-edit the
+        // list, and the `targets` filter is left to `otf-release config`, which can show the
+        // package's declared triples instead of asking them to be typed from memory.
+        let mut steps = vec![self.prompt_one_setup()?];
+        while Confirm::new("Another setup step?")
+            .with_default(false)
+            .with_help_message(SETUP_MORE_HELP)
+            .prompt()?
+        {
+            steps.push(self.prompt_one_setup()?);
+        }
+        Ok(SetupSteps::from(steps))
+    }
+}
+
+impl StdinInitPrompt {
+    /// One step of the setup list: an action to reference, or shell lines to run.
+    fn prompt_one_setup(&self) -> Result<Setup> {
         let how = Select::new(
             "How is that tool installed?",
             vec![
@@ -2586,16 +2662,15 @@ impl InitPrompt for StdinInitPrompt {
             Ok(Setup {
                 uses: non_blank(&uses),
                 with: Setup::parse_with(&with)?,
-                run: Vec::new(),
+                ..Setup::default()
             })
         } else {
             let run = Text::new("Commands (comma-separated):")
                 .with_help_message(SETUP_RUN_HELP)
                 .prompt()?;
             Ok(Setup {
-                uses: None,
-                with: BTreeMap::new(),
                 run: split_commands(&run),
+                ..Setup::default()
             })
         }
     }
@@ -2691,7 +2766,7 @@ pub(crate) mod tests {
         /// What it was *offered* — `None` when the prompt was never reached.
         skip_offered: RefCell<Option<Vec<String>>>,
         /// What `prompt_setup` returns; empty by default, so most tests generate no setup step.
-        setup: Setup,
+        setup: SetupSteps,
     }
     impl InitPrompt for FakePrompt {
         fn select_adapters(&self) -> Result<Vec<Ecosystem>> {
@@ -2751,7 +2826,7 @@ pub(crate) mod tests {
         fn prompt_github_release_notes(&self) -> Result<GithubReleaseNotes> {
             Ok(GithubReleaseNotes::AutoGenerate)
         }
-        fn prompt_setup(&self) -> Result<Setup> {
+        fn prompt_setup(&self) -> Result<SetupSteps> {
             Ok(self.setup.clone())
         }
     }
@@ -2976,8 +3051,9 @@ pub(crate) mod tests {
             setup: Setup {
                 uses: Some("./.github/actions/setup-tsr".into()),
                 with: Setup::parse_with("esdev=true").unwrap(),
-                run: Vec::new(),
-            },
+                ..Setup::default()
+            }
+            .into(),
             packages: vec![cargo_build_only("cli")],
             ..ReleaseConfig::default()
         };
@@ -3004,7 +3080,8 @@ pub(crate) mod tests {
             setup: Setup {
                 run: vec!["curl -fsSL https://example.com/install.sh | bash".into()],
                 ..Setup::default()
-            },
+            }
+            .into(),
             packages: vec![entry],
             ..ReleaseConfig::default()
         };
@@ -3012,6 +3089,174 @@ pub(crate) mod tests {
         assert!(
             out.contains("      - name: Setup\n        if: ${{ !matrix.vm }}\n"),
             "{out}"
+        );
+    }
+
+    /// Two setup steps in one job, in the order the list gives them. A repo whose packages build
+    /// through a task runner *and* a CLI installed by a second action needs both in the same job,
+    /// which is the case a single `uses` could only serve through a wrapper action per combination.
+    #[test]
+    fn setup_steps_run_in_the_order_the_list_gives_them() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            setup: vec![
+                Setup {
+                    uses: Some("./.github/actions/setup-tsr".into()),
+                    ..Setup::default()
+                },
+                Setup {
+                    uses: Some("./.github/actions/setup-esdev".into()),
+                    ..Setup::default()
+                },
+            ]
+            .into(),
+            packages: vec![cargo_build_only("cli")],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+
+        let tsr = out
+            .find("      - uses: ./.github/actions/setup-tsr\n")
+            .unwrap();
+        let esdev = out
+            .find("      - uses: ./.github/actions/setup-esdev\n")
+            .unwrap();
+        let build = out.find("      - name: Build cli\n").unwrap();
+        assert!(tsr < esdev, "list order must survive into the YAML: {out}");
+        assert!(esdev < build, "both steps precede the build: {out}");
+    }
+
+    /// A package's list replaces the repo-wide one whole, so a repo can install two tools
+    /// everywhere and give one package the subset it can actually run.
+    #[test]
+    fn a_package_list_replaces_the_repo_wide_list_entirely() {
+        let mut cli = cargo_build_only("cli");
+        cli.setup = Some(
+            Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                ..Setup::default()
+            }
+            .into(),
+        );
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            setup: vec![
+                Setup {
+                    uses: Some("./.github/actions/setup-tsr".into()),
+                    ..Setup::default()
+                },
+                Setup {
+                    uses: Some("./.github/actions/setup-esdev".into()),
+                    ..Setup::default()
+                },
+            ]
+            .into(),
+            packages: vec![cli],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+
+        assert!(
+            out.contains("      - uses: ./.github/actions/setup-tsr\n"),
+            "{out}"
+        );
+        // The gate belongs to no package, so it still takes the repo-wide list; the package's own
+        // jobs must not see the step it dropped.
+        let gate = out.find("  check-release:").unwrap();
+        let build = out.find("  build-cli:").unwrap();
+        let esdev = out.find("./.github/actions/setup-esdev").unwrap();
+        assert!(
+            esdev > gate && esdev < build,
+            "setup-esdev belongs to the gate only: {out}"
+        );
+    }
+
+    /// A `targets` filter confines an installer to the matrix rows whose triple it supports,
+    /// instead of forcing the whole package to opt out of a step its other legs want.
+    #[test]
+    fn a_targets_filter_guards_the_matrix_rows_it_names() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            setup: Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                targets: vec!["x86_64-unknown-linux-gnu".into()],
+                ..Setup::default()
+            }
+            .into(),
+            packages: vec![cargo_build_only("cli")],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+
+        assert!(
+            out.contains(concat!(
+                "      - uses: ./.github/actions/setup-tsr\n",
+                "        if: ${{ contains(fromJSON('[\"x86_64-unknown-linux-gnu\"]'), ",
+                "matrix.triple) }}\n",
+            )),
+            "{out}"
+        );
+    }
+
+    /// Both reasons a setup step is conditional can apply at once: the VM guard keeps it off a
+    /// guest row, the filter keeps it off a host row it does not support.
+    #[test]
+    fn a_targets_filter_combines_with_the_vm_guard() {
+        let mut entry = cargo_build_only("cli");
+        entry
+            .targets
+            .push(crate::config::Target::resolved("freebsd", "x86_64"));
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            setup: Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                targets: vec!["x86_64-unknown-linux-gnu".into()],
+                ..Setup::default()
+            }
+            .into(),
+            packages: vec![entry],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+
+        assert!(
+            out.contains(concat!(
+                "        if: ${{ !matrix.vm && ",
+                "contains(fromJSON('[\"x86_64-unknown-linux-gnu\"]'), matrix.triple) }}\n",
+            )),
+            "{out}"
+        );
+    }
+
+    /// A job with no matrix builds no triple, so a triple-filtered step has nothing to be needed
+    /// by there and no `matrix.triple` to test — it is left out rather than emitted with a guard
+    /// that would never be true.
+    #[test]
+    fn a_targets_filtered_step_is_left_out_of_a_job_with_no_matrix() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            setup: vec![
+                Setup {
+                    uses: Some("./.github/actions/setup-tsr".into()),
+                    ..Setup::default()
+                },
+                Setup {
+                    uses: Some("./.github/actions/setup-esdev".into()),
+                    targets: vec!["x86_64-unknown-linux-gnu".into()],
+                    ..Setup::default()
+                },
+            ]
+            .into(),
+            packages: vec![cargo_build_only("cli")],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+
+        let gate = &out[out.find("  check-release:").unwrap()..out.find("  matrix-cli:").unwrap()];
+        assert!(gate.contains("./.github/actions/setup-tsr"), "{gate}");
+        assert!(
+            !gate.contains("./.github/actions/setup-esdev"),
+            "a filtered step has no place in the gate: {gate}"
         );
     }
 
@@ -3025,7 +3270,8 @@ pub(crate) mod tests {
             setup: Setup {
                 uses: Some("./.github/actions/setup-tsr".into()),
                 ..Setup::default()
-            },
+            }
+            .into(),
             packages: vec![cargo_build_only("cli")],
             ..ReleaseConfig::default()
         };
@@ -3057,13 +3303,14 @@ pub(crate) mod tests {
     #[test]
     fn an_empty_package_setup_keeps_the_repo_wide_step_out_of_that_packages_jobs() {
         let mut cli = cargo_build_only("cli");
-        cli.setup = Some(Setup::default());
+        cli.setup = Some(SetupSteps::default());
         let config = ReleaseConfig {
             adapters: vec![Ecosystem::Cargo],
             setup: Setup {
                 uses: Some("./.github/actions/tsr".into()),
                 ..Setup::default()
-            },
+            }
+            .into(),
             packages: vec![cli],
             ..ReleaseConfig::default()
         };
@@ -3086,16 +3333,20 @@ pub(crate) mod tests {
     #[test]
     fn a_package_setup_replaces_the_repo_wide_one() {
         let mut cli = cargo_build_only("cli");
-        cli.setup = Some(Setup {
-            uses: Some("./.github/actions/setup-zig".into()),
-            ..Setup::default()
-        });
+        cli.setup = Some(
+            Setup {
+                uses: Some("./.github/actions/setup-zig".into()),
+                ..Setup::default()
+            }
+            .into(),
+        );
         let config = ReleaseConfig {
             adapters: vec![Ecosystem::Cargo],
             setup: Setup {
                 uses: Some("./.github/actions/tsr".into()),
                 ..Setup::default()
-            },
+            }
+            .into(),
             packages: vec![cli],
             ..ReleaseConfig::default()
         };
@@ -3114,7 +3365,8 @@ pub(crate) mod tests {
             setup: Setup {
                 uses: Some("./.github/actions/setup-tsr".into()),
                 ..Setup::default()
-            },
+            }
+            .into(),
             packages: vec![PackageEntry {
                 name: "@x/sdk".into(),
                 adapter: Ecosystem::Npm,

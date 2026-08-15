@@ -462,14 +462,19 @@ pub struct PackageEntry {
     /// workspace version but keeps release notes of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changelog: Option<String>,
-    /// A setup step for this package's own jobs, **replacing** the repo-wide
-    /// [`ReleaseConfig::setup`] rather than adding to it.
+    /// The setup steps for this package's own jobs, **replacing** the repo-wide
+    /// [`ReleaseConfig::setup`] list rather than adding to it.
     ///
     /// The case this exists for is a polyglot repo: the JS packages build through a task runner
-    /// the repo-wide block installs, while a Rust CLI beside them cross-compiles to Windows, where
-    /// that installer does not run at all. An empty `[package.setup]` opts such a package out.
+    /// *and* a repo-local CLI the repo-wide list installs, while a Rust CLI beside them needs only
+    /// the first — and cross-compiles to Windows, where the installer may not run at all. Naming
+    /// the subset it wants is one block; `setup = []` opts the package out of setup entirely.
+    ///
+    /// Replace and not append is deliberate. The commonest reason a package declares its own list
+    /// is that it must run *less* than the repo does, and appending cannot express removal — it
+    /// would leave every package undoing a step it never asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub setup: Option<Setup>,
+    pub setup: Option<SetupSteps>,
 }
 
 impl PackageEntry {
@@ -586,15 +591,19 @@ pub struct Hooks {
 /// build — the same mechanism that already works in a hand-written workflow.
 ///
 /// ```toml
-/// [setup]                                  # every job in the repo
+/// [[setup]]                                # every job in the repo
 /// uses = "./.github/actions/setup-tsr"
 /// with = { esdev = "true" }
+///
+/// [[setup]]
+/// uses = "./.github/actions/setup-esdev"
 /// ```
 ///
 /// `uses` and `run` are independent: either alone, or both (the action first, then the script).
 ///
-/// Repo-wide, overridable per package by [`PackageEntry::setup`]. Jobs that belong to no package
-/// (the release gate, the catch-all publish) always use the repo-wide block.
+/// One of an ordered [`SetupSteps`] list. Repo-wide, overridable per package by
+/// [`PackageEntry::setup`]. Jobs that belong to no package (the release gate, the catch-all
+/// publish) always use the repo-wide list.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Setup {
     /// An action to run, exactly as a workflow would reference it: a local composite action
@@ -613,6 +622,18 @@ pub struct Setup {
     /// multi-line `run:` block, so `$GITHUB_PATH` writes here reach the build step.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub run: Vec<String>,
+    /// Target triples this step is for. Empty — the default — means every row.
+    ///
+    /// A repo-wide installer is not automatically runnable on every leg of a matrix: a `curl |
+    /// bash` script that supports Linux and macOS *fails the job* on the `windows-latest` leg, at a
+    /// step that build never needed. Naming the triples it does support confines it to them,
+    /// instead of forcing the whole package to opt out of a step its other legs want.
+    ///
+    /// Emitted as a `contains(fromJSON(…), matrix.triple)` guard, so it filters **matrix rows**.
+    /// A job with no matrix builds no triple, so a step that names any is not emitted there at all
+    /// — `doctor` reports a filter that leaves a step with nowhere to run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
 }
 
 impl Setup {
@@ -661,7 +682,122 @@ impl Setup {
         if self.run.iter().any(|line| line.trim().is_empty()) {
             bail!("{context}: `run` cannot contain a blank line");
         }
+        if !self.targets.is_empty() && self.is_empty() {
+            bail!("{context}: `targets` filters a step, but this one has no `uses` and no `run`");
+        }
+        for (i, triple) in self.targets.iter().enumerate() {
+            if triple.trim().is_empty() {
+                bail!("{context}: `targets` cannot contain a blank triple");
+            }
+            if self.targets[..i].contains(triple) {
+                bail!("{context}: `targets` lists `{triple}` twice");
+            }
+        }
         Ok(())
+    }
+
+    /// Whether this step runs on a matrix row building `triple`. A step with no `targets` runs on
+    /// every row.
+    pub fn covers(&self, triple: &str) -> bool {
+        self.targets.is_empty() || self.targets.iter().any(|t| t == triple)
+    }
+}
+
+/// The ordered setup steps one job runs, back to back, before the work it does.
+///
+/// A list rather than a single step because real release pipelines do not have one setup step.
+/// A polyglot repo's npm packages may build through a task runner *and* a repo-local CLI, while the
+/// Rust matrix beside them needs only the first — two actions in one job, a different pair in the
+/// next. Folding those into one wrapper composite action is possible but forks a definition per
+/// combination, which is the thing the `uses`-a-local-action design exists to avoid.
+///
+/// Both spellings parse, so a config written before the list existed keeps working:
+///
+/// ```toml
+/// [setup]                                  # one table — read as a one-element list
+/// uses = "./.github/actions/setup-tsr"
+/// ```
+///
+/// ```toml
+/// [[setup]]                                # the list it looks like
+/// uses = "./.github/actions/setup-tsr"
+///
+/// [[setup]]
+/// uses = "./.github/actions/setup-esdev"
+/// ```
+///
+/// It is always *written* as a list, so opening the config editor migrates the old spelling once.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct SetupSteps(Vec<Setup>);
+
+impl SetupSteps {
+    /// Whether this list emits nothing at all — no steps, or only steps that emit nothing.
+    ///
+    /// This is what a package's opt-out looks like from the outside: `setup = []` and an empty
+    /// `[package.setup]` table both land here, and both mean "no setup step in this package's
+    /// jobs".
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(Setup::is_empty)
+    }
+
+    /// The steps, in the order they are emitted.
+    pub fn steps(&self) -> &[Setup] {
+        &self.0
+    }
+
+    /// The steps, mutably — the config editor rewrites them in place.
+    pub fn steps_mut(&mut self) -> &mut Vec<Setup> {
+        &mut self.0
+    }
+
+    /// Steps that would actually emit something, skipping the blank ones the editor leaves behind.
+    pub fn emitting(&self) -> impl Iterator<Item = &Setup> {
+        self.0.iter().filter(|step| !step.is_empty())
+    }
+
+    /// Reject any step whose shape would generate invalid or misleading YAML, naming the index so
+    /// the error points at the block that is wrong rather than the list.
+    pub fn validate(&self, context: &str) -> Result<()> {
+        for (i, step) in self.0.iter().enumerate() {
+            let context = if self.0.len() == 1 {
+                context.to_string()
+            } else {
+                format!("{context} #{}", i + 1)
+            };
+            step.validate(&context)?;
+        }
+        Ok(())
+    }
+}
+
+impl From<Setup> for SetupSteps {
+    fn from(step: Setup) -> Self {
+        SetupSteps(vec![step])
+    }
+}
+
+impl From<Vec<Setup>> for SetupSteps {
+    fn from(steps: Vec<Setup>) -> Self {
+        SetupSteps(steps)
+    }
+}
+
+impl<'de> Deserialize<'de> for SetupSteps {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> std::result::Result<Self, D::Error> {
+        /// A table is the pre-list spelling of a one-step setup; a list is the list. Neither shape
+        /// can deserialize as the other, so the untagged pick is unambiguous.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum OneOrMany {
+            One(Setup),
+            Many(Vec<Setup>),
+        }
+
+        Ok(match OneOrMany::deserialize(de)? {
+            OneOrMany::One(step) => SetupSteps(vec![step]),
+            OneOrMany::Many(steps) => SetupSteps(steps),
+        })
     }
 }
 
@@ -793,10 +929,10 @@ pub struct ReleaseConfig {
     /// Global lifecycle hooks.
     #[serde(default)]
     pub hooks: Hooks,
-    /// A setup step run before **every** package's build, for tooling the whole repo builds
-    /// through. A package can replace it with [`PackageEntry::setup`].
-    #[serde(default, skip_serializing_if = "Setup::is_empty")]
-    pub setup: Setup,
+    /// Setup steps run before **every** package's build, for tooling the whole repo builds
+    /// through. A package can replace the list with [`PackageEntry::setup`].
+    #[serde(default, skip_serializing_if = "SetupSteps::is_empty")]
+    pub setup: SetupSteps,
     /// Publish path-ignore policy keyed by package name.
     #[serde(default)]
     pub publish: PublishConfig,
@@ -878,7 +1014,7 @@ impl Default for ReleaseConfig {
             adapters: Vec::new(),
             skip_publish: Vec::new(),
             hooks: Hooks::default(),
-            setup: Setup::default(),
+            setup: SetupSteps::default(),
             publish: PublishConfig::default(),
             secrets: Secrets::default(),
             discovery: Discovery::default(),
@@ -1037,19 +1173,19 @@ impl ReleaseConfig {
         }
     }
 
-    /// The setup step for a job that belongs to no package — the release gate and the catch-all
-    /// publish. Always the repo-wide block.
-    pub fn setup_step(&self) -> Option<&Setup> {
+    /// The setup steps for a job that belongs to no package — the release gate and the catch-all
+    /// publish. Always the repo-wide list.
+    pub fn setup_step(&self) -> Option<&SetupSteps> {
         (!self.setup.is_empty()).then_some(&self.setup)
     }
 
-    /// The setup step for one package's own jobs: its `[package.setup]` if it declares one,
-    /// otherwise the repo-wide block. `None` when neither would emit anything.
+    /// The setup steps for one package's own jobs: its `[package.setup]` if it declares any,
+    /// otherwise the repo-wide list. `None` when neither would emit anything.
     ///
-    /// A package's block *replaces* the repo-wide one rather than appending to it, so a package
-    /// whose jobs must not run the shared step says so once, with an empty table, instead of
-    /// undoing it.
-    pub fn setup_for<'a>(&'a self, entry: &'a PackageEntry) -> Option<&'a Setup> {
+    /// A package's list *replaces* the repo-wide one rather than appending to it, so a package
+    /// whose jobs must not run the shared steps says so once, with `setup = []`, instead of
+    /// undoing them.
+    pub fn setup_for<'a>(&'a self, entry: &'a PackageEntry) -> Option<&'a SetupSteps> {
         let setup = entry.setup.as_ref().unwrap_or(&self.setup);
         (!setup.is_empty()).then_some(setup)
     }

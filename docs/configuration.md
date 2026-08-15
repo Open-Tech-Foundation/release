@@ -41,11 +41,16 @@ post_version = ["python3 scripts/sync-docs.py"]
 pre_publish = ["npm run test"]
 post_publish = ["curl -X POST ..."]
 
-# A step run in EVERY job, before the work, for a tool the runner does not ship and no adapter
-# knows about. `uses` and `run` are independent — either, or both.
-[setup]
+# Steps run in EVERY job, before the work, for tooling the runner does not ship and no adapter
+# knows about. One `[[setup]]` block per step, run in the order given. `uses` and `run` are
+# independent — either, or both.
+[[setup]]
 uses = "./.github/actions/setup-tsr"   # local composite action, or "owner/repo@v1"
 with = { esdev = "true" }              # the action's inputs
+
+[[setup]]
+uses = "./.github/actions/setup-esdev"
+# targets = ["x86_64-unknown-linux-gnu"]  # only these matrix rows; omit for every row
 # run = ["curl -fsSL https://example.com/install.sh | bash",
 #        'echo "$HOME/.tool/bin" >> "$GITHUB_PATH"']
 
@@ -110,10 +115,12 @@ artifacts = "dist/**"
 | `publish.ignore_paths` | Optional per-package path globs. If a package has commits since its last tag, `[Unreleased]` is empty, and **every** changed file matches one of these globs, the release flow prints a warning and continues instead of aborting. |
 | `changelog_scope` | Where curated release notes live: `"root"` uses the root `CHANGELOG.md` for every package; `"package"` uses each package's adapter-discovered `CHANGELOG.md`. |
 | `github_release_notes` | GitHub Release body source for `build-only` packages: `"auto-generate"` lets GitHub generate notes, `"curated-changelog"` copies root notes in root scope or combines released sections from all configured package changelogs in package scope, and `"semantic-commits"` writes a commit list since the previous matching `tag_format` tag. `init` asks for this and `config` can edit it later. |
-| `setup.uses` | Optional. An action run in **every** job before the work it does, written exactly as a workflow would: `./.github/actions/setup-tsr` for a local composite action, `owner/repo@v1` for a published one. See [Build setup](#build-setup). |
-| `setup.with` | Optional. Inputs for `setup.uses`, emitted as the step's `with:` block. Each is passed as a string, like every action input. |
-| `setup.run` | Optional. Shell commands run as one step in every job, for a repo with no composite action to point at. |
-| `[package.setup]` | Optional. A setup step for one package's jobs, **replacing** the repo-wide `[setup]` rather than adding to it. An empty table opts that package's jobs out — the escape for a package whose platforms the repo-wide installer does not support. |
+| `[[setup]]` | Optional, repeatable. One step run in **every** job before the work it does. Steps run in the order the blocks appear. A single `[setup]` table is still accepted and read as a one-step list. See [Build setup](#build-setup). |
+| `setup.uses` | Optional. An action to run, written exactly as a workflow would: `./.github/actions/setup-tsr` for a local composite action, `owner/repo@v1` for a published one. |
+| `setup.with` | Optional. Inputs for `setup.uses`, emitted as the step's `with:` block. Each is passed as a string, like every action input — composite action inputs are strings even when declared `type: boolean`. |
+| `setup.run` | Optional. Shell commands run as one step, for a repo with no composite action to point at. |
+| `setup.targets` | Optional. Target triples this step is for, emitted as a `contains(fromJSON(…), matrix.triple)` guard. Omit to run it on every row. It filters **matrix rows**, so a step that names any is not emitted in a job with no matrix. |
+| `[[package.setup]]` | Optional, repeatable. The setup steps for one package's jobs, **replacing** the repo-wide list rather than adding to it. `setup = []` opts that package's jobs out entirely — the escape for a package whose platforms the repo-wide installer does not support. |
 | `[[package]]` | One block per package this repo releases. `init` writes one for every publishable package it finds — a package that needs no build step gets a block carrying only its identity, so there is always somewhere to scope its settings. |
 | `name` | The package name as discovered by its adapter. |
 | `adapter` | The owning ecosystem (`"npm"` / `"crates.io"` / `"generic"`). |
@@ -300,14 +307,17 @@ the repo fails at parse time rather than mid-release.
 
 ## Build setup
 
-Some repos build and publish through a tool GitHub's runner does not ship and no adapter knows
-about: a task runner, a bundler installed by its own `install.sh`, a private toolchain. `[setup]`
-is one step emitted into **every** job, before the work that job does.
+Some repos build and publish through tooling GitHub's runner does not ship and no adapter knows
+about: a task runner, a bundler installed by its own `install.sh`, a private toolchain. `[[setup]]`
+is a list of steps emitted into **every** job, in order, before the work that job does.
 
 ```toml
-[setup]
+[[setup]]
 uses = "./.github/actions/setup-tsr"
 with = { esdev = "true" }
+
+[[setup]]
+uses = "./.github/actions/setup-esdev"
 ```
 
 ```yaml
@@ -315,12 +325,20 @@ with = { esdev = "true" }
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: ./.github/actions/setup-tsr      # ← [setup]
+      - uses: ./.github/actions/setup-tsr      # ← [[setup]] #1
         with:
           esdev: "true"
+      - uses: ./.github/actions/setup-esdev    # ← [[setup]] #2
       - name: Build @scope/lib
         run: npm run build
 ```
+
+**Why a list.** Real release pipelines do not have one setup step: a polyglot repo's npm packages
+may build through a task runner *and* a repo-local CLI, while the Rust matrix beside them needs only
+the first. Folding each combination into a wrapper composite action works, but forks a definition
+per combination — the thing pointing `uses` at an action the repo already has exists to avoid. A
+single `[setup]` table is still read as a one-step list, so a config written before this keeps
+working; the first `config` save rewrites it as `[[setup]]`.
 
 **Why it is a step and not a hook or a longer `command`.** Hooks cannot do this: `pre_publish` is
 executed by `otf-release publish` at runtime, which is *after* the build step in the same job, so
@@ -342,32 +360,68 @@ publish job, so a repo whose hooks are `tsr test` would break if the step were b
 is emitted at most once per job — an inline-build publish job installs it before its build, and that
 one step also serves the publish that follows.
 
-**Opting a package out.** A `[package.setup]` block replaces the repo-wide one in that package's own
-jobs (`build-`, `matrix-`, `publish-`, `github-release-`); an empty table means "no step at all
-there". Jobs that belong to no package — the release gate and the catch-all publish — always use the
-repo-wide block.
+**Per package: replace, not append.** A `[[package.setup]]` block replaces the repo-wide list in that
+package's own jobs (`build-`, `matrix-`, `publish-`, `github-release-`); `setup = []` means "no step
+at all there". Jobs that belong to no package — the release gate and the catch-all publish — always
+use the repo-wide list.
 
-This is not decoration. A repo-wide installer is not automatically runnable everywhere its packages
-build: a task runner installed by a `curl | bash` script that supports Linux, macOS, and FreeBSD
-will *fail the job* on the `windows-latest` leg of a Rust matrix build, at a step that build never
-needed. Opting those packages out is the fix:
+Replacing and not appending is deliberate. The commonest reason a package declares a list is that it
+must run *less* than the repo does, and appending cannot express removal — it would leave every
+package undoing a step it never asked for. So a repo installs what most of its packages need, and
+the exceptions name their own subset:
 
 ```toml
+[[setup]]                                  # npm packages build through both
+uses = "./.github/actions/setup-tsr"
+
+[[setup]]
+uses = "./.github/actions/setup-esdev"
+
 [[package]]
 name = "es-runtime-cli"
-# … cross-compiles to Windows, where the repo-wide installer cannot run
-[package.setup]
+# … cargo builds need only the task runner
+[[package.setup]]
+uses = "./.github/actions/setup-tsr"
 ```
 
+**Filtering matrix rows.** A repo-wide installer is not automatically runnable everywhere its
+packages build: a task runner installed by a `curl | bash` script that supports Linux, macOS, and
+FreeBSD will *fail the job* on the `windows-latest` leg of a Rust matrix build, at a step that build
+never needed. `targets` confines the step to the rows it supports, instead of forcing the whole
+package to opt out of a step its other legs want:
+
+```toml
+[[package.setup]]
+uses = "./.github/actions/setup-tsr"
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]                                          # … and not the two windows rows
+```
+
+It becomes a `contains(fromJSON(…), matrix.triple)` guard, so it selects **matrix rows**. A job with
+no matrix builds no triple and has no `matrix.triple` to test, so a step naming `targets` is left out
+of those jobs rather than emitted with a guard that could never be true. To drop a package's setup
+everywhere, use `setup = []` rather than an empty `targets`.
+
 For a matrix package the step is also gated to host-side rows — a VM target builds inside the guest,
-which installs its own toolchain through the VM step's `prepare:`.
+which installs its own toolchain through the VM step's `prepare:`. When both apply, the guards are
+combined: `if: ${{ !matrix.vm && contains(…) }}`.
 
-`doctor` reports a `uses: ./…` path with no `action.yml` in the repo (`setup-action-missing`,
-error): GitHub resolves it against the checkout and fails the job at startup. A published
-`owner/repo@v1` is resolved by GitHub, so it is not checked against disk.
+`doctor` reports four things here, all of them silent in CI:
 
-`init` asks for this once, when some package has a build command. `otf-release config` → *Build
-setup* edits it.
+| Code | Severity | What it catches |
+| --- | --- | --- |
+| `setup-action-missing` | error | A `uses: ./…` path with no `action.yml` in the repo. GitHub resolves it against the checkout and fails the job at startup. A published `owner/repo@v1` is resolved by GitHub, so it is not checked against disk. |
+| `setup-targets-unknown` | warning | A `targets` triple no package the step applies to builds. It never matches `matrix.triple`, so the step is skipped on every row and the build fails later, at the command that needed the tool. |
+| `setup-targets-never-runs` | warning | A `targets` filter on a step no matrix package receives. It selects matrix rows, and there are none, so the step is emitted in no job at all. |
+| `setup-targets-redundant` | suggestion | A `targets` filter naming every triple those packages build, so it selects nothing. |
+
+`init` asks for this when some package has a build command, and keeps asking until you say there are
+no more steps. `otf-release config` → *Build setup* edits the list, one row per field per step, with
+an *Add step* row at the end.
 
 ## The `generic` adapter
 

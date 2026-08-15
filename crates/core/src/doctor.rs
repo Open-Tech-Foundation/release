@@ -24,7 +24,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::adapter::{Adapter, Pkg};
-use crate::config::{Ecosystem, ReleaseConfig};
+use crate::config::{Ecosystem, PackageEntry, ReleaseConfig, SetupSteps};
 use crate::init::slug;
 use crate::ui;
 
@@ -146,6 +146,7 @@ pub fn audit(config: &ReleaseConfig, discovered: &[Discovered], root: &Path) -> 
     tag_collisions(config, &released, &mut findings);
     stale_workflow(config, root, &mut findings);
     setup_actions(config, root, &mut findings);
+    setup_targets(config, &mut findings);
     missing_blocks(config, &released, &mut findings);
     stale_blocks(config, discovered, &mut findings);
     unbuilt_publishes(config, &released, &mut findings);
@@ -221,12 +222,13 @@ fn stale_workflow(config: &ReleaseConfig, root: &Path, out: &mut Vec<Finding>) {
 /// which package was misconfigured. The path is in `release.toml` and the action is on disk, so the
 /// mismatch is visible here, long before a release run.
 fn setup_actions(config: &ReleaseConfig, root: &Path, out: &mut Vec<Finding>) {
-    // One finding per distinct path: the repo-wide block is shared by most packages, and
+    // One finding per distinct path: the repo-wide list is shared by most packages, and
     // reporting it once per package would bury everything else.
     let mut seen: Vec<&str> = Vec::new();
     let referenced = std::iter::once(&config.setup)
         .chain(config.packages.iter().filter_map(|p| p.setup.as_ref()))
-        .filter_map(|setup| setup.uses.as_deref())
+        .flat_map(|setup| setup.steps())
+        .filter_map(|step| step.uses.as_deref())
         // Only a local action is checkable; a published `owner/repo@v1` is resolved by GitHub.
         .filter(|uses| uses.starts_with("./"));
 
@@ -253,6 +255,117 @@ fn setup_actions(config: &ReleaseConfig, root: &Path, out: &mut Vec<Finding>) {
                  `uses` with `run` commands"
             )),
         );
+    }
+}
+
+/// A `targets` filter that names a triple the package never builds, or that leaves a step with no
+/// job to run in at all.
+///
+/// Both are silent in CI. A misspelled triple simply never matches `matrix.triple`, so the step is
+/// skipped on every row and the build fails later at the command that needed the tool; a filter on
+/// a package with no matrix means the step is not emitted anywhere, with nothing in the generated
+/// YAML to show that it was asked for.
+fn setup_targets(config: &ReleaseConfig, out: &mut Vec<Finding>) {
+    // Repo-wide steps reach every package that has not replaced the list, so their triples are
+    // checked against the union of what those packages build.
+    let inheriting: Vec<&PackageEntry> = config
+        .packages
+        .iter()
+        .filter(|pkg| pkg.setup.is_none())
+        .collect();
+    check_setup_targets(&config.setup, &inheriting, "[[setup]]", out);
+
+    for pkg in &config.packages {
+        if let Some(setup) = &pkg.setup {
+            let context = format!("package `{}`: [[package.setup]]", pkg.name);
+            check_setup_targets(setup, std::slice::from_ref(&pkg), &context, out);
+        }
+    }
+}
+
+fn check_setup_targets(
+    setup: &SetupSteps,
+    scope: &[&PackageEntry],
+    context: &str,
+    out: &mut Vec<Finding>,
+) {
+    let known: Vec<&str> = scope
+        .iter()
+        .filter(|pkg| pkg.matrix)
+        .flat_map(|pkg| pkg.targets.iter())
+        .map(|target| target.triple.as_str())
+        .collect();
+
+    for step in setup.emitting().filter(|step| !step.targets.is_empty()) {
+        let label = step
+            .uses
+            .clone()
+            .unwrap_or_else(|| "the script step".to_string());
+
+        if known.is_empty() {
+            out.push(
+                Finding::new(
+                    Severity::Warning,
+                    "setup-targets-never-runs",
+                    format!(
+                        "{context}: `{label}` is filtered to specific targets, but no package it \
+                         applies to builds a matrix. A `targets` filter selects matrix rows, so \
+                         this step is emitted in no job at all."
+                    ),
+                )
+                .fix(
+                    "drop `targets` so the step runs in every job, or move it to the \
+                      `[[package.setup]]` of a matrix package"
+                        .to_string(),
+                ),
+            );
+            continue;
+        }
+
+        let unknown: Vec<&str> = step
+            .targets
+            .iter()
+            .map(String::as_str)
+            .filter(|triple| !known.contains(triple))
+            .collect();
+        if !unknown.is_empty() {
+            out.push(
+                Finding::new(
+                    Severity::Warning,
+                    "setup-targets-unknown",
+                    format!(
+                        "{context}: `{label}` is filtered to `{}`, which no package it applies to \
+                         builds. A triple that never matches silently skips the step on every row.",
+                        unknown.join("`, `")
+                    ),
+                )
+                .fix(format!(
+                    "use one of the declared triples: {}",
+                    known.join(", ")
+                )),
+            );
+        }
+
+        if step
+            .targets
+            .iter()
+            .all(|triple| known.contains(&triple.as_str()))
+            && known
+                .iter()
+                .all(|triple| step.targets.iter().any(|t| t == triple))
+        {
+            out.push(
+                Finding::new(
+                    Severity::Suggestion,
+                    "setup-targets-redundant",
+                    format!(
+                        "{context}: `{label}` lists every target the packages it applies to build, \
+                         so the filter selects nothing."
+                    ),
+                )
+                .fix("drop `targets` — the step already runs on every row".to_string()),
+            );
+        }
     }
 }
 
@@ -898,6 +1011,20 @@ mod tests {
         }
     }
 
+    /// A cargo matrix package building two triples, for the `targets` filter checks.
+    fn matrix_entry(name: &str) -> PackageEntry {
+        PackageEntry {
+            mode: Mode::BuildOnly,
+            matrix: true,
+            targets: vec![
+                Target::resolved("linux", "x86_64"),
+                Target::resolved("windows", "x86_64"),
+            ],
+            command: "cargo build --release --target {triple}".into(),
+            ..entry(name, Ecosystem::Cargo)
+        }
+    }
+
     fn entry(name: &str, ecosystem: Ecosystem) -> PackageEntry {
         PackageEntry {
             name: name.to_string(),
@@ -1048,7 +1175,9 @@ mod tests {
                 uses: Some("./.github/actions/setup-tsr".into()),
                 with: Setup::parse_with("esdev=true, quiet=false").unwrap(),
                 run: vec!["echo hi".into()],
-            },
+                ..Setup::default()
+            }
+            .into(),
             ..ReleaseConfig::default()
         };
         config.packages = vec![entry("@acme/lib", Ecosystem::Npm)];
@@ -1057,6 +1186,147 @@ mod tests {
         let loaded = ReleaseConfig::load(tmp.path()).unwrap();
 
         assert_eq!(loaded.setup, config.setup);
+    }
+
+    /// A multi-step list must survive the same round trip, and it is the harder case: TOML array
+    /// tables interleaved with the nested `with` map of each element.
+    #[test]
+    fn a_setup_list_round_trips_through_release_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            setup: vec![
+                Setup {
+                    uses: Some("./.github/actions/setup-tsr".into()),
+                    with: Setup::parse_with("esdev=true").unwrap(),
+                    ..Setup::default()
+                },
+                Setup {
+                    uses: Some("./.github/actions/setup-esdev".into()),
+                    with: Setup::parse_with("quiet=false").unwrap(),
+                    run: vec!["echo hi".into()],
+                    targets: vec!["x86_64-unknown-linux-gnu".into()],
+                },
+            ]
+            .into(),
+            ..ReleaseConfig::default()
+        };
+        config.packages = vec![entry("@acme/lib", Ecosystem::Npm)];
+
+        config.save(tmp.path()).unwrap();
+        let text = std::fs::read_to_string(ReleaseConfig::path(tmp.path())).unwrap();
+        assert!(text.contains("[[setup]]"), "{text}");
+
+        assert_eq!(ReleaseConfig::load(tmp.path()).unwrap().setup, config.setup);
+    }
+
+    /// A `release.toml` written before the list existed keeps working: one `[setup]` table reads as
+    /// a one-step list. Rewriting it as `[[setup]]` is the only change a `config` save makes.
+    #[test]
+    fn a_single_setup_table_still_parses_as_a_one_step_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ReleaseConfig::path(tmp.path()),
+            "adapters = [\"npm\"]\n[setup]\nuses = \"./.github/actions/setup-tsr\"\n",
+        )
+        .unwrap();
+
+        let loaded = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(loaded.setup.steps().len(), 1);
+        assert_eq!(
+            loaded.setup.steps()[0].uses.as_deref(),
+            Some("./.github/actions/setup-tsr")
+        );
+    }
+
+    /// A triple no package builds never matches `matrix.triple`, so the step is skipped on every
+    /// row and the build fails later at the command that needed the tool.
+    #[test]
+    fn flags_a_targets_triple_that_no_package_builds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            setup: Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                targets: vec![
+                    "x86_64-unknown-linux-gnu".into(),
+                    "sparc-sun-solaris".into(),
+                ],
+                ..Setup::default()
+            }
+            .into(),
+            packages: vec![matrix_entry("cli")],
+            ..ReleaseConfig::default()
+        };
+
+        let report = audit(&config, &[], tmp.path());
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.code == "setup-targets-unknown")
+            .expect("expected setup-targets-unknown");
+        assert!(finding.message.contains("sparc-sun-solaris"), "{finding:?}");
+        assert!(
+            !finding.message.contains("x86_64-unknown-linux-gnu"),
+            "a triple the package does build is not reported: {finding:?}"
+        );
+    }
+
+    /// A `targets` filter selects matrix rows. On a package with no matrix there are none, so the
+    /// step is emitted in no job at all — invisible in the generated YAML.
+    #[test]
+    fn flags_a_targets_filter_with_no_matrix_to_run_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            setup: Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                targets: vec!["x86_64-unknown-linux-gnu".into()],
+                ..Setup::default()
+            }
+            .into(),
+            packages: vec![entry("@acme/lib", Ecosystem::Npm)],
+            ..ReleaseConfig::default()
+        };
+
+        let report = audit(&config, &[], tmp.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.code == "setup-targets-never-runs"),
+            "{report:?}"
+        );
+    }
+
+    /// A filter naming every triple the package builds selects nothing, so it is noise the config
+    /// is better without.
+    #[test]
+    fn flags_a_targets_filter_that_names_every_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            setup: Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                targets: vec![
+                    "x86_64-unknown-linux-gnu".into(),
+                    "x86_64-pc-windows-msvc".into(),
+                ],
+                ..Setup::default()
+            }
+            .into(),
+            packages: vec![matrix_entry("cli")],
+            ..ReleaseConfig::default()
+        };
+
+        let report = audit(&config, &[], tmp.path());
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.code == "setup-targets-redundant"),
+            "{report:?}"
+        );
     }
 
     /// An empty `[setup]` is not written at all, so enabling the feature does not churn the config
@@ -1085,7 +1355,8 @@ mod tests {
             setup: Setup {
                 uses: Some("./.github/actions/setup-tsr".into()),
                 ..Setup::default()
-            },
+            }
+            .into(),
             ..ReleaseConfig::default()
         };
 
@@ -1111,7 +1382,8 @@ mod tests {
             setup: Setup {
                 uses: Some("./.github/actions/setup-tsr".into()),
                 ..Setup::default()
-            },
+            }
+            .into(),
             ..ReleaseConfig::default()
         };
 
@@ -1129,7 +1401,8 @@ mod tests {
             setup: Setup {
                 uses: Some("acme/setup-tsr@v1".into()),
                 ..Setup::default()
-            },
+            }
+            .into(),
             ..ReleaseConfig::default()
         };
 

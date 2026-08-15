@@ -23,7 +23,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::config::{
     format_tag, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode,
-    PackageEntry, ReleaseConfig, Setup, Target, COMMON_TAG_FORMATS, CONFIG_FILE,
+    PackageEntry, ReleaseConfig, Setup, SetupSteps, Target, COMMON_TAG_FORMATS, CONFIG_FILE,
     DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
 };
 use crate::init::{
@@ -48,9 +48,10 @@ pub enum Field {
     Ecosystems,
     SkipPublish,
     Hook(HookStage),
-    SetupUses,
-    SetupWith,
-    SetupRun,
+    /// One field of one step in a setup list.
+    Setup(SetupScope, usize, SetupPart),
+    /// Append a blank step to a setup list.
+    SetupAdd(SetupScope),
     /// Open the detail view for a configured package.
     OpenPackage(String),
     /// Decide whether a package the repo has but `release.toml` does not is released or skipped.
@@ -66,9 +67,58 @@ pub enum Field {
     PkgManifest,
     PkgVersionField,
     PkgPublishCommand,
-    PkgSetupUses,
-    PkgSetupWith,
-    PkgSetupRun,
+}
+
+/// Which setup list a row edits: the repo-wide one, or the open package's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupScope {
+    Repo,
+    Package,
+}
+
+/// Which part of one setup step a row edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupPart {
+    Uses,
+    With,
+    Run,
+    Targets,
+}
+
+impl SetupPart {
+    /// The row label, which drops the step number while there is only one step so the common
+    /// single-step case reads the way it always has.
+    fn label(self, index: usize, total: usize) -> String {
+        let name = match self {
+            SetupPart::Uses => "Action",
+            SetupPart::With => "Action inputs",
+            SetupPart::Run => "Script",
+            SetupPart::Targets => "Targets",
+        };
+        if total <= 1 {
+            name.to_string()
+        } else {
+            format!("Step {} {}", index + 1, name.to_lowercase())
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            SetupPart::Uses => "an action run before the build, e.g. ./.github/actions/setup-tsr",
+            SetupPart::With => "inputs for the action above, as key=value pairs",
+            SetupPart::Run => "shell commands run as one step, comma-separated",
+            SetupPart::Targets => {
+                "triples this step is for, comma-separated; blank runs it on every matrix row"
+            }
+        }
+    }
+
+    const ALL: [SetupPart; 4] = [
+        SetupPart::Uses,
+        SetupPart::With,
+        SetupPart::Run,
+        SetupPart::Targets,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,14 +185,6 @@ fn or_inherit(value: Option<&String>, inherited: &str) -> String {
     match value {
         Some(v) => v.clone(),
         None => format!("(repo default: {inherited})"),
-    }
-}
-
-fn none_if_empty(value: String) -> String {
-    if value.is_empty() {
-        "(none)".to_string()
-    } else {
-        value
     }
 }
 
@@ -272,28 +314,7 @@ fn settings_entries(config: &ReleaseConfig, new_packages: &[String]) -> Vec<Entr
     }
 
     out.push(Entry::Header("Build setup".into()));
-    out.push(row(
-        "Action",
-        config
-            .setup
-            .uses
-            .clone()
-            .unwrap_or_else(|| "(none)".to_string()),
-        Field::SetupUses,
-        "an action run before every build, e.g. ./.github/actions/setup-tsr",
-    ));
-    out.push(row(
-        "Action inputs",
-        none_if_empty(config.setup.format_with()),
-        Field::SetupWith,
-        "inputs for the action above, as key=value pairs",
-    ));
-    out.push(row(
-        "Script",
-        list_or_none(&config.setup.run),
-        Field::SetupRun,
-        "shell commands run before every build, comma-separated",
-    ));
+    setup_rows(&config.setup, SetupScope::Repo, None, &mut out);
 
     out.push(Entry::Header(format!(
         "Packages ({})",
@@ -397,34 +418,15 @@ fn package_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
     ));
 
     out.push(Entry::Header("Build setup".into()));
-    let own = pkg.setup.as_ref();
-    out.push(row(
-        "Action",
-        match own {
-            Some(setup) => setup.uses.clone().unwrap_or_else(|| "(none)".into()),
-            None => inherited_setup(config, |s| s.uses.clone().unwrap_or_else(|| "none".into())),
-        },
-        Field::PkgSetupUses,
-        "this package's own setup, replacing the repo-wide one; blank everything to opt out",
-    ));
-    out.push(row(
-        "Action inputs",
-        match own {
-            Some(setup) => none_if_empty(setup.format_with()),
-            None => inherited_setup(config, |s| none_if_empty(s.format_with())),
-        },
-        Field::PkgSetupWith,
-        "inputs for the action above, as key=value pairs",
-    ));
-    out.push(row(
-        "Script",
-        match own {
-            Some(setup) => list_or_none(&setup.run),
-            None => inherited_setup(config, |s| list_or_none(&s.run)),
-        },
-        Field::PkgSetupRun,
-        "this package's own setup commands, replacing the repo-wide ones",
-    ));
+    // A package with no list of its own shows what it inherits, labelled as inherited so the rows
+    // cannot be read as settings this package has made.
+    let inherited = pkg.setup.is_none().then_some("repo default");
+    setup_rows(
+        effective_setup(config, pkg),
+        SetupScope::Package,
+        inherited,
+        &mut out,
+    );
 
     if pkg.is_build_only() {
         out.push(Entry::Header("Release assets".into()));
@@ -489,19 +491,73 @@ fn package_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
     out
 }
 
-/// The setup this package's jobs actually run — its own block, or the repo-wide one.
-fn effective_setup<'a>(config: &'a ReleaseConfig, pkg: &'a PackageEntry) -> &'a Setup {
+/// The setup this package's jobs actually run — its own list, or the repo-wide one.
+fn effective_setup<'a>(config: &'a ReleaseConfig, pkg: &'a PackageEntry) -> &'a SetupSteps {
     pkg.setup.as_ref().unwrap_or(&config.setup)
 }
 
-/// What a package with no `[package.setup]` gets, labelled as inherited so the row cannot be
-/// mistaken for a value set on the package.
-fn inherited_setup(config: &ReleaseConfig, show: impl Fn(&Setup) -> String) -> String {
-    if config.setup.is_empty() {
-        "(none)".to_string()
-    } else {
-        format!("(repo default: {})", show(&config.setup))
+/// One row per field of every step in a setup list, plus the row that appends another.
+///
+/// `inherited` labels the values as belonging to a list this view does not own, so a package that
+/// has not declared one cannot be misread as having set what it merely receives.
+fn setup_rows(
+    setup: &SetupSteps,
+    scope: SetupScope,
+    inherited: Option<&str>,
+    out: &mut Vec<Entry>,
+) {
+    // `None` is "nothing set here". Rendered as `(none)` when the view owns the list, and folded
+    // into the `(repo default: …)` label when it does not.
+    let show = |value: Option<String>| match (inherited, value) {
+        (Some(source), value) => format!("({source}: {})", value.as_deref().unwrap_or("none")),
+        (None, Some(value)) => value,
+        (None, None) => "(none)".to_string(),
+    };
+
+    let steps = setup.steps();
+    if steps.is_empty() {
+        out.push(row(
+            "Steps",
+            show(None),
+            Field::SetupAdd(scope),
+            match scope {
+                SetupScope::Repo => "no step runs before a build; press enter to add one",
+                SetupScope::Package => {
+                    "this package runs no setup step; press enter to add one to its own list"
+                }
+            },
+        ));
+        return;
     }
+
+    for (i, step) in steps.iter().enumerate() {
+        for part in SetupPart::ALL {
+            let value = match part {
+                SetupPart::Uses => step.uses.clone(),
+                SetupPart::With => Some(step.format_with()).filter(|w| !w.is_empty()),
+                SetupPart::Run => Some(step.run.join(", ")).filter(|r| !r.is_empty()),
+                // An unfiltered step runs everywhere, which is "all", not "nothing set".
+                SetupPart::Targets => Some(if step.targets.is_empty() {
+                    "all".to_string()
+                } else {
+                    step.targets.join(", ")
+                }),
+            };
+            out.push(row(
+                &part.label(i, steps.len()),
+                show(value),
+                Field::Setup(scope, i, part),
+                part.hint(),
+            ));
+        }
+    }
+
+    out.push(row(
+        "Add step",
+        String::new(),
+        Field::SetupAdd(scope),
+        "steps run in the order listed; a package's list replaces the repo-wide one entirely",
+    ));
 }
 
 fn yes_no(on: bool) -> String {
@@ -851,21 +907,37 @@ fn open_editor(app: &mut App) -> Result<()> {
             &hook_commands(config, *stage).join(", "),
             Field::Hook(*stage),
         ),
-        Field::SetupUses => text(
-            "Setup action (blank for none)",
-            config.setup.uses.as_deref().unwrap_or_default(),
-            Field::SetupUses,
-        ),
-        Field::SetupWith => text(
-            "Setup action inputs (key=value, comma-separated)",
-            &config.setup.format_with(),
-            Field::SetupWith,
-        ),
-        Field::SetupRun => text(
-            "Setup commands (comma-separated)",
-            &config.setup.run.join(", "),
-            Field::SetupRun,
-        ),
+        Field::SetupAdd(scope) => {
+            // Not a modal: the row appends a blank step and the screen grows a set of rows to fill
+            // in. Nothing is written yet — a step with neither an action nor a script emits
+            // nothing, so there is nothing to save until one of those rows is edited.
+            let scope = *scope;
+            if let Some(list) = setup_list_mut(app, scope) {
+                list.steps_mut().push(Setup::default());
+            }
+            return Ok(());
+        }
+        Field::Setup(scope, index, part) => {
+            let Some(step) = setup_list(app, *scope).and_then(|l| l.steps().get(*index)) else {
+                return Ok(());
+            };
+            let (title, seed) = match part {
+                SetupPart::Uses => (
+                    "Setup action (blank for none)",
+                    step.uses.clone().unwrap_or_default(),
+                ),
+                SetupPart::With => (
+                    "Setup action inputs (key=value, comma-separated)",
+                    step.format_with(),
+                ),
+                SetupPart::Run => ("Setup commands (comma-separated)", step.run.join(", ")),
+                SetupPart::Targets => (
+                    "Target triples this step is for (comma-separated, blank for all)",
+                    step.targets.join(", "),
+                ),
+            };
+            text(title, &seed, Field::Setup(*scope, *index, *part))
+        }
         other => package_editor(app, other.clone())?,
     };
     app.modal = Some(modal);
@@ -892,26 +964,6 @@ fn package_editor(app: &App, field: Field) -> Result<Modal> {
             Field::PkgMode,
         ),
         Field::PkgCommand => text("Build command", &pkg.command, Field::PkgCommand),
-        // Seeded from the effective setup, so editing one field of an inherited block keeps the
-        // rest of it instead of silently dropping what the package was already getting.
-        Field::PkgSetupUses => text(
-            "Setup action for this package (blank for none)",
-            effective_setup(&app.config, pkg)
-                .uses
-                .as_deref()
-                .unwrap_or_default(),
-            Field::PkgSetupUses,
-        ),
-        Field::PkgSetupWith => text(
-            "Setup action inputs (key=value, comma-separated)",
-            &effective_setup(&app.config, pkg).format_with(),
-            Field::PkgSetupWith,
-        ),
-        Field::PkgSetupRun => text(
-            "Setup commands for this package (comma-separated)",
-            &effective_setup(&app.config, pkg).run.join(", "),
-            Field::PkgSetupRun,
-        ),
         Field::PkgArtifacts => text("Artifacts glob", &pkg.artifacts, Field::PkgArtifacts),
         Field::PkgTargets => {
             let on: Vec<String> = pkg
@@ -1287,25 +1339,99 @@ fn apply_text(app: &mut App, field: Field, buffer: String) -> Result<()> {
         },
         Field::SnapshotTag => app.config.snapshot_tag = optional(&buffer),
         Field::Hook(stage) => set_hook_commands(&mut app.config, stage, parse_csv(&buffer)),
-        Field::SetupUses => app.config.setup.uses = optional(&buffer),
-        Field::SetupWith => match Setup::parse_with(&buffer) {
-            Ok(with) => app.config.setup.with = with,
-            Err(err) => {
-                app.status = Some(format!("Not saved: {err}"));
-                return Ok(());
-            }
-        },
-        Field::SetupRun => app.config.setup.run = parse_csv(&buffer),
+        Field::Setup(scope, index, part) => {
+            return apply_setup_text(app, scope, index, part, buffer)
+        }
         Field::PkgCommand
         | Field::PkgArtifacts
         | Field::PkgChangelog
         | Field::PkgManifest
         | Field::PkgVersionField
-        | Field::PkgPublishCommand
-        | Field::PkgSetupUses
-        | Field::PkgSetupWith
-        | Field::PkgSetupRun => return apply_package_text(app, field, buffer),
+        | Field::PkgPublishCommand => return apply_package_text(app, field, buffer),
         _ => return Ok(()),
+    }
+    app.save()
+}
+
+/// The setup list a row edits, read-only.
+fn setup_list<'a>(app: &'a App, scope: SetupScope) -> Option<&'a SetupSteps> {
+    match scope {
+        SetupScope::Repo => Some(&app.config.setup),
+        SetupScope::Package => {
+            let View::Package(name) = &app.view else {
+                return None;
+            };
+            app.config
+                .package(name)
+                .map(|pkg| effective_setup(&app.config, pkg))
+        }
+    }
+}
+
+/// The setup list a row edits, mutably.
+///
+/// A package's first setup edit materialises its own list from whatever the repo-wide one was
+/// already giving it, so changing one field of an inherited list keeps the rest instead of
+/// silently dropping what the package was getting.
+fn setup_list_mut<'a>(app: &'a mut App, scope: SetupScope) -> Option<&'a mut SetupSteps> {
+    match scope {
+        SetupScope::Repo => Some(&mut app.config.setup),
+        SetupScope::Package => {
+            let View::Package(name) = app.view.clone() else {
+                return None;
+            };
+            // Cloned before the packages are borrowed mutably.
+            let repo_setup = app.config.setup.clone();
+            let pkg = app.config.packages.iter_mut().find(|p| p.name == name)?;
+            Some(pkg.setup.get_or_insert(repo_setup))
+        }
+    }
+}
+
+fn apply_setup_text(
+    app: &mut App,
+    scope: SetupScope,
+    index: usize,
+    part: SetupPart,
+    buffer: String,
+) -> Result<()> {
+    // Parsed before the list is borrowed, so a malformed `key=value` reports through `status`
+    // instead of being written.
+    let with = match part {
+        SetupPart::With => match Setup::parse_with(&buffer) {
+            Ok(with) => Some(with),
+            Err(err) => {
+                app.status = Some(format!("Not saved: {err}"));
+                return Ok(());
+            }
+        },
+        _ => None,
+    };
+
+    let Some(list) = setup_list_mut(app, scope) else {
+        return Ok(());
+    };
+    let restore = list.clone();
+    let steps = list.steps_mut();
+    let Some(step) = steps.get_mut(index) else {
+        return Ok(());
+    };
+    match part {
+        SetupPart::Uses => step.uses = optional(&buffer),
+        SetupPart::With => step.with = with.unwrap_or_default(),
+        SetupPart::Run => step.run = parse_csv(&buffer),
+        SetupPart::Targets => step.targets = parse_csv(&buffer),
+    }
+    // A step blanked of both its action and its script is dropped rather than left as a hole in an
+    // ordered list. For a package this can empty the list, which is exactly how it opts out.
+    if step.is_empty() {
+        steps.remove(index);
+    }
+
+    if let Err(err) = list.validate("setup") {
+        *list = restore;
+        app.status = Some(format!("Not saved: {err}"));
+        return Ok(());
     }
     app.save()
 }
@@ -1314,9 +1440,6 @@ fn apply_package_text(app: &mut App, field: Field, buffer: String) -> Result<()>
     let View::Package(name) = app.view.clone() else {
         return Ok(());
     };
-    // Read before the packages are borrowed mutably; a package's first setup edit starts from
-    // whatever the repo-wide block was already giving it.
-    let repo_setup = app.config.setup.clone();
     let Some(pkg) = app.config.packages.iter_mut().find(|p| p.name == name) else {
         return Ok(());
     };
@@ -1334,23 +1457,6 @@ fn apply_package_text(app: &mut App, field: Field, buffer: String) -> Result<()>
         Field::PkgManifest => pkg.manifest = optional(&buffer),
         Field::PkgVersionField => pkg.version_field = optional(&buffer),
         Field::PkgPublishCommand => pkg.publish = optional(&buffer),
-        Field::PkgSetupUses | Field::PkgSetupWith | Field::PkgSetupRun => {
-            let mut setup = pkg.setup.clone().unwrap_or(repo_setup);
-            match field {
-                Field::PkgSetupUses => setup.uses = optional(&buffer),
-                Field::PkgSetupRun => setup.run = parse_csv(&buffer),
-                _ => match Setup::parse_with(&buffer) {
-                    Ok(with) => setup.with = with,
-                    Err(err) => {
-                        app.status = Some(format!("Not saved: {err}"));
-                        return Ok(());
-                    }
-                },
-            }
-            // An emptied override is stored, not dropped: it is how a package opts out of a
-            // repo-wide setup, and dropping it would hand the repo default straight back.
-            pkg.setup = Some(setup);
-        }
         _ => return Ok(()),
     }
     app.save()
@@ -1653,13 +1759,87 @@ mod tests {
         cfg.setup = Setup {
             uses: Some("./.github/actions/setup-tsr".into()),
             with: Setup::parse_with("esdev=true").unwrap(),
-            run: Vec::new(),
-        };
+            ..Setup::default()
+        }
+        .into();
         let entries = build(&cfg, &View::Settings, &[]);
 
         assert_eq!(value_of(&entries, "Action"), "./.github/actions/setup-tsr");
         assert_eq!(value_of(&entries, "Action inputs"), "esdev=true");
         assert_eq!(value_of(&entries, "Script"), "(none)");
+    }
+
+    /// With more than one step the rows carry the step number, so the order the workflow will run
+    /// them in is readable off the screen.
+    #[test]
+    fn a_multi_step_setup_numbers_its_rows() {
+        let mut cfg = config();
+        cfg.setup = vec![
+            Setup {
+                uses: Some("./.github/actions/setup-tsr".into()),
+                ..Setup::default()
+            },
+            Setup {
+                uses: Some("./.github/actions/setup-esdev".into()),
+                targets: vec!["x86_64-unknown-linux-gnu".into()],
+                ..Setup::default()
+            },
+        ]
+        .into();
+        let entries = build(&cfg, &View::Settings, &[]);
+
+        assert_eq!(
+            value_of(&entries, "Step 1 action"),
+            "./.github/actions/setup-tsr"
+        );
+        assert_eq!(
+            value_of(&entries, "Step 2 action"),
+            "./.github/actions/setup-esdev"
+        );
+        // An unfiltered step runs everywhere, which is "all" — not "nothing set".
+        assert_eq!(value_of(&entries, "Step 1 targets"), "all");
+        assert_eq!(
+            value_of(&entries, "Step 2 targets"),
+            "x86_64-unknown-linux-gnu"
+        );
+        assert!(
+            rows(&entries).iter().any(|r| r.label == "Add step"),
+            "{entries:#?}"
+        );
+    }
+
+    /// A package that has not declared a list shows what it inherits, labelled, so the rows cannot
+    /// be misread as settings the package has made.
+    #[test]
+    fn a_package_without_its_own_list_shows_the_repo_default() {
+        let mut cfg = config();
+        cfg.setup = Setup {
+            uses: Some("./.github/actions/setup-tsr".into()),
+            ..Setup::default()
+        }
+        .into();
+        let entries = build(&cfg, &View::Package("@x/sdk".into()), &[]);
+
+        assert_eq!(
+            value_of(&entries, "Action"),
+            "(repo default: ./.github/actions/setup-tsr)"
+        );
+    }
+
+    /// A package that has opted out says so, rather than showing the repo-wide list it is not
+    /// running.
+    #[test]
+    fn a_package_that_opted_out_shows_no_steps() {
+        let mut cfg = config();
+        cfg.setup = Setup {
+            uses: Some("./.github/actions/setup-tsr".into()),
+            ..Setup::default()
+        }
+        .into();
+        cfg.packages[0].setup = Some(SetupSteps::default());
+        let entries = build(&cfg, &View::Package("@x/sdk".into()), &[]);
+
+        assert_eq!(value_of(&entries, "Steps"), "(none)");
     }
 
     /// Unset values read as what the repo will actually do, not as blanks — the parenthesised form
