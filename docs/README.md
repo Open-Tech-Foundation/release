@@ -13,6 +13,7 @@ polyglot monorepos.
 - **New to the tool?** Read the root [`README.md`](../README.md) for the elevator pitch, then
   [`architecture.md`](./architecture.md).
 - **Setting up a repo?** [`commands/init.md`](./commands/init.md) → [`configuration.md`](./configuration.md) → [`ci-workflow.md`](./ci-workflow.md).
+- **Build needs a tool the runner does not ship?** [`build-setup.md`](./build-setup.md).
 - **Something not shipping?** [`commands/doctor.md`](./commands/doctor.md) — it audits the setup
   against what the adapters discover on disk.
 - **Cutting a release?** [`commands/version.md`](./commands/version.md) (local) then
@@ -43,6 +44,7 @@ polyglot monorepos.
 | [changelog-format.md](./changelog-format.md) | Keep a Changelog conventions and rewrite rules. |
 | [preflight.md](./preflight.md) | The strict, all-or-nothing compliance gate. |
 | [ci-workflow.md](./ci-workflow.md) | The single `release.yml` model. |
+| [build-setup.md](./build-setup.md) | `[[setup]]` — steps run in every job for tooling the runner does not ship. |
 | [roadmap.md](./roadmap.md) | Known gaps and upcoming work. |
 | [implementation-plan.md](./implementation-plan.md) | Historical phased build plan; useful context, not the current source of truth. |
 

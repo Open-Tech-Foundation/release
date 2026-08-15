@@ -45,6 +45,10 @@ Severity is about **consequence**, not confidence.
 | `no-attestation` | suggestion | A build-only package ships assets with no signed provenance. A checksum can be replaced by whoever replaced the asset; an attestation cannot. |
 | `stale-workflow` | error | `.github/workflows/release.yml` has no job for a configured package. It will be versioned and tagged, then build nothing. Run `otf-release upgrade --force`. |
 | `shared-legacy-tag-format` | warning | A repo-wide `legacy_tag_formats` entry has no `{name}` while several packages are released, so every package reads the same release history. |
+| `setup-action-missing` | error | A `[[setup]]` step points at `uses: ./…` with no `action.yml` in the repo. GitHub resolves the path against the checkout and fails the job at startup, before doing any work. A published `owner/repo@v1` is resolved by GitHub, so it is not checked against disk. See [build-setup.md](../build-setup.md). |
+| `setup-targets-unknown` | warning | A `setup.targets` triple that no package the step applies to builds. It never matches `matrix.triple`, so the step is skipped on every row and the build fails later, at the command that needed the tool. |
+| `setup-targets-never-runs` | warning | A `setup.targets` filter on a step no matrix package receives. The filter selects matrix rows and there are none, so the step is emitted in no job at all. |
+| `setup-targets-redundant` | suggestion | A `setup.targets` filter naming every triple those packages build, so it selects nothing. |
 | `empty-ignore-paths` | suggestion | One or more `publish.ignore_paths` entries have an empty glob list, which does nothing. Reported once for all of them. |
 
 ## In CI

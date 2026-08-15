@@ -313,115 +313,23 @@ is a list of steps emitted into **every** job, in order, before the work that jo
 
 ```toml
 [[setup]]
-uses = "./.github/actions/setup-tsr"
-with = { esdev = "true" }
+uses = "./.github/actions/setup-tsr"       # local composite action, or "owner/repo@v1"
+with = { esdev = "true" }                  # the action's inputs
 
 [[setup]]
 uses = "./.github/actions/setup-esdev"
+# targets = ["x86_64-unknown-linux-gnu"]   # only these matrix rows; omit for every row
+# run = ["curl -fsSL https://example.com/install.sh | bash",
+#        'echo "$HOME/.tool/bin" >> "$GITHUB_PATH"']
 ```
 
-```yaml
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: ./.github/actions/setup-tsr      # ← [[setup]] #1
-        with:
-          esdev: "true"
-      - uses: ./.github/actions/setup-esdev    # ← [[setup]] #2
-      - name: Build @scope/lib
-        run: npm run build
-```
+A `[[package.setup]]` list **replaces** the repo-wide one in that package's own jobs rather than
+appending to it, and `setup = []` opts that package out entirely. A single `[setup]` table is still
+accepted, read as a one-step list, so a config written before the list existed keeps working.
 
-**Why a list.** Real release pipelines do not have one setup step: a polyglot repo's npm packages
-may build through a task runner *and* a repo-local CLI, while the Rust matrix beside them needs only
-the first. Folding each combination into a wrapper composite action works, but forks a definition
-per combination — the thing pointing `uses` at an action the repo already has exists to avoid. A
-single `[setup]` table is still read as a one-step list, so a config written before this keeps
-working; the first `config` save rewrites it as `[[setup]]`.
-
-**Why it is a step and not a hook or a longer `command`.** Hooks cannot do this: `pre_publish` is
-executed by `otf-release publish` at runtime, which is *after* the build step in the same job, so
-nothing a hook does can provision what the build already needed — and it is the wrong way round
-anyway, since the hooks are themselves written in the tool a setup step installs. Folding the
-install into `command` does work — the string is emitted verbatim into `run:` — but it is the wrong
-home twice over. `command` is also what `otf-release build` runs on a contributor's machine, so an
-installer buried there executes outside CI; and everything crammed into one `run:` block cannot use
-`$GITHUB_PATH`, whose writes only reach *later* steps, forcing an inline `PATH=…` prefix.
-
-A step of its own has neither problem. `$GITHUB_PATH` behaves normally, and a composite action's
-PATH exports reach what follows — the same mechanism that already works in a hand-written workflow,
-which is why pointing at an action the repo already has is the preferred form. Re-spelling that
-action's installer as `run` lines would fork the definition it exists to keep single.
-
-**Every job, once.** Builds are not the only place the tool is needed: `pre_publish`/`post_publish`
-hooks and a generic package's `publish` command are executed by `otf-release publish` inside a
-publish job, so a repo whose hooks are `tsr test` would break if the step were build-only. The step
-is emitted at most once per job — an inline-build publish job installs it before its build, and that
-one step also serves the publish that follows.
-
-**Per package: replace, not append.** A `[[package.setup]]` block replaces the repo-wide list in that
-package's own jobs (`build-`, `matrix-`, `publish-`, `github-release-`); `setup = []` means "no step
-at all there". Jobs that belong to no package — the release gate and the catch-all publish — always
-use the repo-wide list.
-
-Replacing and not appending is deliberate. The commonest reason a package declares a list is that it
-must run *less* than the repo does, and appending cannot express removal — it would leave every
-package undoing a step it never asked for. So a repo installs what most of its packages need, and
-the exceptions name their own subset:
-
-```toml
-[[setup]]                                  # npm packages build through both
-uses = "./.github/actions/setup-tsr"
-
-[[setup]]
-uses = "./.github/actions/setup-esdev"
-
-[[package]]
-name = "es-runtime-cli"
-# … cargo builds need only the task runner
-[[package.setup]]
-uses = "./.github/actions/setup-tsr"
-```
-
-**Filtering matrix rows.** A repo-wide installer is not automatically runnable everywhere its
-packages build: a task runner installed by a `curl | bash` script that supports Linux, macOS, and
-FreeBSD will *fail the job* on the `windows-latest` leg of a Rust matrix build, at a step that build
-never needed. `targets` confines the step to the rows it supports, instead of forcing the whole
-package to opt out of a step its other legs want:
-
-```toml
-[[package.setup]]
-uses = "./.github/actions/setup-tsr"
-targets = [
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
-]                                          # … and not the two windows rows
-```
-
-It becomes a `contains(fromJSON(…), matrix.triple)` guard, so it selects **matrix rows**. A job with
-no matrix builds no triple and has no `matrix.triple` to test, so a step naming `targets` is left out
-of those jobs rather than emitted with a guard that could never be true. To drop a package's setup
-everywhere, use `setup = []` rather than an empty `targets`.
-
-For a matrix package the step is also gated to host-side rows — a VM target builds inside the guest,
-which installs its own toolchain through the VM step's `prepare:`. When both apply, the guards are
-combined: `if: ${{ !matrix.vm && contains(…) }}`.
-
-`doctor` reports four things here, all of them silent in CI:
-
-| Code | Severity | What it catches |
-| --- | --- | --- |
-| `setup-action-missing` | error | A `uses: ./…` path with no `action.yml` in the repo. GitHub resolves it against the checkout and fails the job at startup. A published `owner/repo@v1` is resolved by GitHub, so it is not checked against disk. |
-| `setup-targets-unknown` | warning | A `targets` triple no package the step applies to builds. It never matches `matrix.triple`, so the step is skipped on every row and the build fails later, at the command that needed the tool. |
-| `setup-targets-never-runs` | warning | A `targets` filter on a step no matrix package receives. It selects matrix rows, and there are none, so the step is emitted in no job at all. |
-| `setup-targets-redundant` | suggestion | A `targets` filter naming every triple those packages build, so it selects nothing. |
-
-`init` asks for this when some package has a build command, and keeps asking until you say there are
-no more steps. `otf-release config` → *Build setup* edits the list, one row per field per step, with
-an *Add step* row at the end.
+**See [build-setup.md](./build-setup.md)** for the full treatment: why it is a step rather than a
+hook or a longer `command`, why the list replaces instead of appends, how `targets` filters matrix
+rows and combines with the VM guard, and the four things `doctor` checks.
 
 ## The `generic` adapter
 
@@ -482,3 +390,4 @@ non-ignored file changed and `[Unreleased]` is empty.
 
 - [commands/init.md](./commands/init.md) — the interactive flow that writes this file.
 - [ci-workflow.md](./ci-workflow.md) — the workflow generated from it.
+- [build-setup.md](./build-setup.md) — `[[setup]]` in full.

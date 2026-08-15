@@ -37,6 +37,11 @@ check-release
   guest OS*, and the host then runs `otf-release build … --stage-only` to stage what the guest copied
   back. This is how FreeBSD is supported on runners GitHub does not offer — see
   [commands/matrix-build.md](./commands/matrix-build.md#--stage-only).
+Every job also carries the repo's [`[[setup]]`](./build-setup.md) steps, emitted after the toolchain
+steps and immediately before the work — for tooling the runner does not ship and no adapter knows
+about. A package can replace the list with its own `[[package.setup]]`, and a step can name the
+matrix triples it applies to; jobs belonging to no package always take the repo-wide list.
+
 - **`publish-<pkg>`** — owns one configured build package and runs only when that package has an
   untagged current version. The fallback `publish` job excludes all such packages and handles only
   dynamically discovered packages that do not need a configured build.
@@ -135,3 +140,4 @@ manage the file after generation.
 - [commands/init.md](./commands/init.md) — how the file is generated.
 - [commands/publish.md](./commands/publish.md) — what the `publish` job runs.
 - [adapters/npm.md](./adapters/npm.md) — the publish gotchas, in detail.
+- [build-setup.md](./build-setup.md) — the `[[setup]]` steps every job carries.
