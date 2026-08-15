@@ -174,11 +174,42 @@ All four are silent in CI, which is why they are checked here. See
 no build has no step for a setup step to precede — and keeps asking until you say there are no more
 steps.
 
-[`config`](./commands/config.md) → *Build setup* edits the list afterwards: one row per field per
-step, numbered once there is more than one, with an *Add step* row at the end. Blanking a step's
-action *and* its script removes it. On a package's screen the rows show what it inherits, labelled
-`(repo default: …)`, until you edit one — at which point the package gets a list of its own, seeded
-from what it was already receiving.
+[`config`](./commands/config.md) → *Build setup* edits the list afterwards. The list is **one row per
+step**, the way the packages section is one row per package — a step has four fields, and spending
+four rows on each turns a two-step list into eight near-identical lines:
+
+```
+BUILD SETUP
+  Step 1                    ./.github/actions/setup-tsr
+  Step 2                    ./.github/actions/setup-esdev · 2 targets
+  Step 3                    2 commands
+  Add step
+```
+
+Each row summarises what the step runs — its action, a count for a script-only step, and the number
+of targets when it is filtered. Enter opens the step's own screen, Esc goes back to where you opened
+it from:
+
+```
+BUILD SETUP · STEP 2
+  Action                    ./.github/actions/setup-esdev
+  Action inputs             (none)
+  Script                    (none)
+  Targets                   x86_64-unknown-linux-gnu, aarch64-apple-darwin
+  Remove step
+```
+
+*Add step* appends a step and opens it straight away. *Remove step* deletes it, as does blanking a
+step's action *and* its script.
+
+**Targets are picked, not typed.** The row opens a checklist of the triples the packages in scope
+actually build — a package's own declared targets, or the union across every package still on the
+repo-wide list. Checking none (or checking all) means every row, and writes no filter at all. This
+is the one field where typing from memory produces a filter that silently never matches, which is
+exactly what `setup-targets-unknown` exists to report.
+
+On a package's screen the rows show what it inherits, labelled `(repo default: …)`, until you edit
+one — at which point the package gets a list of its own, seeded from what it was already receiving.
 
 After a hand edit, run [`upgrade`](./commands/upgrade.md) to regenerate the workflow.
 

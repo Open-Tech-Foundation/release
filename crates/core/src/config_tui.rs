@@ -48,10 +48,14 @@ pub enum Field {
     Ecosystems,
     SkipPublish,
     Hook(HookStage),
-    /// One field of one step in a setup list.
-    Setup(SetupScope, usize, SetupPart),
-    /// Append a blank step to a setup list.
+    /// Open the detail view for one step of a setup list.
+    OpenSetupStep(SetupScope, usize),
+    /// Append a blank step to a setup list and open it.
     SetupAdd(SetupScope),
+    /// One field of the step the detail view is showing.
+    Setup(SetupScope, usize, SetupPart),
+    /// Drop the step the detail view is showing.
+    SetupRemove(SetupScope, usize),
     /// Open the detail view for a configured package.
     OpenPackage(String),
     /// Decide whether a package the repo has but `release.toml` does not is released or skipped.
@@ -69,11 +73,22 @@ pub enum Field {
     PkgPublishCommand,
 }
 
-/// Which setup list a row edits: the repo-wide one, or the open package's own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which setup list a row edits. The package's name travels with it, so a step's rows resolve
+/// without consulting the current view — the step detail view is not the package view.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetupScope {
     Repo,
-    Package,
+    Package(String),
+}
+
+impl SetupScope {
+    /// The heading the step detail view opens under, naming the list the step belongs to.
+    fn heading(&self) -> String {
+        match self {
+            SetupScope::Repo => "Build setup".to_string(),
+            SetupScope::Package(name) => format!("{name} · build setup"),
+        }
+    }
 }
 
 /// Which part of one setup step a row edits.
@@ -86,19 +101,12 @@ pub enum SetupPart {
 }
 
 impl SetupPart {
-    /// The row label, which drops the step number while there is only one step so the common
-    /// single-step case reads the way it always has.
-    fn label(self, index: usize, total: usize) -> String {
-        let name = match self {
+    fn label(self) -> &'static str {
+        match self {
             SetupPart::Uses => "Action",
             SetupPart::With => "Action inputs",
             SetupPart::Run => "Script",
             SetupPart::Targets => "Targets",
-        };
-        if total <= 1 {
-            name.to_string()
-        } else {
-            format!("Step {} {}", index + 1, name.to_lowercase())
         }
     }
 
@@ -170,6 +178,23 @@ pub enum View {
     Settings,
     /// A package's own fields, by name — names survive the re-sort that adopting a package causes.
     Package(String),
+    /// One setup step's fields. A step has four of them, which is more than a settings screen
+    /// should spend on each entry of a list that can grow — so a step gets a view, the way a
+    /// package does, and the list above it stays one line per step.
+    SetupStep(SetupScope, usize),
+}
+
+impl View {
+    /// Where Esc goes from here. A step opened from a package's screen returns to it, not to the
+    /// top, so backing out retraces the way in.
+    fn parent(&self) -> Option<View> {
+        match self {
+            View::Settings => None,
+            View::Package(_) => Some(View::Settings),
+            View::SetupStep(SetupScope::Repo, _) => Some(View::Settings),
+            View::SetupStep(SetupScope::Package(name), _) => Some(View::Package(name.clone())),
+        }
+    }
 }
 
 fn row(label: &str, value: String, field: Field, hint: &'static str) -> Entry {
@@ -210,6 +235,7 @@ pub fn build(config: &ReleaseConfig, view: &View, new_packages: &[String]) -> Ve
     match view {
         View::Settings => settings_entries(config, new_packages),
         View::Package(name) => package_entries(config, name),
+        View::SetupStep(scope, index) => setup_step_entries(config, scope, *index),
     }
 }
 
@@ -314,7 +340,7 @@ fn settings_entries(config: &ReleaseConfig, new_packages: &[String]) -> Vec<Entr
     }
 
     out.push(Entry::Header("Build setup".into()));
-    setup_rows(&config.setup, SetupScope::Repo, None, &mut out);
+    setup_rows(&config.setup, SetupScope::Repo, false, &mut out);
 
     out.push(Entry::Header(format!(
         "Packages ({})",
@@ -420,11 +446,10 @@ fn package_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
     out.push(Entry::Header("Build setup".into()));
     // A package with no list of its own shows what it inherits, labelled as inherited so the rows
     // cannot be read as settings this package has made.
-    let inherited = pkg.setup.is_none().then_some("repo default");
     setup_rows(
         effective_setup(config, pkg),
-        SetupScope::Package,
-        inherited,
+        SetupScope::Package(pkg.name.clone()),
+        pkg.setup.is_none(),
         &mut out,
     );
 
@@ -496,68 +521,129 @@ fn effective_setup<'a>(config: &'a ReleaseConfig, pkg: &'a PackageEntry) -> &'a 
     pkg.setup.as_ref().unwrap_or(&config.setup)
 }
 
-/// One row per field of every step in a setup list, plus the row that appends another.
+/// One row per **step** in a setup list, plus the row that appends another.
+///
+/// A step has four fields, and spending four rows on each turned a two-step list into eight
+/// near-identical lines that read as noise rather than as an ordered list. So the list shows one
+/// line per step — what it runs, and whether it is filtered — and the fields live in a view of
+/// their own, exactly as a package's do.
 ///
 /// `inherited` labels the values as belonging to a list this view does not own, so a package that
 /// has not declared one cannot be misread as having set what it merely receives.
-fn setup_rows(
-    setup: &SetupSteps,
-    scope: SetupScope,
-    inherited: Option<&str>,
-    out: &mut Vec<Entry>,
-) {
-    // `None` is "nothing set here". Rendered as `(none)` when the view owns the list, and folded
-    // into the `(repo default: …)` label when it does not.
-    let show = |value: Option<String>| match (inherited, value) {
-        (Some(source), value) => format!("({source}: {})", value.as_deref().unwrap_or("none")),
-        (None, Some(value)) => value,
-        (None, None) => "(none)".to_string(),
+fn setup_rows(setup: &SetupSteps, scope: SetupScope, inherited: bool, out: &mut Vec<Entry>) {
+    let show = |value: String| {
+        if inherited {
+            format!("(repo default: {value})")
+        } else {
+            value
+        }
     };
 
     let steps = setup.steps();
     if steps.is_empty() {
         out.push(row(
             "Steps",
-            show(None),
+            show("none".into()),
             Field::SetupAdd(scope),
-            match scope {
-                SetupScope::Repo => "no step runs before a build; press enter to add one",
-                SetupScope::Package => {
-                    "this package runs no setup step; press enter to add one to its own list"
-                }
-            },
+            "no setup step runs here; press enter to add one",
         ));
         return;
     }
 
     for (i, step) in steps.iter().enumerate() {
-        for part in SetupPart::ALL {
-            let value = match part {
-                SetupPart::Uses => step.uses.clone(),
-                SetupPart::With => Some(step.format_with()).filter(|w| !w.is_empty()),
-                SetupPart::Run => Some(step.run.join(", ")).filter(|r| !r.is_empty()),
-                // An unfiltered step runs everywhere, which is "all", not "nothing set".
-                SetupPart::Targets => Some(if step.targets.is_empty() {
-                    "all".to_string()
-                } else {
-                    step.targets.join(", ")
-                }),
-            };
-            out.push(row(
-                &part.label(i, steps.len()),
-                show(value),
-                Field::Setup(scope, i, part),
-                part.hint(),
-            ));
-        }
+        out.push(row(
+            &format!("Step {}", i + 1),
+            show(step_summary(step)),
+            Field::OpenSetupStep(scope.clone(), i),
+            "enter opens this step; steps run in the order listed",
+        ));
     }
 
     out.push(row(
         "Add step",
         String::new(),
         Field::SetupAdd(scope),
-        "steps run in the order listed; a package's list replaces the repo-wide one entirely",
+        "append a step to the end of the list",
     ));
+}
+
+/// One step on one line: what it runs, then what confines it.
+///
+/// The action reference is the identifying part and leads; a script-only step is counted rather
+/// than quoted, since a `curl … | bash` line is longer than the column. The `targets` count is the
+/// only other thing that changes what the step *does*, so it is the only thing appended.
+fn step_summary(step: &Setup) -> String {
+    let mut parts = Vec::new();
+    if let Some(uses) = &step.uses {
+        parts.push(uses.clone());
+    }
+    if !step.run.is_empty() {
+        parts.push(match step.run.len() {
+            1 => "1 command".to_string(),
+            n => format!("{n} commands"),
+        });
+    }
+    if parts.is_empty() {
+        return "empty".to_string();
+    }
+    let mut summary = parts.join(" + ");
+    if !step.targets.is_empty() {
+        summary.push_str(&match step.targets.len() {
+            1 => " · 1 target".to_string(),
+            n => format!(" · {n} targets"),
+        });
+    }
+    summary
+}
+
+/// One setup step's own screen: its four fields, and the row that deletes it.
+fn setup_step_entries(config: &ReleaseConfig, scope: &SetupScope, index: usize) -> Vec<Entry> {
+    let mut out = vec![Entry::Header(format!(
+        "{} · step {}",
+        scope.heading(),
+        index + 1
+    ))];
+
+    let Some(step) = scoped_setup(config, scope).and_then(|list| list.steps().get(index)) else {
+        return out;
+    };
+
+    for part in SetupPart::ALL {
+        let value = match part {
+            SetupPart::Uses => step.uses.clone(),
+            SetupPart::With => Some(step.format_with()).filter(|w| !w.is_empty()),
+            SetupPart::Run => Some(step.run.join(", ")).filter(|r| !r.is_empty()),
+            // An unfiltered step runs everywhere, which is "all", not "nothing set".
+            SetupPart::Targets => Some(if step.targets.is_empty() {
+                "all".to_string()
+            } else {
+                step.targets.join(", ")
+            }),
+        };
+        out.push(row(
+            part.label(),
+            value.unwrap_or_else(|| "(none)".to_string()),
+            Field::Setup(scope.clone(), index, part),
+            part.hint(),
+        ));
+    }
+
+    out.push(row(
+        "Remove step",
+        String::new(),
+        Field::SetupRemove(scope.clone(), index),
+        "delete this step and go back to the list",
+    ));
+    out
+}
+
+/// The list a scope names, read out of a config rather than an app — the pure row builders need it
+/// without a running screen.
+fn scoped_setup<'a>(config: &'a ReleaseConfig, scope: &SetupScope) -> Option<&'a SetupSteps> {
+    match scope {
+        SetupScope::Repo => Some(&config.setup),
+        SetupScope::Package(name) => config.package(name).map(|pkg| effective_setup(config, pkg)),
+    }
 }
 
 fn yes_no(on: bool) -> String {
@@ -673,6 +759,15 @@ impl App<'_> {
         build(&self.config, &self.view, &self.new_names())
     }
 
+    /// Move to another view, landing at the top of it. Every navigation resets both the cursor and
+    /// the scroll: the row counts differ per view, so carrying either across lands on whatever
+    /// happens to sit at that offset.
+    fn goto(&mut self, view: View) {
+        self.view = view;
+        self.cursor = 0;
+        self.scroll = 0;
+    }
+
     fn refresh_new_packages(&mut self) {
         self.new_packages = unconfigured_packages(&self.config, self.factory).unwrap_or_default();
     }
@@ -756,14 +851,10 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
 fn handle_screen_key(app: &mut App, key: KeyEvent, count: usize) -> Result<bool> {
     match key.code {
         KeyCode::Char('q') => return Ok(false),
-        KeyCode::Esc => match &app.view {
-            // Esc is "back" everywhere else in this tool; at the top there is nowhere to go.
-            View::Package(_) => {
-                app.view = View::Settings;
-                app.cursor = 0;
-                app.scroll = 0;
-            }
-            View::Settings => return Ok(false),
+        // Esc is "back" everywhere else in this tool; at the top there is nowhere to go.
+        KeyCode::Esc => match app.view.parent() {
+            Some(parent) => app.goto(parent),
+            None => return Ok(false),
         },
         KeyCode::Down | KeyCode::Char('j') if count > 0 => app.cursor = (app.cursor + 1) % count,
         KeyCode::Up | KeyCode::Char('k') if count > 0 => {
@@ -787,9 +878,11 @@ fn open_editor(app: &mut App) -> Result<()> {
     let config = &app.config;
     let modal = match &row.field {
         Field::OpenPackage(name) => {
-            app.view = View::Package(name.clone());
-            app.cursor = 0;
-            app.scroll = 0;
+            app.goto(View::Package(name.clone()));
+            return Ok(());
+        }
+        Field::OpenSetupStep(scope, index) => {
+            app.goto(View::SetupStep(scope.clone(), *index));
             return Ok(());
         }
         Field::AdoptPackage(name) => choice(
@@ -908,35 +1001,69 @@ fn open_editor(app: &mut App) -> Result<()> {
             Field::Hook(*stage),
         ),
         Field::SetupAdd(scope) => {
-            // Not a modal: the row appends a blank step and the screen grows a set of rows to fill
-            // in. Nothing is written yet — a step with neither an action nor a script emits
-            // nothing, so there is nothing to save until one of those rows is edited.
-            let scope = *scope;
-            if let Some(list) = setup_list_mut(app, scope) {
-                list.steps_mut().push(Setup::default());
+            // Not a modal: the row appends a blank step and opens it, so adding one lands where it
+            // is filled in rather than back on a list with a new empty line on it. Nothing is
+            // written yet — a step with neither an action nor a script emits nothing, so there is
+            // nothing to save until one of its fields is edited.
+            let scope = scope.clone();
+            let Some(list) = setup_list_mut(app, &scope) else {
+                return Ok(());
+            };
+            list.steps_mut().push(Setup::default());
+            let index = list.steps().len() - 1;
+            app.goto(View::SetupStep(scope, index));
+            return Ok(());
+        }
+        Field::SetupRemove(scope, index) => {
+            let (scope, index) = (scope.clone(), *index);
+            if let Some(list) = setup_list_mut(app, &scope) {
+                let steps = list.steps_mut();
+                if index < steps.len() {
+                    steps.remove(index);
+                }
             }
+            // Back to the list: the view this row belongs to is about a step that no longer exists.
+            if let Some(parent) = View::SetupStep(scope, index).parent() {
+                app.goto(parent);
+            }
+            app.save()?;
             return Ok(());
         }
         Field::Setup(scope, index, part) => {
-            let Some(step) = setup_list(app, *scope).and_then(|l| l.steps().get(*index)) else {
+            let Some(step) = setup_list(app, scope).and_then(|l| l.steps().get(*index)) else {
                 return Ok(());
             };
-            let (title, seed) = match part {
-                SetupPart::Uses => (
+            let field = Field::Setup(scope.clone(), *index, *part);
+            match part {
+                // Targets are picked, not typed: the triples are already declared in
+                // `[[package.targets]]`, and a filter only does anything when it matches one
+                // exactly. Typing them from memory is the one way to write a filter that silently
+                // never runs — which is `doctor`'s `setup-targets-unknown`, avoided here entirely.
+                SetupPart::Targets => {
+                    let on = step.targets.clone();
+                    check(
+                        "Targets this step runs on (none checked = all of them)",
+                        selectable_triples(config, scope, &on),
+                        &on,
+                        field,
+                    )
+                }
+                SetupPart::Uses => text(
                     "Setup action (blank for none)",
-                    step.uses.clone().unwrap_or_default(),
+                    &step.uses.clone().unwrap_or_default(),
+                    field,
                 ),
-                SetupPart::With => (
+                SetupPart::With => text(
                     "Setup action inputs (key=value, comma-separated)",
-                    step.format_with(),
+                    &step.format_with(),
+                    field,
                 ),
-                SetupPart::Run => ("Setup commands (comma-separated)", step.run.join(", ")),
-                SetupPart::Targets => (
-                    "Target triples this step is for (comma-separated, blank for all)",
-                    step.targets.join(", "),
+                SetupPart::Run => text(
+                    "Setup commands (comma-separated)",
+                    &step.run.join(", "),
+                    field,
                 ),
-            };
-            text(title, &seed, Field::Setup(*scope, *index, *part))
+            }
         }
         other => package_editor(app, other.clone())?,
     };
@@ -1066,6 +1193,38 @@ fn known_package_names(
 
 fn target_label(name: &str, arch: &str) -> String {
     format!("{name}-{arch}")
+}
+
+/// The triples a setup step can be filtered to: what the packages in its scope actually build.
+///
+/// A repo-wide step reaches every package that has not replaced the list, so its options are the
+/// union of what those build. Anything already on the step stays on the list even if no package
+/// declares it any more — dropping it silently would edit the config just by opening the row, and
+/// `doctor`'s `setup-targets-unknown` is what reports it.
+fn selectable_triples(
+    config: &ReleaseConfig,
+    scope: &SetupScope,
+    current: &[String],
+) -> Vec<String> {
+    let mut out: Vec<String> = config
+        .packages
+        .iter()
+        .filter(|pkg| match scope {
+            SetupScope::Repo => pkg.setup.is_none(),
+            SetupScope::Package(name) => pkg.name == *name,
+        })
+        .filter(|pkg| pkg.matrix)
+        .flat_map(|pkg| pkg.targets.iter())
+        .map(|target| target.triple.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    for extra in current {
+        if !out.contains(extra) {
+            out.push(extra.clone());
+        }
+    }
+    out
 }
 
 fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<()> {
@@ -1282,6 +1441,23 @@ fn apply_check(app: &mut App, field: Field, picked: Vec<String>) -> Result<()> {
             }
             app.config.legacy_tag_formats = picked;
         }
+        Field::Setup(scope, index, SetupPart::Targets) => {
+            // Checking every option and checking none both mean "every row", so the filter is
+            // dropped rather than written out in full — `doctor` would call that one redundant.
+            let all = selectable_triples(&app.config, &scope, &picked);
+            let picked = if picked.len() == all.len() {
+                Vec::new()
+            } else {
+                picked
+            };
+            let Some(list) = setup_list_mut(app, &scope) else {
+                return Ok(());
+            };
+            let Some(step) = list.steps_mut().get_mut(index) else {
+                return Ok(());
+            };
+            step.targets = picked;
+        }
         Field::SkipPublish => {
             app.config.skip_publish = picked;
             let sync = sync_package_blocks(&mut app.config, app.factory, &app.root)?;
@@ -1354,18 +1530,8 @@ fn apply_text(app: &mut App, field: Field, buffer: String) -> Result<()> {
 }
 
 /// The setup list a row edits, read-only.
-fn setup_list<'a>(app: &'a App, scope: SetupScope) -> Option<&'a SetupSteps> {
-    match scope {
-        SetupScope::Repo => Some(&app.config.setup),
-        SetupScope::Package => {
-            let View::Package(name) = &app.view else {
-                return None;
-            };
-            app.config
-                .package(name)
-                .map(|pkg| effective_setup(&app.config, pkg))
-        }
-    }
+fn setup_list<'a>(app: &'a App, scope: &SetupScope) -> Option<&'a SetupSteps> {
+    scoped_setup(&app.config, scope)
 }
 
 /// The setup list a row edits, mutably.
@@ -1373,16 +1539,13 @@ fn setup_list<'a>(app: &'a App, scope: SetupScope) -> Option<&'a SetupSteps> {
 /// A package's first setup edit materialises its own list from whatever the repo-wide one was
 /// already giving it, so changing one field of an inherited list keeps the rest instead of
 /// silently dropping what the package was getting.
-fn setup_list_mut<'a>(app: &'a mut App, scope: SetupScope) -> Option<&'a mut SetupSteps> {
+fn setup_list_mut<'a>(app: &'a mut App, scope: &SetupScope) -> Option<&'a mut SetupSteps> {
     match scope {
         SetupScope::Repo => Some(&mut app.config.setup),
-        SetupScope::Package => {
-            let View::Package(name) = app.view.clone() else {
-                return None;
-            };
+        SetupScope::Package(name) => {
             // Cloned before the packages are borrowed mutably.
             let repo_setup = app.config.setup.clone();
-            let pkg = app.config.packages.iter_mut().find(|p| p.name == name)?;
+            let pkg = app.config.packages.iter_mut().find(|p| p.name == *name)?;
             Some(pkg.setup.get_or_insert(repo_setup))
         }
     }
@@ -1408,7 +1571,7 @@ fn apply_setup_text(
         _ => None,
     };
 
-    let Some(list) = setup_list_mut(app, scope) else {
+    let Some(list) = setup_list_mut(app, &scope) else {
         return Ok(());
     };
     let restore = list.clone();
@@ -1424,7 +1587,8 @@ fn apply_setup_text(
     }
     // A step blanked of both its action and its script is dropped rather than left as a hole in an
     // ordered list. For a package this can empty the list, which is exactly how it opts out.
-    if step.is_empty() {
+    let dropped = step.is_empty();
+    if dropped {
         steps.remove(index);
     }
 
@@ -1432,6 +1596,12 @@ fn apply_setup_text(
         *list = restore;
         app.status = Some(format!("Not saved: {err}"));
         return Ok(());
+    }
+    // The step this view was showing is gone, so there is nothing left here to look at.
+    if dropped {
+        if let Some(parent) = View::SetupStep(scope, index).parent() {
+            app.goto(parent);
+        }
     }
     app.save()
 }
@@ -1547,8 +1717,8 @@ fn footer_lines(app: &App, entries: &[Entry]) -> Vec<Line<'static>> {
     let keys = match (&app.view, &app.modal) {
         (_, Some(Modal::Check { .. })) => "[space] toggle  [enter] confirm  [esc] cancel",
         (_, Some(_)) => "[enter] confirm  [esc] cancel",
-        (View::Package(_), None) => "[↑↓/jk] move  [enter] edit  [esc] back  [q] quit",
         (View::Settings, None) => "[↑↓/jk] move  [enter] edit  [q] quit",
+        (_, None) => "[↑↓/jk] move  [enter] edit  [esc] back  [q] quit",
     };
 
     vec![line, Line::styled(keys.to_string(), dim)]
@@ -1754,29 +1924,12 @@ mod tests {
     }
 
     #[test]
-    fn setup_rows_show_the_action_and_its_inputs() {
-        let mut cfg = config();
-        cfg.setup = Setup {
-            uses: Some("./.github/actions/setup-tsr".into()),
-            with: Setup::parse_with("esdev=true").unwrap(),
-            ..Setup::default()
-        }
-        .into();
-        let entries = build(&cfg, &View::Settings, &[]);
-
-        assert_eq!(value_of(&entries, "Action"), "./.github/actions/setup-tsr");
-        assert_eq!(value_of(&entries, "Action inputs"), "esdev=true");
-        assert_eq!(value_of(&entries, "Script"), "(none)");
-    }
-
-    /// With more than one step the rows carry the step number, so the order the workflow will run
-    /// them in is readable off the screen.
-    #[test]
-    fn a_multi_step_setup_numbers_its_rows() {
+    fn a_setup_list_is_one_row_per_step() {
         let mut cfg = config();
         cfg.setup = vec![
             Setup {
                 uses: Some("./.github/actions/setup-tsr".into()),
+                with: Setup::parse_with("esdev=true").unwrap(),
                 ..Setup::default()
             },
             Setup {
@@ -1788,28 +1941,108 @@ mod tests {
         .into();
         let entries = build(&cfg, &View::Settings, &[]);
 
+        // One line per step, not one per field of each step.
+        assert_eq!(value_of(&entries, "Step 1"), "./.github/actions/setup-tsr");
         assert_eq!(
-            value_of(&entries, "Step 1 action"),
-            "./.github/actions/setup-tsr"
+            value_of(&entries, "Step 2"),
+            "./.github/actions/setup-esdev · 1 target"
         );
-        assert_eq!(
-            value_of(&entries, "Step 2 action"),
-            "./.github/actions/setup-esdev"
-        );
-        // An unfiltered step runs everywhere, which is "all" — not "nothing set".
-        assert_eq!(value_of(&entries, "Step 1 targets"), "all");
-        assert_eq!(
-            value_of(&entries, "Step 2 targets"),
-            "x86_64-unknown-linux-gnu"
-        );
+        assert!(rows(&entries).iter().any(|r| r.label == "Add step"));
         assert!(
-            rows(&entries).iter().any(|r| r.label == "Add step"),
-            "{entries:#?}"
+            !rows(&entries).iter().any(|r| r.label.contains("action")),
+            "the fields belong to the step's own view: {entries:#?}"
         );
     }
 
-    /// A package that has not declared a list shows what it inherits, labelled, so the rows cannot
-    /// be misread as settings the package has made.
+    /// A script-only step is summarised by how much it runs — a `curl … | bash` line is longer
+    /// than the column it would have to fit in.
+    #[test]
+    fn a_script_step_is_summarised_by_its_command_count() {
+        let mut cfg = config();
+        cfg.setup = Setup {
+            run: vec![
+                "curl -fsSL https://example.com/i.sh | bash".into(),
+                "hash -r".into(),
+            ],
+            ..Setup::default()
+        }
+        .into();
+        let entries = build(&cfg, &View::Settings, &[]);
+
+        assert_eq!(value_of(&entries, "Step 1"), "2 commands");
+    }
+
+    /// Opening a step is where its four fields live, under a heading naming the list it is in.
+    #[test]
+    fn a_step_view_shows_its_fields_and_a_way_to_delete_it() {
+        let mut cfg = config();
+        cfg.setup = Setup {
+            uses: Some("./.github/actions/setup-tsr".into()),
+            with: Setup::parse_with("esdev=true").unwrap(),
+            ..Setup::default()
+        }
+        .into();
+        let entries = build(&cfg, &View::SetupStep(SetupScope::Repo, 0), &[]);
+
+        assert!(
+            matches!(&entries[0], Entry::Header(h) if h == "Build setup · step 1"),
+            "{entries:#?}"
+        );
+        assert_eq!(value_of(&entries, "Action"), "./.github/actions/setup-tsr");
+        assert_eq!(value_of(&entries, "Action inputs"), "esdev=true");
+        assert_eq!(value_of(&entries, "Script"), "(none)");
+        // An unfiltered step runs everywhere, which is "all", not "nothing set".
+        assert_eq!(value_of(&entries, "Targets"), "all");
+        assert!(rows(&entries).iter().any(|r| r.label == "Remove step"));
+    }
+
+    /// Esc retraces the way in: a step opened from a package returns to that package, not to the
+    /// top of the settings screen.
+    #[test]
+    fn a_step_view_goes_back_where_it_was_opened_from() {
+        assert_eq!(
+            View::SetupStep(SetupScope::Repo, 0).parent(),
+            Some(View::Settings)
+        );
+        assert_eq!(
+            View::SetupStep(SetupScope::Package("@x/sdk".into()), 1).parent(),
+            Some(View::Package("@x/sdk".into()))
+        );
+    }
+
+    /// The triples on offer are the ones the packages in scope actually build, so a filter cannot
+    /// be written against a triple that will never match.
+    #[test]
+    fn target_options_come_from_what_the_packages_in_scope_build() {
+        let mut cfg = config();
+        cfg.packages.push(PackageEntry {
+            matrix: true,
+            targets: vec![
+                Target::resolved("linux", "x86_64"),
+                Target::resolved("windows", "x86_64"),
+            ],
+            ..pkg("cli", Ecosystem::Cargo, Mode::BuildOnly)
+        });
+
+        assert_eq!(
+            selectable_triples(&cfg, &SetupScope::Repo, &[]),
+            vec!["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+        );
+        // An npm package builds no triple, so its own steps have nothing to be filtered to.
+        assert!(selectable_triples(&cfg, &SetupScope::Package("@x/sdk".into()), &[]).is_empty());
+        // A triple already on the step survives even when no package declares it any more.
+        assert_eq!(
+            selectable_triples(
+                &cfg,
+                &SetupScope::Package("@x/sdk".into()),
+                &["gone".into()]
+            ),
+            vec!["gone"]
+        );
+    }
+
+    /// A package with no list of its own shows what it inherits, labelled, so the rows cannot be
+    /// misread as settings the package has made.
     #[test]
     fn a_package_without_its_own_list_shows_the_repo_default() {
         let mut cfg = config();
@@ -1821,7 +2054,7 @@ mod tests {
         let entries = build(&cfg, &View::Package("@x/sdk".into()), &[]);
 
         assert_eq!(
-            value_of(&entries, "Action"),
+            value_of(&entries, "Step 1"),
             "(repo default: ./.github/actions/setup-tsr)"
         );
     }
@@ -1839,7 +2072,7 @@ mod tests {
         cfg.packages[0].setup = Some(SetupSteps::default());
         let entries = build(&cfg, &View::Package("@x/sdk".into()), &[]);
 
-        assert_eq!(value_of(&entries, "Steps"), "(none)");
+        assert_eq!(value_of(&entries, "Steps"), "none");
     }
 
     /// Unset values read as what the repo will actually do, not as blanks — the parenthesised form

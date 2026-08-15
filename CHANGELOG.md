@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Changed
+
+- **A setup step has its own screen in `config`, and *Build setup* is one row per step.** Four rows
+  per step turned a two-step list into eight near-identical lines that read as noise rather than as
+  an ordered list. The screen already had the right idiom: a package is one summary row that opens a
+  detail view, and a setup step now works the same way. The row summarises what the step runs — its
+  action, a command count for a script-only step, the number of targets when it is filtered — and
+  enter opens its four fields, with *Add step* and *Remove step* either side. Esc retraces the way
+  in, so a step opened from a package's screen returns to that package.
+
+- **`config` picks setup targets from a checklist** of the triples the packages in scope actually
+  build — a package's own declared targets, or the union across every package still on the repo-wide
+  list — rather than taking a typed list. Checking none, or all, writes no filter. Typing a triple
+  from memory is the one way to produce a filter that silently never matches, which `doctor` can
+  only report after the fact as `setup-targets-unknown`.
+
 ## [0.38.0] - 2026-08-15
 
 ### Added
