@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-08-15
+
 ### Added
 
 - **`setup.targets` — confine a setup step to the matrix rows it supports.** A repo-wide installer
