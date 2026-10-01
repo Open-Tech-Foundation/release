@@ -29,6 +29,10 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ### Fixed
 
+- Expose npm publishing's **Provenance** toggle in the package config screen and preserve the
+  reminder to run `release upgrade` after enabling signing. The saved setting enables
+  `npm publish --provenance` and the generated workflow's `id-token: write` permission.
+
 - Generated pnpm setup honors the repository's `packageManager` pin instead of forcing `latest`.
   Without a pin, known lockfile formats select a compatible pnpm major, including independent
   package directories. Applies to workflow generation through `init` and `upgrade`.

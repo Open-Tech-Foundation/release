@@ -66,6 +66,7 @@ pub enum Field {
     PkgTargets,
     PkgChecksums,
     PkgAttest,
+    PkgProvenance,
     PkgTagFormat,
     PkgChangelog,
     PkgManifest,
@@ -452,6 +453,16 @@ fn package_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
         pkg.setup.is_none(),
         &mut out,
     );
+
+    if pkg.adapter == Ecosystem::Npm && pkg.mode == Mode::Publish {
+        out.push(Entry::Header("npm".into()));
+        out.push(row(
+            "Provenance",
+            yes_no(pkg.provenance),
+            Field::PkgProvenance,
+            "publish with --provenance; signs the tarball with the workflow's OIDC identity",
+        ));
+    }
 
     if pkg.is_build_only() {
         out.push(Entry::Header("Release assets".into()));
@@ -1123,6 +1134,12 @@ fn package_editor(app: &App, field: Field) -> Result<Modal> {
             &yes_no(pkg.attest),
             Field::PkgAttest,
         ),
+        Field::PkgProvenance => choice(
+            "Publish with npm provenance?",
+            vec!["yes".into(), "no".into()],
+            &yes_no(pkg.provenance),
+            Field::PkgProvenance,
+        ),
         Field::PkgTagFormat => {
             let mut options = vec![format!("(repo default: {})", app.config.tag_format)];
             options.extend(
@@ -1385,9 +1402,11 @@ fn apply_choice(app: &mut App, field: Field, picked: String) -> Result<()> {
                 _ => GithubReleaseNotes::AutoGenerate,
             }
         }
-        Field::PkgMode | Field::PkgChecksums | Field::PkgAttest | Field::PkgTagFormat => {
-            return apply_package_choice(app, field, picked)
-        }
+        Field::PkgMode
+        | Field::PkgChecksums
+        | Field::PkgAttest
+        | Field::PkgProvenance
+        | Field::PkgTagFormat => return apply_package_choice(app, field, picked),
         _ => return Ok(()),
     }
     app.save()
@@ -1416,18 +1435,25 @@ fn apply_package_choice(app: &mut App, field: Field, picked: String) -> Result<(
             }
         }
         Field::PkgChecksums => pkg.checksums = picked == "yes",
-        Field::PkgAttest => {
-            pkg.attest = picked == "yes";
-            if pkg.attest {
-                app.status = Some("Run `release upgrade` to add the signing step".into());
-            }
-        }
+        Field::PkgAttest => pkg.attest = picked == "yes",
+        Field::PkgProvenance => pkg.provenance = picked == "yes",
         Field::PkgTagFormat => {
             pkg.tag_format = (!picked.starts_with("(repo default")).then_some(picked);
         }
         _ => return Ok(()),
     }
-    app.save()
+    let reminder = match field {
+        Field::PkgAttest if pkg.attest => Some("Run `release upgrade` to add the signing step"),
+        Field::PkgProvenance if pkg.provenance => {
+            Some("Run `release upgrade` to add the OIDC permissions")
+        }
+        _ => None,
+    };
+    app.save()?;
+    if let Some(reminder) = reminder {
+        app.status = Some(reminder.into());
+    }
+    Ok(())
 }
 
 fn apply_check(app: &mut App, field: Field, picked: Vec<String>) -> Result<()> {
@@ -1906,6 +1932,117 @@ mod tests {
             .unwrap_or_else(|| panic!("no row labelled {label} in {entries:#?}"))
             .value
             .clone()
+    }
+
+    struct EmptyDiscovery;
+
+    impl AdapterFactory for EmptyDiscovery {
+        fn make(&self, _: Ecosystem) -> Box<dyn crate::adapter::Adapter> {
+            Box::new(Self)
+        }
+    }
+
+    impl crate::adapter::Adapter for EmptyDiscovery {
+        fn discover_packages(&self) -> Result<Vec<crate::adapter::Pkg>> {
+            Ok(Vec::new())
+        }
+        fn write_version(&self, _: &crate::adapter::Pkg, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn update_dep_range(&self, _: &crate::adapter::Pkg, _: &str, _: &str) -> Result<()> {
+            unreachable!()
+        }
+        fn format_range(&self, _: &str) -> String {
+            unreachable!()
+        }
+        fn resolve_workspace_links(&self, _: &crate::adapter::Pkg) -> Result<()> {
+            unreachable!()
+        }
+        fn update_lockfile(&self, _: &Path) -> Result<()> {
+            unreachable!()
+        }
+        fn dependent_bump(
+            &self,
+            _: crate::adapter::Bump,
+            _: &crate::adapter::DepKind,
+        ) -> crate::adapter::Bump {
+            unreachable!()
+        }
+        fn is_published(&self, _: &crate::adapter::Pkg, _: &str) -> Result<bool> {
+            unreachable!()
+        }
+        fn publish(&self, _: &crate::adapter::Pkg, _: Option<&Path>) -> Result<()> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn provenance_toggle_saves_and_upgrade_adds_or_removes_oidc_permission() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = config();
+        cfg.adapters = vec![Ecosystem::Npm];
+        let mut app = App {
+            root: root.path().to_path_buf(),
+            factory: &EmptyDiscovery,
+            config: cfg,
+            view: View::Package("@x/sdk".into()),
+            cursor: 0,
+            scroll: 0,
+            modal: None,
+            status: None,
+            new_packages: Vec::new(),
+        };
+        let entries = app.entries();
+        assert_eq!(value_of(&entries, "Provenance"), "no");
+        app.cursor = rows(&entries)
+            .iter()
+            .position(|row| row.field == Field::PkgProvenance)
+            .unwrap();
+
+        for enabled in [true, false] {
+            open_editor(&mut app).unwrap();
+            // The current value is focused; switching once selects the other value.
+            handle_modal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)).unwrap();
+            handle_modal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+            assert!(app.modal.is_none());
+            assert_eq!(
+                value_of(&app.entries(), "Provenance"),
+                if enabled { "yes" } else { "no" }
+            );
+            let saved = ReleaseConfig::load(root.path()).unwrap();
+            assert_eq!(saved.package("@x/sdk").unwrap().provenance, enabled);
+            if enabled {
+                assert!(app.status.as_ref().unwrap().contains("release upgrade"));
+            }
+            crate::upgrade::orchestrate(
+                root.path(),
+                &crate::upgrade::UpgradeOptions { force: true },
+            )
+            .unwrap();
+            let yaml =
+                std::fs::read_to_string(root.path().join(".github/workflows/release.yml")).unwrap();
+            assert_eq!(yaml.contains("id-token: write"), enabled, "{yaml}");
+        }
+    }
+
+    #[test]
+    fn provenance_toggle_is_only_shown_for_npm_publish_packages() {
+        for (adapter, mode, visible) in [
+            (Ecosystem::Npm, Mode::Publish, true),
+            (Ecosystem::Npm, Mode::BuildOnly, false),
+            (Ecosystem::Cargo, Mode::Publish, false),
+            (Ecosystem::Generic, Mode::BuildOnly, false),
+        ] {
+            let mut cfg = config();
+            cfg.packages = vec![pkg("app", adapter, mode)];
+            let entries = build(&cfg, &View::Package("app".into()), &[]);
+            assert_eq!(
+                rows(&entries)
+                    .iter()
+                    .any(|row| row.field == Field::PkgProvenance),
+                visible
+            );
+        }
     }
 
     /// The whole point of the screen: every setting shows what it is currently set to, without

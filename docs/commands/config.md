@@ -107,6 +107,15 @@ Re-running it re-scans and starts from what is already declared, so a package ad
 Repos that already declare their members skip this: that declaration stays the single source of
 truth. See the [npm adapter](../adapters/npm.md#repos-that-declare-no-npm-workspace).
 
+## npm provenance
+
+Open an npm package in **publish** mode and set **Provenance** to **yes**. This saves
+`provenance = true` for that package. Then run `release upgrade` to regenerate the workflow
+with `id-token: write`; publishing that package uses `npm publish --provenance`.
+
+Setting it back to **no** disables npm provenance. Regenerate the workflow again to remove the
+permission when no other configured signing or publishing feature requires it.
+
 ## Pick from a list, don't retype a list
 
 Every setting whose valid values are knowable is a picker, not a text field. Editing
