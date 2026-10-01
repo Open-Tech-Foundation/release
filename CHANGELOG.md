@@ -10,6 +10,12 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ### Changed
 
+- Complete the config TUI's schema coverage with tool pins, secret names, npm discovery globs,
+  publish ignore paths, binary settings, release packaging, custom tag formats, package legacy
+  formats, custom target detail screens, manual package creation, and restoring inherited setup.
+- Save TUI edits by patching the original TOML document, preserving unrelated comments, quote
+  styles, formatting, target details, and extension values.
+
 - Rename the executable from `otf-release` to `release`. Update generated workflows, installers,
   release asset names, and command documentation; retain support for older pinned installers and assets.
 

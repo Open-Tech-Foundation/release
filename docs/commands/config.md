@@ -33,8 +33,8 @@ repos at once, skip `init` and commit a `release.toml` plus a workflow generated
 
 ## The screen
 
-`config` is a full-screen editor, not a chain of prompts. Every setting and its current value is on
-one screen:
+`config` is a full-screen editor, not a chain of prompts. Repository settings and each package, target, and setup step have their own views.
+Each row shows its current value:
 
 ```
 ┌ release.toml · github ─────────────────────────────────────────────────────┐
@@ -99,13 +99,62 @@ is deliberately narrow — a block goes only when its ecosystem is switched off 
 into `skip_publish`, never merely because one discovery run came back without it, so a transiently
 empty discovery cannot delete a hand-tuned build matrix.
 
-Enabling **npm** for a repo that declares its members nowhere — neither a root `workspaces` field
-nor `pnpm-workspace.yaml` — scans for `package.json` files
-carrying a `name` and a `version`, lists them, and saves the ones you confirm to `[discovery] npm`
-in `release.toml` — publishable packages start checked, private ones (apps, fixtures) do not.
-Re-running it re-scans and starts from what is already declared, so a package added later shows up.
-Repos that already declare their members skip this: that declaration stays the single source of
-truth. See the [npm adapter](../adapters/npm.md#repos-that-declare-no-npm-workspace).
+For a repo without a native npm workspace, edit **npm package directories** under **Ecosystems**
+to declare the directory globs in `[discovery] npm`, for example `packages/*` and
+`!packages/private`. Each glob is a separate entry. Saving refreshes the discovered packages;
+open a package marked **[new]** to adopt it. Clearing the list restores native discovery.
+See the [npm adapter](../adapters/npm.md#repos-that-declare-no-npm-workspace).
+
+## Repository and package controls
+
+**Tool version** sets the version of `release` installed by generated workflows; blank uses the
+version generating the workflow. **Registry secrets** edits the repository secret names for npm
+and Cargo, not the token values. **Publish ignore paths** opens the per-package glob policies,
+including policies for packages that have no explicit package block.
+
+A package screen includes its name, adapter, mode, build command, artifacts, matrix switch,
+binary name, compression, manifest, release identity, and publish ignore paths. **Add package**
+creates a block for a project discovery cannot find; set its adapter and manifest in that screen.
+Registry package names must match the names their adapters discover.
+
+Build-only packages also expose archive format, included files, executable permissions, checksums,
+and build provenance. **Executable: auto** clears the override; **Archive format: default** clears
+the explicit format. npm packages that effectively publish expose npm provenance.
+
+**Target details** opens a list of the package's target definitions. Each target has an editor
+for OS name, architecture, Rust triple, runner, staging directory, executable extension, cross
+compilation, and VM builds. Optional blank strings use the target registry's defaults. Build flags
+offer **default** or **yes**, matching the configuration's registry fallback behavior. Existing
+custom fields survive reselecting targets in **Build targets**. **Add target** creates a custom row;
+**Remove target** removes it, disabling the matrix when the last target is removed.
+
+A package with its own setup override offers **Use repository setup**. This removes the override
+and restores inheritance. Deleting all steps instead leaves an explicit empty list, which opts out
+of repository setup.
+
+After changing workflow settings, run `release upgrade` to regenerate the workflow. Saving through
+the TUI updates changed configuration values while retaining unrelated TOML comments and formatting.
+The complete schema checklist is in [TUI configuration coverage](../tui-config-coverage.md).
+
+## Editing entry lists
+
+Hooks, setup commands, action inputs, directory globs, ignored paths, included files, and legacy
+formats use one entry per value. Commas inside shell commands or action input values stay intact.
+
+| Key | Action |
+| --- | --- |
+| `enter` | Edit the selected entry; while editing, accept the entry |
+| `a` | Add an entry |
+| `d` | Delete the selected entry |
+| `ctrl` + `↑` / `↓` | Move an entry up or down |
+| `ctrl` + `s` | Save the complete list, including an entry currently being edited |
+| `esc` | Cancel the current entry edit, or cancel the list without saving |
+| `alt` + `enter` | Insert a newline while editing a command |
+| `ctrl` + `u` | Clear the current input |
+
+Action inputs use `key=value`, one input per entry. Input values can contain commas or equals signs.
+Legacy formats accept custom strings and must contain `{version}`. Tag format pickers also offer
+**Custom…** for entering a new format.
 
 ## npm provenance
 
@@ -135,23 +184,18 @@ Already-skipped packages are on that list for a reason: skipping one is what hid
 adapters, so a list built from discovery alone would show the existing entries as absent and wipe
 them the moment the prompt was confirmed.
 
-The same applies to `provider` (the list `init` offers, so the two commands cannot disagree about
-what is supported), and to `legacy_tag_formats`, which offers the common patterns plus any format
-already configured by hand, minus the live `tag_format` — that one is always read as history
-anyway.
+Known modes, booleans, archive formats, ecosystems, and built-in targets use pickers.
+Open-ended values use text or entry-list editors so custom formats, commands, and paths remain editable.
 
 Tag format editing offers the common patterns `v{version}`, `{version}`, `{name}@{version}`, and
 `{name}@v{version}`, plus custom input. A package's own **Tag format** is the same list with an
 *inherit the repo's* row on top.
 
-Free-text prompts are kept only where the value genuinely is free text: lifecycle hook commands,
-build commands, artifact globs, `publish.ignore_paths`, and changelog paths.
-
 `github_release_notes` controls the body of GitHub Releases created for `build-only` packages:
 `auto-generate`, `curated-changelog`, or `semantic-commits`.
 
-`publish.ignore_paths` is edited package-by-package from the global settings menu; the prompt stores
-comma-separated glob patterns for the selected package without requiring manual TOML edits.
+`publish.ignore_paths` is edited package-by-package from the global settings menu or a package screen;
+each glob is a separate list entry.
 
 Under *Packages*, alongside the build fields, each package has a **Tag format** and a **Changelog**
 of its own — for a package that must not share the repo's tag line or changelog scope. Every

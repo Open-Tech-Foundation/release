@@ -22,8 +22,8 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::config::{
-    format_tag, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes, Mode,
-    PackageEntry, ReleaseConfig, Setup, SetupSteps, Target, COMMON_TAG_FORMATS, CONFIG_FILE,
+    format_tag, ArchiveFormat, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes,
+    Mode, PackageEntry, ReleaseConfig, Setup, SetupSteps, Target, COMMON_TAG_FORMATS, CONFIG_FILE,
     DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
 };
 use crate::init::{
@@ -37,6 +37,29 @@ const LABEL_WIDTH: usize = 26;
 /// Which setting a row edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Field {
+    ToolVersion,
+    NpmSecret,
+    CargoSecret,
+    DiscoveryNpm,
+    OpenIgnorePaths,
+    IgnorePaths(String),
+    AddIgnorePaths,
+    AddPackage,
+    OpenTargets,
+    OpenTarget(usize),
+    AddTarget,
+    RemoveTarget(usize),
+    Target(usize, TargetPart),
+    RestoreSetup,
+    PkgName,
+    PkgAdapter,
+    PkgMatrix,
+    PkgBinName,
+    PkgCompress,
+    PkgArchive,
+    PkgInclude,
+    PkgExecutable,
+    PkgLegacyTags,
     Provider,
     DefaultBranch,
     TagFormat,
@@ -72,6 +95,43 @@ pub enum Field {
     PkgManifest,
     PkgVersionField,
     PkgPublishCommand,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetPart {
+    Name,
+    Arch,
+    Triple,
+    Runner,
+    StageAs,
+    Ext,
+    Cross,
+    Vm,
+}
+
+impl TargetPart {
+    const ALL: [Self; 8] = [
+        Self::Name,
+        Self::Arch,
+        Self::Triple,
+        Self::Runner,
+        Self::StageAs,
+        Self::Ext,
+        Self::Cross,
+        Self::Vm,
+    ];
+    fn label(self) -> &'static str {
+        match self {
+            Self::Name => "OS name",
+            Self::Arch => "Architecture",
+            Self::Triple => "Rust triple",
+            Self::Runner => "Runner",
+            Self::StageAs => "Stage directory",
+            Self::Ext => "Extension",
+            Self::Cross => "Cross compile",
+            Self::Vm => "Build in VM",
+        }
+    }
 }
 
 /// Which setup list a row edits. The package's name travels with it, so a step's rows resolve
@@ -177,6 +237,9 @@ pub enum Entry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
     Settings,
+    IgnorePaths,
+    Targets(String),
+    Target(String, usize),
     /// A package's own fields, by name — names survive the re-sort that adopting a package causes.
     Package(String),
     /// One setup step's fields. A step has four of them, which is more than a settings screen
@@ -191,6 +254,9 @@ impl View {
     fn parent(&self) -> Option<View> {
         match self {
             View::Settings => None,
+            View::IgnorePaths => Some(View::Settings),
+            View::Targets(name) => Some(View::Package(name.clone())),
+            View::Target(name, _) => Some(View::Targets(name.clone())),
             View::Package(_) => Some(View::Settings),
             View::SetupStep(SetupScope::Repo, _) => Some(View::Settings),
             View::SetupStep(SetupScope::Package(name), _) => Some(View::Package(name.clone())),
@@ -235,6 +301,9 @@ fn ecosystem_label(eco: Ecosystem) -> &'static str {
 pub fn build(config: &ReleaseConfig, view: &View, new_packages: &[String]) -> Vec<Entry> {
     match view {
         View::Settings => settings_entries(config, new_packages),
+        View::IgnorePaths => ignore_paths_entries(config),
+        View::Targets(name) => targets_entries(config, name),
+        View::Target(name, index) => target_entries(config, name, *index),
         View::Package(name) => package_entries(config, name),
         View::SetupStep(scope, index) => setup_step_entries(config, scope, *index),
     }
@@ -276,6 +345,28 @@ fn settings_entries(config: &ReleaseConfig, new_packages: &[String]) -> Vec<Entr
         "prerelease channel for per-commit snapshot publishes",
     ));
 
+    out.push(row(
+        "Tool version",
+        config
+            .otf_release_version
+            .clone()
+            .unwrap_or_else(|| "(generating version)".into()),
+        Field::ToolVersion,
+        "version of release installed by generated workflows; blank uses the generating version",
+    ));
+    out.push(Entry::Header("Registry secrets".into()));
+    out.push(row(
+        "npm token secret",
+        config.secrets.npm.clone(),
+        Field::NpmSecret,
+        "repository secret name; enter the name, not the token",
+    ));
+    out.push(row(
+        "Cargo token secret",
+        config.secrets.cargo.clone(),
+        Field::CargoSecret,
+        "repository secret name; enter the name, not the token",
+    ));
     out.push(Entry::Header("Changelog".into()));
     out.push(row(
         "Scope",
@@ -329,6 +420,13 @@ fn settings_entries(config: &ReleaseConfig, new_packages: &[String]) -> Vec<Entr
         "packages this repo must never version or publish",
     ));
 
+    out.push(row("npm package directories", list_or_none(&config.discovery.npm), Field::DiscoveryNpm, "directory globs for npm packages in repos without a native npm workspace; empty uses native discovery"));
+    out.push(row(
+        "Publish ignore paths",
+        format!("{} package(s)", config.publish.ignore_paths.len()),
+        Field::OpenIgnorePaths,
+        "path globs ignored when checking for commits without release notes",
+    ));
     out.push(Entry::Header("Hooks".into()));
     for stage in HookStage::ALL {
         let commands = hook_commands(config, stage);
@@ -373,7 +471,107 @@ fn settings_entries(config: &ReleaseConfig, new_packages: &[String]) -> Vec<Entr
         ));
     }
 
+    out.push(row("Add package", String::new(), Field::AddPackage, "create a package block for a project discovery cannot find; choose its adapter in the package screen"));
     out
+}
+
+fn ignore_paths_entries(config: &ReleaseConfig) -> Vec<Entry> {
+    let mut out = vec![Entry::Header("Publish ignore paths".into())];
+    let mut names = config
+        .publish
+        .ignore_paths
+        .keys()
+        .cloned()
+        .chain(config.packages.iter().map(|p| p.name.clone()))
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    for name in names {
+        out.push(row(
+            &name,
+            list_or_none(config.publish_ignore_paths_for(&name)),
+            Field::IgnorePaths(name.clone()),
+            "one path glob per entry; empty removes this package's ignore policy",
+        ));
+    }
+    out.push(row(
+        "Add policy",
+        String::new(),
+        Field::AddIgnorePaths,
+        "add an ignore policy for another package name",
+    ));
+    out
+}
+
+fn targets_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
+    let mut out = vec![Entry::Header(format!("{name} · target details"))];
+    if let Some(pkg) = config.package(name) {
+        for (index, target) in pkg.targets.iter().enumerate() {
+            out.push(row(
+                &target_label(&target.name, &target.arch),
+                format!("{} · {}", target.triple(), target.runner()),
+                Field::OpenTarget(index),
+                "edit this target's triple, runner, staging, extension, and build flags",
+            ));
+        }
+    }
+    out.push(row(
+        "Add target",
+        String::new(),
+        Field::AddTarget,
+        "create a custom target definition",
+    ));
+    out
+}
+
+fn target_entries(config: &ReleaseConfig, name: &str, index: usize) -> Vec<Entry> {
+    let mut out = vec![Entry::Header(format!("{name} · target {}", index + 1))];
+    if let Some(target) = config.package(name).and_then(|p| p.targets.get(index)) {
+        for part in TargetPart::ALL {
+            let value = match part {
+                TargetPart::Name => target.name.clone(),
+                TargetPart::Arch => target.arch.clone(),
+                TargetPart::Triple => target.triple.clone(),
+                TargetPart::Runner => target.runner.clone(),
+                TargetPart::StageAs => target.stage_as.clone(),
+                TargetPart::Ext => target.ext.clone(),
+                TargetPart::Cross => {
+                    if target.cross {
+                        "yes".into()
+                    } else {
+                        format!("(registry default: {})", yes_no(target.is_cross()))
+                    }
+                }
+                TargetPart::Vm => {
+                    if target.vm {
+                        "yes".into()
+                    } else {
+                        format!("(registry default: {})", yes_no(target.is_vm()))
+                    }
+                }
+            };
+            out.push(row(
+                part.label(),
+                value,
+                Field::Target(index, part),
+                "edit this target only; empty optional values use registry defaults",
+            ));
+        }
+        out.push(row(
+            "Remove target",
+            String::new(),
+            Field::RemoveTarget(index),
+            "remove this target; removing all targets disables the matrix",
+        ));
+    }
+    out
+}
+
+fn view_package(view: &View) -> Option<&str> {
+    match view {
+        View::Package(name) | View::Targets(name) | View::Target(name, _) => Some(name),
+        _ => None,
+    }
 }
 
 fn hook_commands(config: &ReleaseConfig, stage: HookStage) -> &Vec<String> {
@@ -400,6 +598,19 @@ fn package_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
     };
 
     let mut out = vec![Entry::Header(format!("{name}  ·  build"))];
+    out.push(row(
+        "Name",
+        pkg.name.clone(),
+        Field::PkgName,
+        "package name used by discovery, commands, tags, and publish policy",
+    ));
+    out.push(row(
+        "Adapter",
+        ecosystem_label(pkg.adapter).into(),
+        Field::PkgAdapter,
+        "ecosystem that discovers and releases this package",
+    ));
+
     out.push(row(
         "Mode",
         match pkg.mode {
@@ -444,6 +655,36 @@ fn package_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
         "platforms to build for; selecting none turns the matrix off",
     ));
 
+    out.push(row(
+        "Matrix build",
+        yes_no(pkg.matrix),
+        Field::PkgMatrix,
+        "build this package across its target list",
+    ));
+    out.push(row(
+        "Binary name",
+        pkg.bin_name.clone().unwrap_or_else(|| "(none)".into()),
+        Field::PkgBinName,
+        "compiled binary basename; required for matrix staging",
+    ));
+    out.push(row(
+        "Compression",
+        pkg.compress.clone().unwrap_or_else(|| "none".into()),
+        Field::PkgCompress,
+        "optional brotli compression applied to each staged binary",
+    ));
+    out.push(row(
+        "Target details",
+        format!("{} target(s)", pkg.targets.len()),
+        Field::OpenTargets,
+        "edit custom target definitions without replacing existing overrides",
+    ));
+    out.push(row(
+        "Manifest",
+        pkg.manifest.clone().unwrap_or_else(|| "(none)".into()),
+        Field::PkgManifest,
+        "repo-relative manifest path; also determines the npm build working directory",
+    ));
     out.push(Entry::Header("Build setup".into()));
     // A package with no list of its own shows what it inherits, labelled as inherited so the rows
     // cannot be read as settings this package has made.
@@ -454,7 +695,15 @@ fn package_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
         &mut out,
     );
 
-    if pkg.adapter == Ecosystem::Npm && pkg.mode == Mode::Publish {
+    if pkg.setup.is_some() {
+        out.push(row(
+            "Use repository setup",
+            String::new(),
+            Field::RestoreSetup,
+            "remove this package's setup override and inherit the repository's steps again",
+        ));
+    }
+    if pkg.adapter == Ecosystem::Npm && pkg.is_publish() {
         out.push(Entry::Header("npm".into()));
         out.push(row(
             "Provenance",
@@ -466,6 +715,31 @@ fn package_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
 
     if pkg.is_build_only() {
         out.push(Entry::Header("Release assets".into()));
+        out.push(row(
+            "Archive format",
+            pkg.archive
+                .map(|a| match a {
+                    ArchiveFormat::Auto => "auto",
+                    ArchiveFormat::TarGz => "tar.gz",
+                    ArchiveFormat::Zip => "zip",
+                })
+                .unwrap_or("(default: auto)")
+                .into(),
+            Field::PkgArchive,
+            "archive format for each release asset; auto uses zip on Windows and tar.gz elsewhere",
+        ));
+        out.push(row(
+            "Included files",
+            list_or_none(&pkg.include),
+            Field::PkgInclude,
+            "repo-relative paths or globs bundled into each archive",
+        ));
+        out.push(row(
+            "Executable",
+            pkg.executable.map(yes_no).unwrap_or_else(|| "auto".into()),
+            Field::PkgExecutable,
+            "override whether the archived artifact is executable",
+        ));
         out.push(row(
             "Checksums",
             yes_no(pkg.checksums),
@@ -500,14 +774,20 @@ fn package_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
         "path to this package's changelog, relative to the repo root",
     ));
 
+    out.push(row(
+        "Legacy tag formats",
+        list_or_none(&pkg.legacy_tag_formats),
+        Field::PkgLegacyTags,
+        "older tag formats belonging to this package; one format per entry",
+    ));
+    out.push(row(
+        "Publish ignore paths",
+        list_or_none(config.publish_ignore_paths_for(name)),
+        Field::IgnorePaths(name.into()),
+        "one path glob per entry used by the release-note checks",
+    ));
     if pkg.adapter == Ecosystem::Generic {
         out.push(Entry::Header("Generic adapter".into()));
-        out.push(row(
-            "Manifest",
-            pkg.manifest.clone().unwrap_or_else(|| "(none)".into()),
-            Field::PkgManifest,
-            "the file carrying this package's version",
-        ));
         out.push(row(
             "Version field",
             pkg.version_field
@@ -802,7 +1082,7 @@ impl App<'_> {
     }
 
     fn save(&mut self) -> Result<()> {
-        self.config.save(&self.root)?;
+        self.config.save_preserving(&self.root)?;
         self.refresh_new_packages();
         self.status = Some(format!("Saved {CONFIG_FILE}"));
         Ok(())
@@ -906,6 +1186,140 @@ fn open_editor(app: &mut App) -> Result<()> {
 
     let config = &app.config;
     let modal = match &row.field {
+        Field::OpenIgnorePaths => {
+            app.goto(View::IgnorePaths);
+            return Ok(());
+        }
+        Field::IgnorePaths(name) => list(
+            "Publish ignore globs",
+            config.publish_ignore_paths_for(name),
+            row.field.clone(),
+        ),
+        Field::AddIgnorePaths => text("Package name for ignore policy", "", row.field.clone()),
+        Field::ToolVersion => text(
+            "Tool version (blank uses the generating version)",
+            config.otf_release_version.as_deref().unwrap_or(""),
+            row.field.clone(),
+        ),
+        Field::NpmSecret => text(
+            "npm token secret name",
+            &config.secrets.npm,
+            row.field.clone(),
+        ),
+        Field::CargoSecret => text(
+            "Cargo token secret name",
+            &config.secrets.cargo,
+            row.field.clone(),
+        ),
+        Field::DiscoveryNpm => list(
+            "npm package directory globs",
+            &config.discovery.npm,
+            row.field.clone(),
+        ),
+        Field::AddPackage => text("New package name", "", row.field.clone()),
+        Field::OpenTargets => {
+            let name = view_package(&app.view).unwrap().to_string();
+            app.goto(View::Targets(name));
+            return Ok(());
+        }
+        Field::OpenTarget(index) => {
+            let name = view_package(&app.view).unwrap().to_string();
+            app.goto(View::Target(name, *index));
+            return Ok(());
+        }
+        Field::AddTarget => {
+            let name = view_package(&app.view).unwrap().to_string();
+            let pkg = app
+                .config
+                .packages
+                .iter_mut()
+                .find(|p| p.name == name)
+                .unwrap();
+            let mut suffix = pkg.targets.len() + 1;
+            while pkg
+                .targets
+                .iter()
+                .any(|t| t.name == format!("custom-{suffix}"))
+            {
+                suffix += 1;
+            }
+            pkg.targets.push(Target {
+                name: format!("custom-{suffix}"),
+                arch: "x86_64".into(),
+                ..Target::default()
+            });
+            pkg.matrix = true;
+            let index = pkg.targets.len() - 1;
+            app.save()?;
+            app.goto(View::Target(name, index));
+            return Ok(());
+        }
+        Field::RemoveTarget(index) => {
+            let name = view_package(&app.view).unwrap().to_string();
+            let pkg = app
+                .config
+                .packages
+                .iter_mut()
+                .find(|p| p.name == name)
+                .unwrap();
+            if *index < pkg.targets.len() {
+                pkg.targets.remove(*index);
+            }
+            if pkg.targets.is_empty() {
+                pkg.matrix = false;
+            }
+            app.save()?;
+            app.goto(View::Targets(name));
+            return Ok(());
+        }
+        Field::Target(index, part) => {
+            let target = config
+                .package(view_package(&app.view).unwrap())
+                .unwrap()
+                .targets
+                .get(*index)
+                .unwrap();
+            match part {
+                TargetPart::Cross | TargetPart::Vm => choice(
+                    part.label(),
+                    vec!["default".into(), "yes".into()],
+                    if if *part == TargetPart::Cross {
+                        target.cross
+                    } else {
+                        target.vm
+                    } {
+                        "yes"
+                    } else {
+                        "default"
+                    },
+                    row.field.clone(),
+                ),
+                _ => {
+                    let value = match part {
+                        TargetPart::Name => &target.name,
+                        TargetPart::Arch => &target.arch,
+                        TargetPart::Triple => &target.triple,
+                        TargetPart::Runner => &target.runner,
+                        TargetPart::StageAs => &target.stage_as,
+                        TargetPart::Ext => &target.ext,
+                        _ => unreachable!(),
+                    };
+                    text(part.label(), value, row.field.clone())
+                }
+            }
+        }
+        Field::RestoreSetup => {
+            let name = view_package(&app.view).unwrap().to_string();
+            app.config
+                .packages
+                .iter_mut()
+                .find(|p| p.name == name)
+                .unwrap()
+                .setup = None;
+            app.save()?;
+            return Ok(());
+        }
+
         Field::OpenPackage(name) => {
             app.goto(View::Package(name.clone()));
             return Ok(());
@@ -923,12 +1337,7 @@ fn open_editor(app: &mut App) -> Result<()> {
             "",
             Field::AdoptPackage(name.clone()),
         ),
-        Field::Provider => choice(
-            "Git hosting provider",
-            vec!["github".into()],
-            &config.provider,
-            Field::Provider,
-        ),
+        Field::Provider => text("Git hosting provider", &config.provider, Field::Provider),
         Field::DefaultBranch => text(
             "Default branch",
             &config.default_branch,
@@ -942,26 +1351,14 @@ fn open_editor(app: &mut App) -> Result<()> {
             if !options.contains(&config.tag_format) {
                 options.push(config.tag_format.clone());
             }
+            options.push("Custom…".into());
             choice("Tag format", options, &config.tag_format, Field::TagFormat)
         }
-        Field::LegacyTagFormats => {
-            let mut options: Vec<String> = COMMON_TAG_FORMATS
-                .iter()
-                .map(|f| (*f).to_string())
-                .collect();
-            for extra in &config.legacy_tag_formats {
-                if !options.contains(extra) {
-                    options.push(extra.clone());
-                }
-            }
-            options.retain(|f| *f != config.tag_format);
-            check(
-                "Tag formats read as release history",
-                options,
-                &config.legacy_tag_formats,
-                Field::LegacyTagFormats,
-            )
-        }
+        Field::LegacyTagFormats => list(
+            "Legacy tag formats",
+            &config.legacy_tag_formats,
+            Field::LegacyTagFormats,
+        ),
         Field::SnapshotTag => text(
             "Snapshot tag (blank for none)",
             config.snapshot_tag.as_deref().unwrap_or(""),
@@ -1110,6 +1507,59 @@ fn package_editor(app: &App, field: Field) -> Result<Modal> {
         .ok_or_else(|| anyhow::anyhow!("{name} is no longer configured"))?;
 
     Ok(match field {
+        Field::PkgName => text("Package name", &pkg.name, field),
+        Field::PkgAdapter => choice(
+            "Package adapter",
+            Ecosystem::ALL
+                .iter()
+                .map(|e| ecosystem_label(*e).into())
+                .collect(),
+            ecosystem_label(pkg.adapter),
+            field,
+        ),
+        Field::PkgMatrix => choice(
+            "Build across a target matrix?",
+            vec!["yes".into(), "no".into()],
+            &yes_no(pkg.matrix),
+            field,
+        ),
+        Field::PkgBinName => text(
+            "Binary name (without extension)",
+            pkg.bin_name.as_deref().unwrap_or(""),
+            field,
+        ),
+        Field::PkgCompress => choice(
+            "Binary compression",
+            vec!["none".into(), "brotli".into()],
+            pkg.compress.as_deref().unwrap_or("none"),
+            field,
+        ),
+        Field::PkgArchive => choice(
+            "Archive format",
+            vec![
+                "default".into(),
+                "auto".into(),
+                "tar.gz".into(),
+                "zip".into(),
+            ],
+            pkg.archive
+                .map(|a| match a {
+                    ArchiveFormat::Auto => "auto",
+                    ArchiveFormat::TarGz => "tar.gz",
+                    ArchiveFormat::Zip => "zip",
+                })
+                .unwrap_or("default"),
+            field,
+        ),
+        Field::PkgExecutable => choice(
+            "Archived executable permission",
+            vec!["auto".into(), "yes".into(), "no".into()],
+            &pkg.executable.map(yes_no).unwrap_or_else(|| "auto".into()),
+            field,
+        ),
+        Field::PkgInclude => list("Included paths and globs", &pkg.include, field),
+        Field::PkgLegacyTags => list("Package legacy tag formats", &pkg.legacy_tag_formats, field),
+
         Field::PkgMode => choice(
             "Package mode",
             vec!["publish".into(), "build-only".into()],
@@ -1172,6 +1622,7 @@ fn package_editor(app: &App, field: Field) -> Result<Modal> {
                 }
             }
             let current = pkg.tag_format.clone().unwrap_or_else(|| options[0].clone());
+            options.push("Custom…".into());
             choice("Tag format for this package", options, &current, field)
         }
         Field::PkgChangelog => text(
@@ -1273,11 +1724,32 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             editing,
             ..
         } => {
-            if let Some(buffer) = editing.as_mut() {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+                if let Some(value) = editing.take() {
+                    if !value.is_empty() {
+                        if *cursor < items.len() {
+                            items[*cursor] = value;
+                        } else {
+                            items.push(value);
+                        }
+                    }
+                }
+                let modal = app.modal.take().unwrap();
+                apply(app, modal)?;
+            } else if let Some(buffer) = editing.as_mut() {
                 match key.code {
-                    KeyCode::Esc => *editing = None,
+                    KeyCode::Esc => {
+                        *editing = None;
+                        *cursor = (*cursor).min(items.len().saturating_sub(1));
+                    }
                     KeyCode::Backspace => {
                         buffer.pop();
+                    }
+                    KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+                        buffer.push('\n')
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        buffer.clear()
                     }
                     KeyCode::Enter => {
                         let value = editing.take().unwrap();
@@ -1292,11 +1764,6 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     KeyCode::Char(c) => buffer.push(c),
                     _ => {}
                 }
-            } else if key.modifiers.contains(KeyModifiers::CONTROL)
-                && key.code == KeyCode::Char('s')
-            {
-                let modal = app.modal.take().unwrap();
-                apply(app, modal)?;
             } else {
                 match key.code {
                     KeyCode::Esc => app.modal = None,
@@ -1378,6 +1845,7 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Backspace => {
                 buffer.pop();
             }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => buffer.clear(),
             KeyCode::Char(c) => buffer.push(c),
             KeyCode::Enter => {
                 let modal = app.modal.take().expect("modal present");
@@ -1387,13 +1855,6 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         },
     }
     Ok(())
-}
-
-fn parse_csv(text: &str) -> Vec<String> {
-    text.split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 fn optional(text: &str) -> Option<String> {
@@ -1437,6 +1898,55 @@ fn apply(app: &mut App, modal: Modal) -> Result<()> {
 
 fn apply_list(app: &mut App, field: Field, items: Vec<String>) -> Result<()> {
     match field {
+        Field::DiscoveryNpm | Field::IgnorePaths(_) | Field::PkgInclude => {
+            for pattern in &items {
+                let pattern = pattern.strip_prefix('!').unwrap_or(pattern);
+                if pattern.is_empty() || glob::Pattern::new(pattern).is_err() {
+                    app.status = Some("Not saved: invalid path glob".into());
+                    return Ok(());
+                }
+            }
+            match field {
+                Field::DiscoveryNpm => app.config.discovery.npm = items,
+                Field::IgnorePaths(name) => {
+                    if items.is_empty() {
+                        app.config.publish.ignore_paths.remove(&name);
+                    } else {
+                        app.config.publish.ignore_paths.insert(name, items);
+                    }
+                }
+                Field::PkgInclude => {
+                    let name = view_package(&app.view).unwrap().to_string();
+                    app.config
+                        .packages
+                        .iter_mut()
+                        .find(|p| p.name == name)
+                        .unwrap()
+                        .include = items;
+                }
+                _ => unreachable!(),
+            }
+        }
+        Field::LegacyTagFormats | Field::PkgLegacyTags => {
+            for format in &items {
+                if let Err(err) = format_tag(format, "package", "1.2.3") {
+                    app.status = Some(format!("Not saved: {err}"));
+                    return Ok(());
+                }
+            }
+            if field == Field::LegacyTagFormats {
+                app.config.legacy_tag_formats = items;
+            } else {
+                let name = view_package(&app.view).unwrap().to_string();
+                app.config
+                    .packages
+                    .iter_mut()
+                    .find(|p| p.name == name)
+                    .unwrap()
+                    .legacy_tag_formats = items;
+            }
+        }
+
         Field::Hook(stage) => set_hook_commands(&mut app.config, stage, items),
         Field::Setup(scope, index, part) => {
             let mut inputs = std::collections::BTreeMap::new();
@@ -1482,6 +1992,40 @@ fn apply_list(app: &mut App, field: Field, items: Vec<String>) -> Result<()> {
 
 fn apply_choice(app: &mut App, field: Field, picked: String) -> Result<()> {
     match field {
+        Field::TagFormat | Field::PkgTagFormat if picked == "Custom…" => {
+            let current = if field == Field::TagFormat {
+                app.config.tag_format.clone()
+            } else {
+                app.config
+                    .package(view_package(&app.view).unwrap())
+                    .unwrap()
+                    .tag_format
+                    .clone()
+                    .unwrap_or_default()
+            };
+            app.modal = Some(text(
+                "Custom tag format (must contain {version})",
+                &current,
+                field,
+            ));
+            return Ok(());
+        }
+        Field::Target(index, part) => {
+            let name = view_package(&app.view).unwrap().to_string();
+            let target = &mut app
+                .config
+                .packages
+                .iter_mut()
+                .find(|p| p.name == name)
+                .unwrap()
+                .targets[index];
+            match part {
+                TargetPart::Cross => target.cross = picked == "yes",
+                TargetPart::Vm => target.vm = picked == "yes",
+                _ => return Ok(()),
+            }
+        }
+
         Field::AdoptPackage(name) => {
             if picked.starts_with("Release") {
                 let Some(new) = app
@@ -1536,7 +2080,12 @@ fn apply_choice(app: &mut App, field: Field, picked: String) -> Result<()> {
                 _ => GithubReleaseNotes::AutoGenerate,
             }
         }
-        Field::PkgMode
+        Field::PkgAdapter
+        | Field::PkgMatrix
+        | Field::PkgCompress
+        | Field::PkgArchive
+        | Field::PkgExecutable
+        | Field::PkgMode
         | Field::PkgChecksums
         | Field::PkgAttest
         | Field::PkgProvenance
@@ -1561,6 +2110,32 @@ fn apply_package_choice(app: &mut App, field: Field, picked: String) -> Result<(
         return Ok(());
     };
     match field {
+        Field::PkgAdapter => {
+            if let Some(adapter) = Ecosystem::ALL
+                .iter()
+                .find(|e| ecosystem_label(**e) == picked)
+            {
+                pkg.adapter = *adapter;
+            }
+        }
+        Field::PkgMatrix => pkg.matrix = picked == "yes",
+        Field::PkgCompress => pkg.compress = (picked == "brotli").then_some(picked),
+        Field::PkgArchive => {
+            pkg.archive = match picked.as_str() {
+                "auto" => Some(ArchiveFormat::Auto),
+                "tar.gz" => Some(ArchiveFormat::TarGz),
+                "zip" => Some(ArchiveFormat::Zip),
+                _ => None,
+            }
+        }
+        Field::PkgExecutable => {
+            pkg.executable = match picked.as_str() {
+                "yes" => Some(true),
+                "no" => Some(false),
+                _ => None,
+            }
+        }
+
         Field::PkgMode => {
             pkg.mode = if picked == "publish" {
                 Mode::Publish
@@ -1676,6 +2251,126 @@ fn apply_check(app: &mut App, field: Field, picked: Vec<String>) -> Result<()> {
 
 fn apply_text(app: &mut App, field: Field, buffer: String) -> Result<()> {
     match field {
+        Field::Provider => {
+            if let Some(provider) = optional(&buffer) {
+                app.config.provider = provider;
+            } else {
+                app.status = Some("Not saved: provider cannot be blank".into());
+                return Ok(());
+            }
+        }
+        Field::ToolVersion => app.config.otf_release_version = optional(&buffer),
+        Field::NpmSecret | Field::CargoSecret => {
+            let name = buffer.trim();
+            if name.is_empty()
+                || name.to_ascii_uppercase().starts_with("GITHUB_")
+                || name.chars().next().unwrap().is_ascii_digit()
+                || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                app.status = Some(
+                    "Not saved: use a secret name with letters, digits, and underscores".into(),
+                );
+                return Ok(());
+            }
+            if field == Field::NpmSecret {
+                app.config.secrets.npm = name.into();
+            } else {
+                app.config.secrets.cargo = name.into();
+            }
+        }
+        Field::AddIgnorePaths => {
+            let Some(name) = optional(&buffer) else {
+                app.status = Some("Not saved: package name cannot be blank".into());
+                return Ok(());
+            };
+            app.modal = Some(list(
+                "Publish ignore globs",
+                app.config.publish_ignore_paths_for(&name),
+                Field::IgnorePaths(name),
+            ));
+            return Ok(());
+        }
+        Field::AddPackage => {
+            let Some(name) = optional(&buffer) else {
+                app.status = Some("Not saved: package name cannot be blank".into());
+                return Ok(());
+            };
+            if app.config.package(&name).is_some() {
+                app.status = Some("Not saved: this package already exists".into());
+                return Ok(());
+            }
+            let entry: PackageEntry = toml::from_str(&format!(
+                "name = {}\nadapter = \"generic\"\nmode = \"build-only\"\n",
+                serde_json::to_string(&name).unwrap()
+            ))?;
+            app.config.packages.push(entry);
+            app.goto(View::Package(name));
+        }
+        Field::TagFormat => return apply_choice(app, field, buffer),
+        Field::PkgTagFormat => return apply_package_choice(app, field, buffer),
+        Field::Target(index, part) => {
+            let name = view_package(&app.view).unwrap().to_string();
+            let pkg = app
+                .config
+                .packages
+                .iter_mut()
+                .find(|p| p.name == name)
+                .unwrap();
+            let value = buffer.trim().to_string();
+            let invalid_identity = matches!(part, TargetPart::Name | TargetPart::Arch)
+                && (value.is_empty()
+                    || pkg.targets.iter().enumerate().any(|(i, target)| {
+                        i != index
+                            && if part == TargetPart::Name {
+                                target.name == value && target.arch == pkg.targets[index].arch
+                            } else {
+                                target.name == pkg.targets[index].name && target.arch == value
+                            }
+                    }));
+            if invalid_identity {
+                app.status = Some(
+                    "Not saved: target name and architecture must be nonempty and unique".into(),
+                );
+                return Ok(());
+            }
+            let target = &mut pkg.targets[index];
+            match part {
+                TargetPart::Name => target.name = value,
+                TargetPart::Arch => target.arch = value,
+                TargetPart::Triple => target.triple = value,
+                TargetPart::Runner => target.runner = value,
+                TargetPart::StageAs => target.stage_as = value,
+                TargetPart::Ext => target.ext = value,
+                _ => return Ok(()),
+            }
+        }
+        Field::PkgName => {
+            let old = view_package(&app.view).unwrap().to_string();
+            let Some(name) = optional(&buffer) else {
+                app.status = Some("Not saved: package name cannot be blank".into());
+                return Ok(());
+            };
+            if name != old && app.config.package(&name).is_some() {
+                app.status = Some("Not saved: this package name already exists".into());
+                return Ok(());
+            }
+            app.config
+                .packages
+                .iter_mut()
+                .find(|p| p.name == old)
+                .unwrap()
+                .name = name.clone();
+            if let Some(paths) = app.config.publish.ignore_paths.remove(&old) {
+                app.config.publish.ignore_paths.insert(name.clone(), paths);
+            }
+            for skipped in &mut app.config.skip_publish {
+                if *skipped == old {
+                    *skipped = name.clone();
+                }
+            }
+            app.goto(View::Package(name));
+        }
+
         Field::DefaultBranch => match optional(&buffer) {
             Some(branch) => app.config.default_branch = branch,
             None => {
@@ -1684,11 +2379,20 @@ fn apply_text(app: &mut App, field: Field, buffer: String) -> Result<()> {
             }
         },
         Field::SnapshotTag => app.config.snapshot_tag = optional(&buffer),
-        Field::Hook(stage) => set_hook_commands(&mut app.config, stage, parse_csv(&buffer)),
+        Field::Hook(stage) => set_hook_commands(
+            &mut app.config,
+            stage,
+            if buffer.is_empty() {
+                vec![]
+            } else {
+                vec![buffer]
+            },
+        ),
         Field::Setup(scope, index, part) => {
             return apply_setup_text(app, scope, index, part, buffer)
         }
-        Field::PkgCommand
+        Field::PkgBinName
+        | Field::PkgCommand
         | Field::PkgArtifacts
         | Field::PkgChangelog
         | Field::PkgManifest
@@ -1752,8 +2456,20 @@ fn apply_setup_text(
     match part {
         SetupPart::Uses => step.uses = optional(&buffer),
         SetupPart::With => step.with = with.unwrap_or_default(),
-        SetupPart::Run => step.run = parse_csv(&buffer),
-        SetupPart::Targets => step.targets = parse_csv(&buffer),
+        SetupPart::Run => {
+            step.run = if buffer.is_empty() {
+                vec![]
+            } else {
+                vec![buffer]
+            }
+        }
+        SetupPart::Targets => {
+            step.targets = buffer
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect()
+        }
     }
     // A step blanked of both its action and its script is dropped rather than left as a hole in an
     // ordered list. For a package this can empty the list, which is exactly how it opts out.
@@ -1784,12 +2500,14 @@ fn apply_package_text(app: &mut App, field: Field, buffer: String) -> Result<()>
         return Ok(());
     };
     match field {
+        Field::PkgBinName => pkg.bin_name = optional(&buffer),
         Field::PkgCommand => pkg.command = buffer.trim().to_string(),
         Field::PkgArtifacts => pkg.artifacts = buffer.trim().to_string(),
         Field::PkgChangelog => {
+            let previous = pkg.changelog.clone();
             pkg.changelog = optional(&buffer);
             if let Err(err) = pkg.validate_release_identity() {
-                pkg.changelog = None;
+                pkg.changelog = previous;
                 app.status = Some(format!("Not saved: {err}"));
                 return Ok(());
             }
@@ -1885,6 +2603,9 @@ fn footer_lines(app: &App, entries: &[Entry]) -> Vec<Line<'static>> {
     };
 
     let keys = match (&app.view, &app.modal) {
+        (_, Some(Modal::List { .. })) => {
+            "[enter] edit entry  [a/d] add/delete  [ctrl+s] save  [esc] cancel"
+        }
         (_, Some(Modal::Check { .. })) => "[space] toggle  [enter] confirm  [esc] cancel",
         (_, Some(_)) => "[enter] confirm  [esc] cancel",
         (View::Settings, None) => "[↑↓/jk] move  [enter] edit  [q] quit",
@@ -1941,6 +2662,18 @@ fn screen_lines(entries: &[Entry], cursor: usize) -> (Vec<Line<'static>>, Vec<us
     (lines, row_lines)
 }
 
+fn input_tail(buffer: &str, width: usize) -> String {
+    buffer
+        .replace('\n', "↵")
+        .chars()
+        .rev()
+        .take(width)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
 fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
     let body: Vec<Line<'static>> = match modal {
         Modal::List {
@@ -1949,14 +2682,23 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
             editing,
             ..
         } => {
+            let capacity = area.height.saturating_sub(10).max(1) as usize;
+            let start = cursor.saturating_sub(capacity.saturating_sub(1));
             let mut lines = items
                 .iter()
                 .enumerate()
+                .skip(start)
+                .take(capacity)
                 .map(|(i, value)| choice_line(&value.replace('\n', " ↵ "), i == *cursor))
                 .collect::<Vec<_>>();
             if let Some(buffer) = editing {
-                lines.push(Line::raw(format!("Edit: {buffer}▏")));
-                lines.push(Line::raw("Enter: accept entry · Esc: cancel entry"));
+                lines.push(Line::raw(format!(
+                    "Edit: {}▏",
+                    input_tail(buffer, area.width.saturating_sub(17).min(65) as usize)
+                )));
+                lines.push(Line::raw(
+                    "Enter: accept · Alt+Enter: newline · Ctrl+u: clear · Esc: cancel",
+                ));
             } else {
                 if items.is_empty() {
                     lines.push(Line::raw("(empty)"));
@@ -1989,7 +2731,10 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
             Line::raw(""),
             Line::from(vec![
                 Span::raw("  "),
-                Span::styled(buffer.clone(), Style::new().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    input_tail(buffer, area.width.saturating_sub(13).min(70) as usize),
+                    Style::new().add_modifier(Modifier::BOLD),
+                ),
                 Span::styled("▏", Style::new().fg(ACCENT)),
             ]),
         ],
@@ -2007,15 +2752,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
     f.render_widget(Clear, rect);
     let focused = match modal {
         Modal::Choice { cursor, .. } | Modal::Check { cursor, .. } => *cursor,
-        Modal::List {
-            cursor, editing, ..
-        } => {
-            if editing.is_some() {
-                body.len().saturating_sub(1)
-            } else {
-                *cursor
-            }
-        }
+        Modal::List { .. } => body.len().saturating_sub(1),
         Modal::Text { .. } => 0,
     };
     let scroll = focused.saturating_sub(rect.height.saturating_sub(3) as usize) as u16;
@@ -2343,6 +3080,285 @@ mod tests {
 
     /// The whole point of the screen: every setting shows what it is currently set to, without
     /// opening it. The old menu showed only names, so the value was one prompt away at all times.
+    #[test]
+    fn repository_controls_save_and_change_generated_workflow() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = config();
+        cfg.packages
+            .push(pkg("rust-lib", Ecosystem::Cargo, Mode::Publish));
+        let mut app = test_app(root.path(), cfg);
+        app.goto(View::Settings);
+        apply_text(&mut app, Field::ToolVersion, "v0.32.0".into()).unwrap();
+        apply_text(&mut app, Field::NpmSecret, "ORG_NPM_TOKEN".into()).unwrap();
+        apply_text(&mut app, Field::CargoSecret, "ORG_CARGO_TOKEN".into()).unwrap();
+        apply_list(
+            &mut app,
+            Field::DiscoveryNpm,
+            vec!["packages/*".into(), "!packages/private".into()],
+        )
+        .unwrap();
+        apply_list(
+            &mut app,
+            Field::IgnorePaths("@x/sdk".into()),
+            vec!["**/*.md".into()],
+        )
+        .unwrap();
+        apply_choice(&mut app, Field::TagFormat, "Custom…".into()).unwrap();
+        assert!(matches!(app.modal, Some(Modal::Text { .. })));
+        apply_text(&mut app, Field::TagFormat, "sdk-{version}".into()).unwrap();
+        apply_list(
+            &mut app,
+            Field::LegacyTagFormats,
+            vec!["old-sdk-{version}".into()],
+        )
+        .unwrap();
+        let saved = ReleaseConfig::load(root.path()).unwrap();
+        assert_eq!(saved.secrets.cargo, "ORG_CARGO_TOKEN");
+        assert_eq!(saved.discovery.npm, vec!["packages/*", "!packages/private"]);
+        assert_eq!(saved.publish_ignore_paths_for("@x/sdk"), ["**/*.md"]);
+        let workflow = crate::init::render_workflow_for_root(&saved, root.path());
+        assert!(workflow.contains("secrets.ORG_NPM_TOKEN"), "{workflow}");
+        assert!(workflow.contains("secrets.ORG_CARGO_TOKEN"), "{workflow}");
+        assert!(workflow.contains("/v0.32.0/install.sh"), "{workflow}");
+        assert_eq!(saved.tag_format, "sdk-{version}");
+        assert_eq!(saved.legacy_tag_formats, vec!["old-sdk-{version}"]);
+    }
+
+    #[test]
+    fn package_controls_round_trip_and_restore_inherited_setup() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = config();
+        cfg.packages[0].adapter = Ecosystem::Generic;
+        cfg.packages[0].mode = Mode::BuildOnly;
+        cfg.setup = Setup {
+            uses: Some("shared/action@v1".into()),
+            ..Setup::default()
+        }
+        .into();
+        cfg.packages[0].setup = Some(SetupSteps::default());
+        let mut app = test_app(root.path(), cfg);
+        apply_text(&mut app, Field::PkgBinName, "sdk-cli".into()).unwrap();
+        apply_text(&mut app, Field::PkgManifest, "package.json".into()).unwrap();
+        apply_text(&mut app, Field::PkgVersionField, "metadata.version".into()).unwrap();
+        apply_choice(&mut app, Field::PkgCompress, "brotli".into()).unwrap();
+        apply_choice(&mut app, Field::PkgArchive, "zip".into()).unwrap();
+        apply_choice(&mut app, Field::PkgExecutable, "no".into()).unwrap();
+        apply_list(
+            &mut app,
+            Field::PkgInclude,
+            vec!["LICENSE".into(), "types/*.d.ts".into()],
+        )
+        .unwrap();
+        apply_list(
+            &mut app,
+            Field::PkgLegacyTags,
+            vec!["sdk-old-{version}".into()],
+        )
+        .unwrap();
+        apply_text(&mut app, Field::PkgTagFormat, "sdk-new-{version}".into()).unwrap();
+        let saved = ReleaseConfig::load(root.path()).unwrap();
+        let pkg = saved.package("@x/sdk").unwrap();
+        assert_eq!(pkg.bin_name.as_deref(), Some("sdk-cli"));
+        assert_eq!(pkg.compress.as_deref(), Some("brotli"));
+        assert_eq!(pkg.archive, Some(ArchiveFormat::Zip));
+        assert_eq!(pkg.executable, Some(false));
+        assert_eq!(pkg.include, vec!["LICENSE", "types/*.d.ts"]);
+        assert_eq!(pkg.legacy_tag_formats, vec!["sdk-old-{version}"]);
+        assert_eq!(pkg.manifest.as_deref(), Some("package.json"));
+        assert_eq!(pkg.version_field.as_deref(), Some("metadata.version"));
+        let entries = app.entries();
+        app.cursor = rows(&entries)
+            .iter()
+            .position(|r| r.field == Field::RestoreSetup)
+            .unwrap();
+        open_editor(&mut app).unwrap();
+        let saved = ReleaseConfig::load(root.path()).unwrap();
+        assert!(saved.packages[0].setup.is_none());
+        assert_eq!(
+            effective_setup(&saved, &saved.packages[0]).steps()[0]
+                .uses
+                .as_deref(),
+            Some("shared/action@v1")
+        );
+    }
+
+    #[test]
+    fn target_detail_edit_and_custom_package_creation_persist() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = test_app(root.path(), config());
+        apply_text(&mut app, Field::AddPackage, "custom-app".into()).unwrap();
+        assert_eq!(app.view, View::Package("custom-app".into()));
+        apply_choice(&mut app, Field::PkgAdapter, "generic".into()).unwrap();
+        apply_text(&mut app, Field::PkgManifest, "version.json".into()).unwrap();
+        app.goto(View::Targets("custom-app".into()));
+        app.cursor = 0;
+        open_editor(&mut app).unwrap();
+        for (part, value) in [
+            (TargetPart::Name, "custom-os"),
+            (TargetPart::Arch, "arm64"),
+            (TargetPart::Triple, "aarch64-unknown-linux-musl"),
+            (TargetPart::Runner, "self-hosted"),
+            (TargetPart::StageAs, "custom-arm64"),
+            (TargetPart::Ext, ".bin"),
+        ] {
+            apply_text(&mut app, Field::Target(0, part), value.into()).unwrap();
+        }
+        apply_choice(&mut app, Field::Target(0, TargetPart::Cross), "yes".into()).unwrap();
+        apply_choice(&mut app, Field::Target(0, TargetPart::Vm), "yes".into()).unwrap();
+        let saved = ReleaseConfig::load(root.path()).unwrap();
+        let pkg = saved.package("custom-app").unwrap();
+        assert!(pkg.matrix);
+        assert_eq!(
+            pkg.targets[0],
+            Target {
+                name: "custom-os".into(),
+                arch: "arm64".into(),
+                triple: "aarch64-unknown-linux-musl".into(),
+                runner: "self-hosted".into(),
+                stage_as: "custom-arm64".into(),
+                ext: ".bin".into(),
+                cross: true,
+                vm: true,
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_values_do_not_replace_saved_config() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = test_app(root.path(), config());
+        app.save().unwrap();
+        let before = std::fs::read_to_string(root.path().join(CONFIG_FILE)).unwrap();
+        apply_text(&mut app, Field::NpmSecret, "invalid secret".into()).unwrap();
+        apply_list(
+            &mut app,
+            Field::IgnorePaths("@x/sdk".into()),
+            vec!["[bad".into()],
+        )
+        .unwrap();
+        apply_list(
+            &mut app,
+            Field::PkgLegacyTags,
+            vec!["no-version-placeholder".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(CONFIG_FILE)).unwrap(),
+            before
+        );
+    }
+
+    /// The inventory must be updated when a configuration field is added. Row/editor tests
+    /// separately verify the declared controls actually open and save their values.
+    #[test]
+    fn schema_inventory_covers_every_configuration_field() {
+        let schema = include_str!("config.rs");
+        for (structure, expected) in [
+            ("ReleaseConfig", "adapters otf_release_version skip_publish hooks setup publish secrets discovery packages snapshot_tag tag_format legacy_tag_formats provider default_branch changelog_strategy changelog_scope github_release_notes"),
+            ("PackageEntry", "name adapter mode matrix targets command artifacts bin_name compress manifest version_field publish archive attest provenance checksums include executable tag_format legacy_tag_formats changelog setup"),
+            ("Target", "name arch triple runner stage_as ext cross vm"),
+            ("Setup", "uses with run targets"),
+            ("Hooks", "pre_version post_version pre_publish post_publish"),
+            ("Secrets", "npm cargo"), ("PublishConfig", "ignore_paths"), ("Discovery", "npm"),
+        ] {
+            let declaration = schema.split(&format!("pub struct {structure} {{")).nth(1).unwrap().split("\n}").next().unwrap();
+            let mut actual = declaration.lines().filter_map(|line| line.trim().strip_prefix("pub ").and_then(|line| line.split_once(':').map(|(name,_)| name.to_string()))).collect::<Vec<_>>();
+            let mut expected = expected.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+            actual.sort(); expected.sort();
+            assert_eq!(actual, expected, "update the TUI coverage inventory for {structure}");
+        }
+    }
+
+    #[test]
+    fn long_list_editor_shows_focused_entry_and_save_controls() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let modal = Modal::List {
+            title: "Commands".into(),
+            items: (0..40).map(|i| format!("echo command-{i}")).collect(),
+            cursor: 39,
+            editing: None,
+            field: Field::Hook(HookStage::PreVersion),
+        };
+        terminal
+            .draw(|frame| draw_modal(frame, &modal, frame.area()))
+            .unwrap();
+        let screen = buffer_text(terminal.backend()).join("\n");
+        assert!(screen.contains("❯ echo command-39"), "{screen}");
+        assert!(screen.contains("Ctrl+s: save list"), "{screen}");
+    }
+
+    #[test]
+    fn matrix_npm_package_shows_effective_publish_controls() {
+        let mut cfg = config();
+        cfg.packages[0].mode = Mode::BuildOnly;
+        cfg.packages[0].matrix = true;
+        let entries = build(&cfg, &View::Package("@x/sdk".into()), &[]);
+        assert!(rows(&entries)
+            .iter()
+            .any(|row| row.field == Field::PkgProvenance));
+        assert!(!rows(&entries)
+            .iter()
+            .any(|row| row.field == Field::PkgArchive));
+    }
+
+    #[test]
+    fn missing_controls_are_reachable_in_their_screens() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = config();
+        cfg.packages[0].adapter = Ecosystem::Generic;
+        cfg.packages[0].mode = Mode::BuildOnly;
+        cfg.packages[0].targets = vec![Target::resolved("linux-musl", "x86_64")];
+        let mut app = test_app(root.path(), cfg);
+        for (view, fields) in [
+            (
+                View::Settings,
+                vec![
+                    Field::ToolVersion,
+                    Field::NpmSecret,
+                    Field::CargoSecret,
+                    Field::DiscoveryNpm,
+                ],
+            ),
+            (
+                View::Package("@x/sdk".into()),
+                vec![
+                    Field::PkgName,
+                    Field::PkgAdapter,
+                    Field::PkgMatrix,
+                    Field::PkgBinName,
+                    Field::PkgCompress,
+                    Field::PkgArchive,
+                    Field::PkgInclude,
+                    Field::PkgExecutable,
+                    Field::PkgLegacyTags,
+                    Field::PkgManifest,
+                    Field::PkgVersionField,
+                    Field::PkgPublishCommand,
+                ],
+            ),
+            (
+                View::Target("@x/sdk".into(), 0),
+                TargetPart::ALL
+                    .iter()
+                    .map(|part| Field::Target(0, *part))
+                    .collect(),
+            ),
+        ] {
+            app.goto(view);
+            for field in fields {
+                let entries = app.entries();
+                app.cursor = rows(&entries)
+                    .iter()
+                    .position(|row| row.field == field)
+                    .unwrap_or_else(|| panic!("missing row {field:?}"));
+                open_editor(&mut app).unwrap();
+                assert!(app.modal.is_some(), "missing editor {field:?}");
+                app.modal = None;
+            }
+        }
+    }
+
     #[test]
     fn every_setting_row_carries_its_current_value() {
         let entries = build(&config(), &View::Settings, &[]);
@@ -2724,12 +3740,16 @@ mod tests {
             "│❯ Tag format                v{version}                        │"
         );
         assert_eq!(trimmed.iter().filter(|l| l.contains('❯')).count(), 1);
-        // A blank line separates each section from the one above it.
+        // A blank line separates each section even as new settings are added.
+        let changelog = trimmed
+            .iter()
+            .position(|line| line.contains("CHANGELOG"))
+            .unwrap();
         assert_eq!(
-            trimmed[7],
+            trimmed[changelog - 1],
             "│                                                              │"
         );
-        assert!(trimmed[8].contains("CHANGELOG"));
+        assert!(trimmed.iter().any(|line| line.contains("REGISTRY SECRETS")));
         // The focused row's hint occupies the footer.
         assert!(
             screen
