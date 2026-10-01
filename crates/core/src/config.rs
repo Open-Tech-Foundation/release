@@ -973,6 +973,183 @@ pub struct ReleaseConfig {
     pub github_release_notes: GithubReleaseNotes,
 }
 
+fn config_items_equal(left: &toml_edit::Item, right: &toml_edit::Item) -> bool {
+    fn tables_equal(left: &toml_edit::Table, right: &toml_edit::Table) -> bool {
+        left.len() == right.len()
+            && left.iter().all(|(key, item)| {
+                right
+                    .get(key)
+                    .is_some_and(|other| config_items_equal(item, other))
+            })
+    }
+    match (left, right) {
+        (toml_edit::Item::Table(left), toml_edit::Item::Table(right)) => tables_equal(left, right),
+        (toml_edit::Item::ArrayOfTables(left), toml_edit::Item::ArrayOfTables(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right.iter())
+                    .all(|(a, b)| tables_equal(a, b))
+        }
+        _ => left.to_string() == right.to_string(),
+    }
+}
+
+/// Apply a semantic configuration diff to the original TOML syntax tree.
+fn patch_config_table(
+    document: &mut toml_edit::Table,
+    before: &toml_edit::Table,
+    after: &toml_edit::Table,
+) {
+    for (key, _) in before.iter() {
+        if !after.contains_key(key) {
+            document.remove(key);
+        }
+    }
+    for (key, new) in after.iter() {
+        let old = before.get(key);
+        if old.is_some_and(|old| config_items_equal(old, new)) {
+            continue;
+        }
+        if let Some(new_table) = new.as_table() {
+            let empty = toml_edit::Table::new();
+            let old_table = old.and_then(toml_edit::Item::as_table).unwrap_or(&empty);
+            if let Some(inline) = document
+                .get(key)
+                .and_then(toml_edit::Item::as_inline_table)
+                .cloned()
+            {
+                let decor = inline.decor().clone();
+                let mut table = inline.into_table();
+                patch_config_table(&mut table, old_table, new_table);
+                let mut inline = table.into_inline_table();
+                *inline.decor_mut() = decor;
+                document.insert(
+                    key,
+                    toml_edit::Item::Value(toml_edit::Value::InlineTable(inline)),
+                );
+            } else {
+                if !document.get(key).is_some_and(toml_edit::Item::is_table) {
+                    document.insert(key, toml_edit::Item::Table(toml_edit::Table::new()));
+                }
+                patch_config_table(document[key].as_table_mut().unwrap(), old_table, new_table);
+            }
+        } else if let Some(new_tables) = new.as_array_of_tables() {
+            let old_tables = old.and_then(toml_edit::Item::as_array_of_tables);
+            let original_value = document
+                .get(key)
+                .and_then(toml_edit::Item::as_value)
+                .cloned();
+            let inline_array = original_value.as_ref().map(|value| {
+                let mut tables = toml_edit::ArrayOfTables::new();
+                if let Some(array) = value.as_array() {
+                    for value in array.iter() {
+                        if let Some(inline) = value.as_inline_table() {
+                            tables.push(inline.clone().into_table());
+                        }
+                    }
+                } else if let Some(inline) = value.as_inline_table() {
+                    tables.push(inline.clone().into_table());
+                }
+                tables
+            });
+            let legacy_table = document
+                .get(key)
+                .and_then(toml_edit::Item::as_table)
+                .cloned();
+            let legacy_array = legacy_table.map(|table| {
+                let mut tables = toml_edit::ArrayOfTables::new();
+                tables.push(table);
+                tables
+            });
+            let actual = document
+                .get(key)
+                .and_then(toml_edit::Item::as_array_of_tables)
+                .or(legacy_array.as_ref())
+                .or(inline_array.as_ref());
+            let mut tables = toml_edit::ArrayOfTables::new();
+            for (index, new_table) in new_tables.iter().enumerate() {
+                let identity = |table: &toml_edit::Table| {
+                    table
+                        .get("name")
+                        .and_then(toml_edit::Item::as_str)
+                        .map(|name| {
+                            (
+                                name.to_string(),
+                                table
+                                    .get("arch")
+                                    .and_then(toml_edit::Item::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                            )
+                        })
+                };
+                let matched = old_tables.and_then(|old| {
+                    old.iter()
+                        .position(|table| {
+                            config_items_equal(
+                                &toml_edit::Item::Table(table.clone()),
+                                &toml_edit::Item::Table(new_table.clone()),
+                            )
+                        })
+                        .or_else(|| {
+                            identity(new_table).and_then(|id| {
+                                old.iter().position(|t| identity(t) == Some(id.clone()))
+                            })
+                        })
+                        .or_else(|| {
+                            (old.len() == new_tables.len() || identity(new_table).is_none())
+                                .then_some(index)
+                        })
+                });
+                let old_table = matched.and_then(|i| old_tables.and_then(|t| t.get(i)));
+                // Match syntax nodes by identity as inline/default fields can be absent in the
+                // normalized model; fall back to position for setup steps and renamed entries.
+                let actual_table = actual.and_then(|tables| {
+                    old_table
+                        .and_then(identity)
+                        .and_then(|id| tables.iter().find(|t| identity(t) == Some(id.clone())))
+                        .or_else(|| matched.and_then(|i| tables.get(i)))
+                });
+                let mut table = actual_table.cloned().unwrap_or_else(|| new_table.clone());
+                if let Some(old_table) = old_table {
+                    patch_config_table(&mut table, old_table, new_table);
+                }
+                tables.push(table);
+            }
+            if let Some(original) = original_value {
+                let mut value = if original.is_inline_table() && tables.len() == 1 {
+                    toml_edit::Value::InlineTable(
+                        tables.get(0).unwrap().clone().into_inline_table(),
+                    )
+                } else {
+                    let mut array = original.as_array().cloned().unwrap_or_default();
+                    array.clear();
+                    for table in tables.iter() {
+                        array.push(toml_edit::Value::InlineTable(
+                            table.clone().into_inline_table(),
+                        ));
+                    }
+                    toml_edit::Value::Array(array)
+                };
+                *value.decor_mut() = original.decor().clone();
+                document.insert(key, toml_edit::Item::Value(value));
+            } else {
+                document.insert(key, toml_edit::Item::ArrayOfTables(tables));
+            }
+        } else {
+            let mut replacement = new.clone();
+            if let (Some(value), Some(previous)) = (
+                replacement.as_value_mut(),
+                document.get(key).and_then(toml_edit::Item::as_value),
+            ) {
+                *value.decor_mut() = previous.decor().clone();
+            }
+            document.insert(key, replacement);
+        }
+    }
+}
+
 /// The strategy for managing changelogs.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1264,6 +1441,24 @@ impl ReleaseConfig {
         Ok(())
     }
 
+    /// Save only changed schema values, retaining comments, formatting, and extension keys
+    /// from the existing document. Normalize both configurations before comparing defaults.
+    pub fn save_preserving(&self, root: &Path) -> Result<()> {
+        let path = Self::path(root);
+        let original = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return self.save(root),
+            Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+        };
+        let previous: Self = toml::from_str(&original)?;
+        let before = toml::to_string_pretty(&previous)?.parse::<toml_edit::DocumentMut>()?;
+        let after = toml::to_string_pretty(self)?.parse::<toml_edit::DocumentMut>()?;
+        let mut document = original.parse::<toml_edit::DocumentMut>()?;
+        patch_config_table(document.as_table_mut(), before.as_table(), after.as_table());
+        fs::write(&path, document.to_string())
+            .with_context(|| format!("writing {}", path.display()))
+    }
+
     /// Names of all `build-only` packages — the set `publish` must skip (they ship via the
     /// GitHub Release the workflow creates, not through a registry).
     pub fn build_only_names(&self) -> Vec<String> {
@@ -1511,6 +1706,117 @@ mod tests {
             back.build_only_names(),
             vec!["web-compiler".to_string(), "private-tool".to_string()]
         );
+    }
+
+    #[test]
+    fn preserving_save_keeps_comments_unknown_keys_and_unedited_values() {
+        let root = tempfile::tempdir().unwrap();
+        let text = "# repo settings\nadapters = ['npm']\ntag_format = 'v{version}' # tag comment\ncustom_extension = 'keep'\n\n# package note\n[[package]]\nname = '@x/sdk'\nadapter = 'npm'\nmode = 'publish'\nprovenance = true # signing\nbin_name = 'handwritten' # binary note\n\n[[package.targets]]\nname = 'linux'\narch = 'x86_64'\nrunner = 'self-hosted' # runner note\n";
+        fs::write(root.path().join(CONFIG_FILE), text).unwrap();
+        let mut cfg = ReleaseConfig::load(root.path()).unwrap();
+        cfg.save_preserving(root.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join(CONFIG_FILE)).unwrap(),
+            text
+        );
+        cfg.packages[0].checksums = true;
+        cfg.save_preserving(root.path()).unwrap();
+        let saved = fs::read_to_string(root.path().join(CONFIG_FILE)).unwrap();
+        for original in [
+            "# repo settings",
+            "tag_format = 'v{version}' # tag comment",
+            "custom_extension = 'keep'",
+            "# package note",
+            "bin_name = 'handwritten' # binary note",
+            "runner = 'self-hosted' # runner note",
+        ] {
+            assert!(saved.contains(original), "{saved}");
+        }
+        assert!(ReleaseConfig::load(root.path()).unwrap().packages[0].checksums);
+        cfg.packages[0].provenance = false;
+        cfg.save_preserving(root.path()).unwrap();
+        assert!(!ReleaseConfig::load(root.path()).unwrap().packages[0].provenance);
+    }
+
+    #[test]
+    fn preserving_save_migrates_legacy_setup_and_preserves_package_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let text = "adapters = []\n\n# setup comment\n[setup]\nuses = 'example/action@v1' # action comment\n\n# package comment\n[[package]]\nname = 'custom'\nadapter = 'generic'\nmode = 'build-only'\nmanifest = 'version.json' # manifest comment\n";
+        fs::write(root.path().join(CONFIG_FILE), text).unwrap();
+        let mut cfg = ReleaseConfig::load(root.path()).unwrap();
+        cfg.setup.steps_mut()[0].run = vec!["echo one,two".into()];
+        cfg.packages[0].name = "renamed".into();
+        cfg.save_preserving(root.path()).unwrap();
+        let saved = fs::read_to_string(root.path().join(CONFIG_FILE)).unwrap();
+        assert!(saved.contains("# setup comment"), "{saved}");
+        assert!(saved.contains("# action comment"), "{saved}");
+        assert!(saved.contains("# package comment"), "{saved}");
+        assert!(saved.contains("# manifest comment"), "{saved}");
+        let cfg = ReleaseConfig::load(root.path()).unwrap();
+        assert_eq!(cfg.packages[0].name, "renamed");
+        assert_eq!(cfg.setup.steps()[0].run, vec!["echo one,two"]);
+    }
+
+    #[test]
+    fn preserving_save_updates_nested_target_fields_and_ignore_policies() {
+        let root = tempfile::tempdir().unwrap();
+        let text = "adapters = ['npm']\n\n[publish.ignore_paths]\n'@x/sdk' = ['docs/**'] # policy comment\n\n[[package]]\nname = '@x/sdk'\nadapter = 'npm'\nmode = 'publish'\n\n[[package.targets]]\nname = 'linux'\narch = 'x86_64'\nrunner = 'ubuntu-latest' # target comment\n";
+        fs::write(root.path().join(CONFIG_FILE), text).unwrap();
+        let mut cfg = ReleaseConfig::load(root.path()).unwrap();
+        cfg.packages[0].targets[0].runner = "self-hosted".into();
+        cfg.publish
+            .ignore_paths
+            .insert("@x/sdk".into(), vec!["**/*.md".into()]);
+        cfg.save_preserving(root.path()).unwrap();
+        let saved = fs::read_to_string(root.path().join(CONFIG_FILE)).unwrap();
+        assert!(saved.contains("# policy comment"), "{saved}");
+        assert!(saved.contains("# target comment"), "{saved}");
+        let cfg = ReleaseConfig::load(root.path()).unwrap();
+        assert_eq!(cfg.packages[0].targets[0].runner, "self-hosted");
+        assert_eq!(cfg.publish_ignore_paths_for("@x/sdk"), ["**/*.md"]);
+    }
+
+    #[test]
+    fn preserving_save_keeps_inline_extension_keys_and_reordered_step_comments() {
+        let root = tempfile::tempdir().unwrap();
+        let text = "adapters = []\nsecrets = { npm = 'NPM_TOKEN', cargo = 'CARGO_REGISTRY_TOKEN', extension = 'keep' } # secrets comment\n\n# first step\n[[setup]]\nrun = ['echo first']\n\n# second step\n[[setup]]\nrun = ['echo second']\n";
+        fs::write(root.path().join(CONFIG_FILE), text).unwrap();
+        let mut cfg = ReleaseConfig::load(root.path()).unwrap();
+        cfg.secrets.npm = "ORG_NPM_TOKEN".into();
+        cfg.setup.steps_mut().remove(0);
+        cfg.save_preserving(root.path()).unwrap();
+        let saved = fs::read_to_string(root.path().join(CONFIG_FILE)).unwrap();
+        assert!(
+            saved.contains("extension = \"keep\"") || saved.contains("extension = 'keep'"),
+            "{saved}"
+        );
+        assert!(saved.contains("# secrets comment"), "{saved}");
+        assert!(saved.contains("# second step"), "{saved}");
+        assert!(!saved.contains("# first step"), "{saved}");
+        assert_eq!(
+            ReleaseConfig::load(root.path()).unwrap().setup.steps()[0].run,
+            vec!["echo second"]
+        );
+    }
+
+    #[test]
+    fn preserving_save_keeps_inline_package_and_setup_extensions() {
+        let root = tempfile::tempdir().unwrap();
+        let text = "adapters = []\npackage = [{ name = 'app', adapter = 'generic', mode = 'build-only', extension = 'keep' }] # package note\nsetup = { run = ['echo before'], extension = 'keep' } # setup note\n";
+        fs::write(root.path().join(CONFIG_FILE), text).unwrap();
+        let mut cfg = ReleaseConfig::load(root.path()).unwrap();
+        cfg.packages[0].checksums = true;
+        cfg.setup.steps_mut()[0].run = vec!["echo after".into()];
+        cfg.save_preserving(root.path()).unwrap();
+        let saved = fs::read_to_string(root.path().join(CONFIG_FILE)).unwrap();
+        assert!(saved.contains("# package note"), "{saved}");
+        assert!(saved.contains("# setup note"), "{saved}");
+        let document = saved.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(document["package"][0]["extension"].as_str(), Some("keep"));
+        assert_eq!(document["setup"]["extension"].as_str(), Some("keep"));
+        let cfg = ReleaseConfig::load(root.path()).unwrap();
+        assert!(cfg.packages[0].checksums);
+        assert_eq!(cfg.setup.steps()[0].run, vec!["echo after"]);
     }
 
     #[test]
