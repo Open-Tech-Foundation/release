@@ -41,7 +41,7 @@ pub fn run() -> Result<()> {
     }
 
     ui::step(&format!(
-        "Updating otf-release from v{current_version} to v{latest_version}…"
+        "Updating release from v{current_version} to v{latest_version}…"
     ));
 
     let (shell, arg, cmd) = if cfg!(windows) {
@@ -66,7 +66,7 @@ pub fn run() -> Result<()> {
 
     if status.success() {
         ui::ok(&format!(
-            "Updated otf-release from v{current_version} to v{latest_version}."
+            "Updated release from v{current_version} to v{latest_version}."
         ));
     } else {
         anyhow::bail!("Installation script failed with status: {}", status);

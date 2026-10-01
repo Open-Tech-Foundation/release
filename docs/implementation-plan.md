@@ -1,6 +1,6 @@
 # Implementation plan
 
-A phased build plan for `otf-release` v1, derived from the build order in `plan.md` §8. Each
+A phased build plan for `release` v1, derived from the build order in `plan.md` §8. Each
 phase is independently testable and lists explicit **acceptance criteria**. The Cargo workspace
 and module skeletons already exist (Phase 0 ✅); every command function is currently a
 `todo!()`.
@@ -29,7 +29,7 @@ Dependency order: 1 → 2 → 3 → 4 → 5, then 6, then 7. (5 needs 1–4; 6 n
 
 **Done.** Workspace (`core`, `adapters`, `cli`), domain types (`Pkg`, `Bump`, `DepKind`,
 `InternalDep`), the `Adapter` trait, command-module stubs, and the clap CLI surface. `cargo
-build` and `otf-release --help` both work.
+build` and `release --help` both work.
 
 ---
 
@@ -219,8 +219,8 @@ Tasks:
 
 **Done.** `render_workflow` is a pure function (golden-tested): a `build-matrix` job is emitted
 only when asset packages are selected, and the `publish` job then `needs` it, downloads
-artifacts to `.artifacts/`, and runs `otf-release publish --artifacts-dir .artifacts`; the
-libs-only form runs plain `otf-release publish`. Matrix triples carry `# edit me` markers.
+artifacts to `.artifacts/`, and runs `release publish --artifacts-dir .artifacts`; the
+libs-only form runs plain `release publish`. Matrix triples carry `# edit me` markers.
 Choices go through an `InitPrompt` trait (`StdinInitPrompt` real impl, `DEFAULT_TARGETS`
 defaults). Overwrite is guarded (warn unless `--force`). 4 unit tests (two golden renders,
 libs-only orchestrate, overwrite guard) plus a real-binary smoke test.
@@ -229,7 +229,7 @@ Tasks:
 1. Detect ecosystems (npm).
 2. Multi-select asset packages; prompt target triples (default set + `# edit me`).
 3. Emit `release.yml`: `build-matrix` (iff asset packages) → `publish` (`needs:`), artifact
-   download to `.artifacts/`, `otf-release publish`, correct secrets.
+   download to `.artifacts/`, `release publish`, correct secrets.
 4. Idempotent overwrite (`--force`); never re-manage after generation.
 
 **Acceptance:**
@@ -250,7 +250,7 @@ Tasks:
 - Module docs reference their `docs/` counterparts and stay in sync.
 
 **Deferred / N/A:**
-- **Dogfood self-release** — `otf-release` is a Rust binary, not an npm package, so releasing
+- **Dogfood self-release** — `release` is a Rust binary, not an npm package, so releasing
   *itself* through the npm adapter doesn't apply. Self-distribution (crates.io / GH release of
   the binary) is its own future task, separate from the npm-publishing it provides.
 

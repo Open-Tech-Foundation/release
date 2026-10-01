@@ -1,9 +1,9 @@
-# `otf-release version`
+# `release version`
 
 **Interactive. Run locally. Produces a release PR — never publishes, never writes to `main`.**
 
 ```
-otf-release version [--dry-run]
+release version [--dry-run]
 ```
 
 | Flag | Effect |

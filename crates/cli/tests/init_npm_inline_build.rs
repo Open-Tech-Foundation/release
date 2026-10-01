@@ -171,7 +171,7 @@ fn npm_init_injects_inline_build_and_strips_publish_hooks() {
     // `true` stays a string: an action input is always a string, and `inputs.esdev == 'true'`
     // would never match a YAML boolean.
     assert!(!yml.contains("esdev: true\n"));
-    assert!(yml.contains("        run: otf-release publish --package @acme/lib\n"));
+    assert!(yml.contains("        run: release publish --package @acme/lib\n"));
     assert!(
         !yml.contains("--artifacts-dir"),
         "no artifact staging for inline npm build"

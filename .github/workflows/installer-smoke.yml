@@ -55,8 +55,8 @@ jobs:
 
       - name: Installed binary runs
         run: |
-          command -v otf-release
-          otf-release --version
+          command -v release
+          release --version
 
       # Generated workflows pin OTF_RELEASE_VERSION so a pipeline is reproducible. If the pin were
       # ever ignored the installer would silently fall back to `latest` and every consumer would be
@@ -65,7 +65,7 @@ jobs:
       - name: A pinned version installs exactly that release
         run: |
           OTF_RELEASE_VERSION=v0.24.0 ${{ matrix.shell }} ./install.sh
-          got="$(otf-release --version | awk '{print $2}')"
+          got="$(release --version | awk '{print $2}')"
           if [ "$got" != "0.24.0" ]; then
             echo "::error::pin ignored — asked for 0.24.0, installed $got"
             exit 1
@@ -92,7 +92,7 @@ jobs:
       - name: Installed binary runs
         shell: pwsh
         run: |
-          $bin = Join-Path $env:USERPROFILE ".cargo\bin\otf-release.exe"
+          $bin = Join-Path $env:USERPROFILE ".cargo\bin\release.exe"
           if (-not (Test-Path $bin)) { throw "binary not found at $bin" }
           & $bin --version
           if ($LASTEXITCODE -ne 0) { throw "installed binary failed to run" }
@@ -104,7 +104,7 @@ jobs:
         run: |
           ./install.ps1
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 left exit code $LASTEXITCODE" }
-          $bin = Join-Path $env:USERPROFILE ".cargo\bin\otf-release.exe"
+          $bin = Join-Path $env:USERPROFILE ".cargo\bin\release.exe"
           $got = (& $bin --version) -replace '^\S+\s+', ''
           if ($got.Trim() -ne "0.24.0") {
             throw "pin ignored — asked for 0.24.0, installed $got"
@@ -125,11 +125,11 @@ jobs:
           fixture="$(mktemp -d)"
           mkdir -p "$fixture/bin"
           printf 'int main(){return 0;}' > "$fixture/m.c"
-          cc -o "$fixture/otf-release" "$fixture/m.c"
-          ( cd "$fixture" && tar -czf otf-release-linux-x86-64.tar.gz otf-release )
+          cc -o "$fixture/release" "$fixture/m.c"
+          ( cd "$fixture" && tar -czf release-linux-x86-64.tar.gz release )
           # Checksum the good archive, *then* corrupt it — the mismatch is the point.
-          ( cd "$fixture" && sha256sum otf-release-linux-x86-64.tar.gz | awk '{print $1"  "$2}' > checksums.txt )
-          printf 'TAMPER' >> "$fixture/otf-release-linux-x86-64.tar.gz"
+          ( cd "$fixture" && sha256sum release-linux-x86-64.tar.gz | awk '{print $1"  "$2}' > checksums.txt )
+          printf 'TAMPER' >> "$fixture/release-linux-x86-64.tar.gz"
 
           # Point every download at the fixture. Anchored on the RELEASE_BASE assignments rather
           # than on full URLs, so this survives changes to how the URL is composed — it only
@@ -151,8 +151,8 @@ jobs:
 
           # Control: the *untampered* fixture must install cleanly. Without this a fixture broken
           # in some unrelated way would also "refuse", and the test would pass for the wrong reason.
-          cp "$fixture/otf-release-linux-x86-64.tar.gz" "$fixture/tampered.tar.gz"
-          ( cd "$fixture" && tar -czf otf-release-linux-x86-64.tar.gz otf-release )
+          cp "$fixture/release-linux-x86-64.tar.gz" "$fixture/tampered.tar.gz"
+          ( cd "$fixture" && tar -czf release-linux-x86-64.tar.gz release )
           set +e
           sh "$fixture/install-test.sh" > control.log 2>&1
           control_code=$?
@@ -163,10 +163,10 @@ jobs:
             exit 1
           fi
           echo "Control: untampered fixture installs cleanly."
-          rm -f "$fixture/bin/otf-release"
+          rm -f "$fixture/bin/release"
 
           # Now the real case: same fixture, corrupted payload, unchanged checksums.txt.
-          mv "$fixture/tampered.tar.gz" "$fixture/otf-release-linux-x86-64.tar.gz"
+          mv "$fixture/tampered.tar.gz" "$fixture/release-linux-x86-64.tar.gz"
           set +e
           sh "$fixture/install-test.sh" > out.log 2>&1
           code=$?
@@ -177,7 +177,7 @@ jobs:
             echo "::error::installer accepted a tampered asset"
             exit 1
           fi
-          if [ -f "$fixture/bin/otf-release" ]; then
+          if [ -f "$fixture/bin/release" ]; then
             echo "::error::installer wrote a binary despite refusing"
             exit 1
           fi

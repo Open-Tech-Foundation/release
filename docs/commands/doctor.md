@@ -1,10 +1,10 @@
-# `otf-release doctor`
+# `release doctor`
 
 **Audit the release setup. Read-only.**
 
 ```
-otf-release doctor            # report; exits non-zero if any error was found
-otf-release doctor --strict   # also exit non-zero on warnings
+release doctor            # report; exits non-zero if any error was found
+release doctor --strict   # also exit non-zero on warnings
 ```
 
 Every other command acts at one moment: `check` gates a push, `version` cuts a release, `publish`
@@ -43,7 +43,7 @@ Severity is about **consequence**, not confidence.
 | `old-tool-pin` | suggestion | CI builds with an older tool than the binary you are running locally. |
 | `no-checksums` | suggestion | A build-only package ships assets with no `checksums.txt`, so a download cannot be verified as intact. |
 | `no-attestation` | suggestion | A build-only package ships assets with no signed provenance. A checksum can be replaced by whoever replaced the asset; an attestation cannot. |
-| `stale-workflow` | error | `.github/workflows/release.yml` has no job for a configured package. It will be versioned and tagged, then build nothing. Run `otf-release upgrade --force`. |
+| `stale-workflow` | error | `.github/workflows/release.yml` has no job for a configured package. It will be versioned and tagged, then build nothing. Run `release upgrade --force`. |
 | `shared-legacy-tag-format` | warning | A repo-wide `legacy_tag_formats` entry has no `{name}` while several packages are released, so every package reads the same release history. |
 | `setup-action-missing` | error | A `[[setup]]` step points at `uses: ./…` with no `action.yml` in the repo. GitHub resolves the path against the checkout and fails the job at startup, before doing any work. A published `owner/repo@v1` is resolved by GitHub, so it is not checked against disk. See [build-setup.md](../build-setup.md). |
 | `setup-targets-unknown` | warning | A `setup.targets` triple that no package the step applies to builds. It never matches `matrix.triple`, so the step is skipped on every row and the build fails later, at the command that needed the tool. |
@@ -56,7 +56,7 @@ Severity is about **consequence**, not confidence.
 `doctor` exits non-zero on any error, so it works as a gate:
 
 ```yaml
-- run: otf-release doctor
+- run: release doctor
 ```
 
 Use `--strict` to fail on warnings too, once the repo is clean enough to hold that line.

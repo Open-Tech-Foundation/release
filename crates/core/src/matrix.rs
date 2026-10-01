@@ -1,9 +1,9 @@
-//! `otf-release matrix` — emit a GitHub Actions matrix `include` from `release.toml`.
+//! `release matrix` — emit a GitHub Actions matrix `include` from `release.toml`.
 //!
 //! The generated workflow computes its build matrix by calling this at run time, so `release.yml`
 //! never carries a hand-maintained target list that can drift from `release.toml`. Each emitted
 //! entry already carries the reconciled facts (triple, runner, ext, cross, stage_as) so the build
-//! leg needs no further lookups — it just calls `otf-release build --target <name>/<arch>`.
+//! leg needs no further lookups — it just calls `release build --target <name>/<arch>`.
 
 use anyhow::{anyhow, bail, Result};
 

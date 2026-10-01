@@ -1,9 +1,9 @@
-# `otf-release upgrade`
+# `release upgrade`
 
 **Regenerates `.github/workflows/release.yml` from the existing `release.toml`.**
 
 ```
-otf-release upgrade [--force]
+release upgrade [--force]
 ```
 
 | Flag | Effect |
@@ -16,7 +16,7 @@ workflow.
 ## Why it exists
 
 `init` writes both `release.toml` and `release.yml`, but the workflow is a scaffold that evolves
-with the CLI. After upgrading `otf-release` itself, or after editing workflow-baked settings in
+with the CLI. After upgrading `release` itself, or after editing workflow-baked settings in
 [`config`](./config.md) (such as `tag_format` or `github_release_notes`), run `upgrade` to pick up
 new CI pipeline features without re-running the full setup wizard.
 
@@ -41,10 +41,10 @@ run. See [ci-workflow.md](../ci-workflow.md).
 
 ## When to run it
 
-- After installing a newer `otf-release` CLI and you want the workflow to match.
-- After `otf-release config` changes that affect generated jobs (tag format, GitHub Release notes
+- After installing a newer `release` CLI and you want the workflow to match.
+- After `release config` changes that affect generated jobs (tag format, GitHub Release notes
   source, package build matrix entries, and similar).
-- When onboarding a feature shipped in a recent release (for example `otf-release check` replacing
+- When onboarding a feature shipped in a recent release (for example `release check` replacing
   hand-rolled bash in `check-release`).
 
 ## See also

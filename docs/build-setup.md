@@ -32,13 +32,13 @@ uses = "./.github/actions/setup-esdev"
 
 ## Why a step, and not a hook or a longer `command`
 
-Hooks cannot do this. `pre_publish` is executed by `otf-release publish` at runtime, which is
+Hooks cannot do this. `pre_publish` is executed by `release publish` at runtime, which is
 *after* the build step in the same job, so nothing a hook does can provision what the build already
 needed. It is also the wrong way round: the hooks are themselves written in the tool a setup step
 installs.
 
 Folding the install into a package's `command` does work — the string is emitted verbatim into
-`run:` — but it is the wrong home twice over. `command` is also what `otf-release build` runs on a
+`run:` — but it is the wrong home twice over. `command` is also what `release build` runs on a
 contributor's machine, so an installer buried there executes outside CI. And everything crammed
 into one `run:` block cannot use `$GITHUB_PATH`, whose writes only reach *later* steps, forcing an
 inline `PATH=…` prefix on everything that follows.
@@ -77,7 +77,7 @@ before the list existed keeps working unchanged. The first save from
 ## Every job, once
 
 Builds are not the only place the tool is needed. `pre_publish` / `post_publish` hooks and a generic
-package's `publish` command are executed by `otf-release publish` inside a publish job, so a repo
+package's `publish` command are executed by `release publish` inside a publish job, so a repo
 whose hooks are `tsr test` would break if the steps were build-only. They are emitted at most once
 per job — an inline-build publish job installs them before its build, and that same set serves the
 publish that follows.

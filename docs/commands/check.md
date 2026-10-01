@@ -7,8 +7,8 @@ A non-interactive helper that answers one question: **does this commit release a
 `crates/core/src/check.rs`.
 
 ```
-otf-release check
-otf-release check --package @opentf/web-compiler
+release check
+release check --package @opentf/web-compiler
 ```
 
 ## Why it exists
@@ -54,10 +54,10 @@ check-release:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0            # so the release tags are present to compare against
-    - name: Install otf-release
+    - name: Install release
       run: curl -fsSL .../install.sh | bash
     - id: check
-      run: echo "should_release=$(otf-release check)" >> "$GITHUB_OUTPUT"
+      run: echo "should_release=$(release check)" >> "$GITHUB_OUTPUT"
 ```
 
 `fetch-depth: 0` matters: the tag comparison is against **local** tags, and a shallow checkout

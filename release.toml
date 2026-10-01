@@ -8,7 +8,7 @@ tag_format = "v{version}"
 #
 # Keep this at or above v0.26.0: that is the first release whose install.sh reads
 # OTF_RELEASE_VERSION. An older pin fetches a script that hardcodes `releases/latest/download`, so
-# CI ignores the pin entirely and silently tracks whatever shipped most recently. `otf-release
+# CI ignores the pin entirely and silently tracks whatever shipped most recently. `release
 # doctor` reports that as `inert-tool-pin`.
 otf_release_version = "v0.32.0"
 provider = "github"
@@ -25,7 +25,7 @@ mode = "build-only"
 matrix = true
 command = "cargo build --release --target {triple}"
 artifacts = "target/{triple}/release/{bin}{ext}"
-bin_name = "otf-release"
+bin_name = "release"
 manifest = "Cargo.toml"
 version_field = "version"
 checksums = true

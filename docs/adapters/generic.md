@@ -18,12 +18,12 @@ a release PR, and a publish/release workflow scaffold. Implemented in
   `[package].version` or `[workspace.package].version`; explicit paths such as
   `workspace.package.version` work too.
 - **Publish** is an optional shell command — `publish` (e.g. `npx jsr publish`). When set, the
-  package is `publish` mode and ships through `otf-release publish`, which runs your command and
+  package is `publish` mode and ships through `release publish`, which runs your command and
   then tags + creates the GitHub Release. When omitted, the package is `build-only`.
 - **Build** is optional — `command` + `artifacts`, like any other adapter, for staging files.
 - **No dependency graph or ranges** — those trait methods are no-ops.
 - **Lockfile** is normally a no-op. If a generic package versions a root `Cargo.toml` and
-  `Cargo.lock` exists, `otf-release version` runs `cargo update --workspace` so the lockfile is
+  `Cargo.lock` exists, `release version` runs `cargo update --workspace` so the lockfile is
   refreshed in the release commit.
 
 > ### ⚠️ Not for a Cargo workspace with internal path dependencies
@@ -94,7 +94,7 @@ build output. Implemented in `crates/core/src/discover.rs`.
 
 - The generic `build-<pkg>` job (only if a `command` is set) injects **no language toolchain** —
   your command brings its own — runs it, and uploads `artifacts`.
-- If a `publish` command is set, the unified `publish` job runs `otf-release publish` (which runs
+- If a `publish` command is set, the unified `publish` job runs `release publish` (which runs
   your command). The toolchain/secret your registry needs can't be inferred, so those steps carry
   `# edit me` markers.
 - If there's no `publish` command, the package is build-only and its artifacts go to the

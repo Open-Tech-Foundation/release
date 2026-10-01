@@ -1,4 +1,4 @@
-//! `otf-release build --package <p> --target <name>/<arch>` — build one matrix target and stage
+//! `release build --package <p> --target <name>/<arch>` — build one matrix target and stage
 //! its binary for publish.
 //!
 //! Runs inside a single CI matrix leg. It:

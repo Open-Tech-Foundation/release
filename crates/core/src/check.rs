@@ -3,7 +3,7 @@
 //! `release.yml` runs on every push to `main`, but most pushes aren't releases. This command is the
 //! single decision "does this commit release anything?": it prints `true` when at least one
 //! configured package has a real version whose tag doesn't exist yet, else `false`. The generated
-//! workflow's `check-release` job is just `should_release=$(otf-release check)`.
+//! workflow's `check-release` job is just `should_release=$(release check)`.
 //!
 //! It reuses the *same* primitives as [`crate::publish`] — `discover_packages` for the version,
 //! `format_tag` for the tag, `git tag` for existence — so the gate can never drift from what

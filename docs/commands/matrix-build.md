@@ -12,15 +12,15 @@ A single CLI run can't span OS runners, so the work is split into pieces the wor
 `needs:` and a matrix:
 
 ```
-matrix-<pkg>   →   otf-release matrix --package <pkg>   (emit the matrix, once, on ubuntu)
-build-<pkg>    →   otf-release build  --package <pkg> --target <name>/<arch>   (per runner)
-publish-<pkg>  →   otf-release publish --package <pkg> --artifacts-dir .artifacts
+matrix-<pkg>   →   release matrix --package <pkg>   (emit the matrix, once, on ubuntu)
+build-<pkg>    →   release build  --package <pkg> --target <name>/<arch>   (per runner)
+publish-<pkg>  →   release publish --package <pkg> --artifacts-dir .artifacts
 ```
 
-## `otf-release matrix`
+## `release matrix`
 
 ```
-otf-release matrix [--package <name>]
+release matrix [--package <name>]
 ```
 
 Prints the GitHub Actions matrix as JSON, read straight from `release.toml`:
@@ -36,10 +36,10 @@ Prints the GitHub Actions matrix as JSON, read straight from `release.toml`:
 fact, so the build leg needs no further lookups. The workflow consumes it with
 `strategy.matrix: ${{ fromJSON(needs.matrix-<pkg>.outputs.matrix) }}`.
 
-## `otf-release build`
+## `release build`
 
 ```
-otf-release build --package <name> --target <name>/<arch>
+release build --package <name> --target <name>/<arch>
 ```
 
 Runs inside one matrix leg. It:
@@ -57,7 +57,7 @@ where an install looks for it.
 ### `--stage-only`
 
 ```
-otf-release build --package <name> --target <name>/<arch> --stage-only
+release build --package <name> --target <name>/<arch> --stage-only
 ```
 
 Runs step 4 alone — skipping the toolchain setup and the build command — to stage a binary some
@@ -79,7 +79,7 @@ The generated workflow pairs them automatically:
       cargo build --release --target ${{ matrix.triple }}
 - name: Stage esrun
   if: ${{ matrix.vm }}
-  run: otf-release build --package esrun --target ${{ matrix.name }}/${{ matrix.arch }} --stage-only
+  run: release build --package esrun --target ${{ matrix.name }}/${{ matrix.arch }} --stage-only
 ```
 
 It is not FreeBSD-specific — use it for any binary built by something this tool did not invoke (a
@@ -90,7 +90,7 @@ explicitly rather than reporting a build failure that never happened.
 
 Each leg uploads its `.artifacts/<package>` tree as a separate artifact. Its package-local publish job merges
 them back into `.artifacts/<package>` (`download-artifact` with `merge-multiple: true`), then
-`otf-release publish --package <pkg>` copies that tree into the package before `npm publish`. A matrix package is
+`release publish --package <pkg>` copies that tree into the package before `npm publish`. A matrix package is
 **only** published when its staged binaries are present — `publish` refuses a binary-less push (the
 invariant that replaced the old `private:true` guard).
 

@@ -53,6 +53,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn upgrade_preserves_pnpm_manifest_pin_and_uses_lockfile_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            ..ReleaseConfig::default()
+        };
+        config.save(tmp.path()).unwrap();
+        fs::write(
+            tmp.path().join("pnpm-lock.yaml"),
+            "lockfileVersion: '9.0'\n",
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("package.json"),
+            r#"{"packageManager":"pnpm@10.11.0"}"#,
+        )
+        .unwrap();
+        orchestrate(tmp.path(), &UpgradeOptions { force: true }).unwrap();
+        let yaml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
+        assert!(yaml.contains("- uses: pnpm/action-setup@v4\n      - uses: actions/setup-node@v4"));
+        assert!(!yaml.contains("version: latest"));
+        assert!(yaml.contains("run: release publish"));
+
+        fs::write(tmp.path().join("package.json"), "{}").unwrap();
+        orchestrate(tmp.path(), &UpgradeOptions { force: true }).unwrap();
+        let yaml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
+        assert!(yaml.contains("          version: 9\n"));
+        assert!(!yaml.contains("version: latest"));
+    }
+
+    #[test]
     fn upgrade_uses_detected_npm_tool_from_repo_root() {
         let tmp = tempfile::tempdir().unwrap();
         fs::write(tmp.path().join("bun.lock"), "").unwrap();
@@ -115,7 +146,7 @@ mod tests {
     fn upgrade_regenerates_publish_gating_and_concurrency() {
         // `upgrade` reads release.toml and regenerates the workflow through the same renderer as
         // `init`, so an existing repo picks up the ordering fix, the concurrency group, and the
-        // dropped Windows install steps just by running `otf-release upgrade`.
+        // dropped Windows install steps just by running `release upgrade`.
         let tmp = tempfile::tempdir().unwrap();
         let config = ReleaseConfig {
             discovery: Default::default(),

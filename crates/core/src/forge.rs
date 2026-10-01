@@ -25,7 +25,7 @@ pub trait Forge {
 
     /// Create a release for a `build-only` package: an optional `--target` ref, a notes source
     /// (curated body or GitHub-generated), and any number of asset files to attach. This is what
-    /// `otf-release github-release` calls so the workflow never hand-rolls `gh release create` in
+    /// `release github-release` calls so the workflow never hand-rolls `gh release create` in
     /// inline bash. The default delegates to [`create_release`](Self::create_release) so existing
     /// test doubles keep compiling; [`GhForge`] overrides it with the full `gh` invocation.
     fn create_release_with_assets(

@@ -4,8 +4,8 @@
 //! a registry, `github-release` attaches a package's cross-compiled binaries to a GitHub Release.
 //! It exists so the generated `release.yml` never embeds a wall of inline bash (version reads,
 //! changelog extraction, asset renaming, `gh release create`) — the workflow just calls
-//! `otf-release github-release --package <pkg> --artifacts-dir .artifacts`, exactly as the registry
-//! path calls `otf-release publish`. The tool owns the logic; the YAML stays a thin, stable call.
+//! `release github-release --package <pkg> --artifacts-dir .artifacts`, exactly as the registry
+//! path calls `release publish`. The tool owns the logic; the YAML stays a thin, stable call.
 //!
 //! What it does for each selected build-only package:
 //!   1. reads the package's version from its manifest (via the adapter — the *same* read
@@ -297,7 +297,7 @@ fn stage_assets(artifacts_dir: &Path, entry: &PackageEntry, root: &Path) -> Resu
 }
 
 /// Recursively collect every file under `dir`, paired with its immediate `<stage_as>` parent
-/// directory name (the Node `process.platform-process.arch` dir `otf-release build` staged into,
+/// directory name (the Node `process.platform-process.arch` dir `release build` staged into,
 /// e.g. `linux-x64`, `darwin-arm64`, `win32-x64`).
 fn collect_binaries(dir: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
@@ -512,7 +512,7 @@ mod tests {
     use std::cell::RefCell;
 
     /// Regression: v0.25.0 published archives whose binary was mode 644, so every extracted
-    /// `otf-release` needed a `chmod +x`. The cause is upstream of this code —
+    /// `release` needed a `chmod +x`. The cause is upstream of this code —
     /// `upload-artifact`/`download-artifact` zip the staged tree and drop POSIX permissions, so the
     /// binary always arrives here non-executable. Reproduce that exact input (a 644 source) and
     /// assert the archive stores 755 anyway. Include files keep their own mode.

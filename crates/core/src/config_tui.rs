@@ -1,4 +1,4 @@
-//! `otf-release config` — a full-screen settings editor.
+//! `release config` — a full-screen settings editor.
 //!
 //! The old editor was a chain of `inquire` prompts: a menu asked which area, another asked which
 //! setting, a third asked for the value. You could not see what anything was currently set to
@@ -817,7 +817,7 @@ fn require_terminal() -> Result<()> {
     anyhow::bail!(
         "`config` is an interactive screen and needs a terminal on stdin and stdout.\n\
          Nothing here is exclusive to it: `{CONFIG_FILE}` is plain, committed TOML — edit it \
-         directly, then run `otf-release doctor` to check the result."
+         directly, then run `release doctor` to check the result."
     )
 }
 
@@ -1419,7 +1419,7 @@ fn apply_package_choice(app: &mut App, field: Field, picked: String) -> Result<(
         Field::PkgAttest => {
             pkg.attest = picked == "yes";
             if pkg.attest {
-                app.status = Some("Run `otf-release upgrade` to add the signing step".into());
+                app.status = Some("Run `release upgrade` to add the signing step".into());
             }
         }
         Field::PkgTagFormat => {

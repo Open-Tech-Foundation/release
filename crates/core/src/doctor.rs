@@ -210,7 +210,7 @@ fn stale_workflow(config: &ReleaseConfig, root: &Path, out: &mut Vec<Finding>) {
                     missing.join(", ")
                 ),
             )
-            .fix("run `otf-release upgrade --force` and commit the regenerated workflow"),
+            .fix("run `release upgrade --force` and commit the regenerated workflow"),
         );
     }
 }
@@ -454,7 +454,7 @@ fn missing_blocks(config: &ReleaseConfig, released: &[&Discovered], out: &mut Ve
                 ),
             )
             .about(&d.pkg.name)
-            .fix("run `otf-release config` → Ecosystems and confirm, which writes the missing blocks"),
+            .fix("run `release config` → Ecosystems and confirm, which writes the missing blocks"),
         );
     }
 }
@@ -710,7 +710,7 @@ fn tool_pin(config: &ReleaseConfig, out: &mut Vec<Finding>) {
                      next."
                 ),
             )
-            .fix("raise the pin to a released version, then run `otf-release upgrade --force`"),
+            .fix("raise the pin to a released version, then run `release upgrade --force`"),
         );
         return;
     }
@@ -727,7 +727,7 @@ fn tool_pin(config: &ReleaseConfig, out: &mut Vec<Finding>) {
                          release cut here uses a different tool than the one you tested with."
                     ),
                 )
-                .fix("raise `otf_release_version`, then run `otf-release upgrade --force`"),
+                .fix("raise `otf_release_version`, then run `release upgrade --force`"),
             );
         }
     }
@@ -765,7 +765,7 @@ fn supply_chain(config: &ReleaseConfig, released: &[&Discovered], out: &mut Vec<
                 )
                 .about(&entry.name)
                 .fix(
-                    "set `attest = true` in its `[[package]]` block, then run `otf-release upgrade \
+                    "set `attest = true` in its `[[package]]` block, then run `release upgrade \
                      --force` to add the workflow permissions",
                 ),
             );

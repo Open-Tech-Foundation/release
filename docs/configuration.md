@@ -18,7 +18,7 @@ tag_format = "v{version}"
 # Useful when migrating, e.g. from @scope/pkg@1.2.3 to @scope/pkg@v1.2.4.
 legacy_tag_formats = ["{name}@{version}"]
 
-# Publishable packages that otf-release should not version or publish.
+# Publishable packages that release should not version or publish.
 skip_publish = ["@scope/internal-tool"]
 
 # Per-package globs that warn instead of block when only these paths changed. Seeded per adapter
@@ -106,7 +106,7 @@ artifacts = "dist/**"
 | `adapters` | Enabled ecosystems: `"npm"`, `"crates.io"`, `"generic"`. Drives which publish/release jobs `init` generates. |
 | `tag_format` | Global git tag format used by `version`, preflight, `publish`, and generated GitHub Release jobs. Must include `{version}`; may include `{name}` for package-scoped tags, e.g. `{name}@{version}`. |
 | `legacy_tag_formats` | Optional older tag formats used only to find prior release history during `version`/preflight and generated changelog notes. New tags are still written with `tag_format`. An entry with no `{name}` matches every package, so in a multi-package repo it belongs in a `[[package]]` block instead. |
-| `otf_release_version` | Optional. Which `otf-release` release the generated workflow installs, as a git tag (`v0.25.0`; a bare `0.25.0` is normalised). Defaults to the version of the binary that generated the workflow — correct for a normal repo, since you ran a released build. Set it only when that assumption breaks, most notably a repo that generates its own workflow from an unreleased tree, where the default would pin to a tag that does not exist yet. |
+| `otf_release_version` | Optional. Which `release` release the generated workflow installs, as a git tag (`v0.25.0`; a bare `0.25.0` is normalised). Defaults to the version of the binary that generated the workflow — correct for a normal repo, since you ran a released build. Set it only when that assumption breaks, most notably a repo that generates its own workflow from an unreleased tree, where the default would pin to a tag that does not exist yet. |
 | `skip_publish` | Package names never pushed to a registry, even when their manifests look publishable. They are still **versioned** in lockstep with the release — this only suppresses the publish. `init` fills this in automatically: when a repo has a `build-only` package alongside other discovered crates (a Cargo workspace's library crates, say, which carry no `publish = false`), it lists them and records your answer. |
 | `discovery.npm` | Optional. Globs naming npm package **directories**, relative to the repo root. Only for a repo that declares its members nowhere — neither a root `workspaces` field nor `pnpm-workspace.yaml` — typically a polyglot monorepo whose root is another ecosystem's workspace, where adding a root `package.json` with `workspaces` would change how npm/pnpm/bun install the repo. Non-empty ⇒ this *is* the member set and the root `package.json` is not consulted. Written by `init` and by `config` → *Ecosystems*, from a repo scan you confirm. See [npm adapter](./adapters/npm.md#repos-that-declare-no-npm-workspace). |
 | `secrets.npm` / `secrets.cargo` | Optional. Names of the repository secrets the generated workflow reads for registry auth. Default `NPM_TOKEN` / `CARGO_REGISTRY_TOKEN`. Change these instead of hand-editing generated YAML. |
@@ -192,7 +192,7 @@ So these targets carry `vm = true` and build **natively inside a FreeBSD guest**
 runner, via [`vmactions/freebsd-vm`](https://github.com/vmactions/freebsd-vm). `init` generates the
 whole leg: the guest boots, the checkout syncs in, `pkg install -y rust` provides the toolchain, the
 package `command` runs natively, and `copyback` returns the binary to the host, where
-`otf-release build … --stage-only` stages it like any other target. Inside the guest every target is
+`release build … --stage-only` stages it like any other target. Inside the guest every target is
 the *host* target, so the tier-3 problem disappears.
 
 > **aarch64 is fully emulated** on an x64 runner and is therefore much slower than the x86_64 leg —
@@ -300,7 +300,7 @@ keyed off a package having a job of its own, so a settings-only block leaves the
 `release.yml` exactly as it was. Packages listed in `skip_publish` get no block at all — the blocks
 describe what the repo releases.
 
-`otf-release config` → *Packages* → pick a package → *Tag format* / *Changelog* edits these, with
+`release config` → *Packages* → pick a package → *Tag format* / *Changelog* edits these, with
 the repo-wide value named in the prompt so blank visibly means "whatever the repo does". Values are
 validated when `release.toml` is loaded, so a format with no `{version}` or a changelog path outside
 the repo fails at parse time rather than mid-release.

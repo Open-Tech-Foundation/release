@@ -1,10 +1,10 @@
-# `otf-release init`
+# `release init`
 
 **Interactive setup. Writes `release.toml` (the source of truth) and generates one
 `.github/workflows/release.yml` from it.**
 
 ```
-otf-release init [--force]
+release init [--force]
 ```
 
 | Flag | Effect |
@@ -84,8 +84,8 @@ adapter   = "crates.io"
 mode      = "build-only"          # artifacts -> GitHub Release, no registry push
 matrix    = true
 command   = "cargo build --release --target {triple}"   # {triple}/{ext}/{bin} expand per target
-artifacts = "target/{triple}/release/otf-release{ext}"
-bin_name  = "otf-release"
+artifacts = "target/{triple}/release/{bin}{ext}"
+bin_name  = "release"
 archive   = "auto"                # the default: .zip on Windows, .tar.gz elsewhere
 checksums = true
 
@@ -107,12 +107,12 @@ github_release_notes = "auto-generate"
 From the config, `init` emits jobs:
 
 - a **`check-release`** job that decides whether downstream jobs should run. It is a one-liner —
-  `should_release=$(otf-release check)` — delegating to the binary like every other job, so it can't
+  `should_release=$(release check)` — delegating to the binary like every other job, so it can't
   drift from what actually ships. `check` returns `true` if **any** configured package has a real
   version whose tag doesn't exist yet (`publish`/`github-release` are per-package idempotent and skip
   the rest); it needs `fetch-depth: 0` so the tags are present to compare against;
 - a **`build-<pkg>`** job per package with a build step (a matrix when *build matrix* is yes);
-- a single **`publish`** job when registry publishing is enabled — runs `otf-release publish`
+- a single **`publish`** job when registry publishing is enabled — runs `release publish`
   once, and the CLI loops the enabled adapters internally;
 - a **`github-release`** job when any package is `build-only` — attaches its staged artifacts to a
   GitHub Release tagged from `tag_format`, idempotently. The default `GITHUB_TOKEN` +
@@ -120,6 +120,12 @@ From the config, `init` emits jobs:
 
 For npm repos, generated jobs detect the package manager from the root lockfile: `bun.lockb` /
 `bun.lock` use Bun, `pnpm-lock.yaml` uses pnpm, `yarn.lock` uses Yarn, and otherwise npm is used.
+A `packageManager: "pnpm@<version>"` pin selects pnpm and lets its setup action read that exact
+version from the manifest. Without a pin, known pnpm lockfile formats select a compatible major:
+5.3 → pnpm 6, 5.4 → pnpm 7, 6.0 → pnpm 8, and 9.0 → pnpm 9. Format 9.0 is shared by pnpm 9
+and 10, so use `packageManager` to specify pnpm 10. Missing or unrecognized formats retain the
+`latest` fallback. Independent npm packages use their own manifests and lockfiles. After editing settings with
+`release config`, run `release upgrade` to regenerate the workflow with this version selection.
 
 ## Explicit caveats (surfaced to the user)
 

@@ -23,15 +23,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Install otf-release
+      - name: Install release
         shell: bash
         env:
           OTF_RELEASE_VERSION: v0.32.0
         run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/v0.32.0/install.sh | bash
+      - name: Expose release command
+        shell: bash
+        run: |
+          if ! command -v release >/dev/null 2>&1; then
+            mkdir -p "$RUNNER_TEMP/release-cli"
+            cp "$(command -v otf-release)" "$RUNNER_TEMP/release-cli/release"
+            echo "$RUNNER_TEMP/release-cli" >> "$GITHUB_PATH"
+          fi
       - id: check
         run: |
-          echo "should_release=$(otf-release check --exclude-package otf-release)" >> "$GITHUB_OUTPUT"
-          echo "release_otf_release=$(otf-release check --package otf-release)" >> "$GITHUB_OUTPUT"
+          echo "should_release=$(release check --exclude-package otf-release)" >> "$GITHUB_OUTPUT"
+          echo "release_otf_release=$(release check --package otf-release)" >> "$GITHUB_OUTPUT"
 
   matrix-otf-release:
     needs: [check-release]
@@ -41,13 +49,21 @@ jobs:
       matrix: ${{ steps.set.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install otf-release
+      - name: Install release
         shell: bash
         env:
           OTF_RELEASE_VERSION: v0.32.0
         run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/v0.32.0/install.sh | bash
+      - name: Expose release command
+        shell: bash
+        run: |
+          if ! command -v release >/dev/null 2>&1; then
+            mkdir -p "$RUNNER_TEMP/release-cli"
+            cp "$(command -v otf-release)" "$RUNNER_TEMP/release-cli/release"
+            echo "$RUNNER_TEMP/release-cli" >> "$GITHUB_PATH"
+          fi
       - id: set
-        run: echo "matrix=$(otf-release matrix --package otf-release)" >> "$GITHUB_OUTPUT"
+        run: echo "matrix=$(release matrix --package otf-release)" >> "$GITHUB_OUTPUT"
 
   build-otf-release:
     needs: [check-release, matrix-otf-release]
@@ -67,21 +83,40 @@ jobs:
         if: ${{ !matrix.vm }}
         with:
           targets: ${{ matrix.triple }}
-      - name: Install otf-release
+      - name: Install release
         if: runner.os != 'Windows'
         shell: bash
         env:
           OTF_RELEASE_VERSION: v0.32.0
         run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/v0.32.0/install.sh | bash
-      - name: Install otf-release
+      - name: Expose release command
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if ! command -v release >/dev/null 2>&1; then
+            mkdir -p "$RUNNER_TEMP/release-cli"
+            cp "$(command -v otf-release)" "$RUNNER_TEMP/release-cli/release"
+            echo "$RUNNER_TEMP/release-cli" >> "$GITHUB_PATH"
+          fi
+      - name: Install release
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           OTF_RELEASE_VERSION: v0.32.0
         run: irm https://raw.githubusercontent.com/Open-Tech-Foundation/release/v0.32.0/install.ps1 | iex
+      - name: Expose release command
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command release -ErrorAction SilentlyContinue)) {
+            $cliDir = Join-Path $env:RUNNER_TEMP 'release-cli'
+            New-Item -ItemType Directory -Force -Path $cliDir | Out-Null
+            Copy-Item (Get-Command otf-release).Source (Join-Path $cliDir 'release.exe')
+          $cliDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
       - name: Build otf-release
         if: ${{ !matrix.vm }}
-        run: otf-release build --package otf-release --target ${{ matrix.name }}/${{ matrix.arch }}
+        run: release build --package otf-release --target ${{ matrix.name }}/${{ matrix.arch }}
       - name: Build otf-release in a freebsd VM
         if: ${{ matrix.vm && matrix.name == 'freebsd' }}
         uses: vmactions/freebsd-vm@v1
@@ -95,7 +130,7 @@ jobs:
             cargo build --release --target ${{ matrix.triple }}
       - name: Stage otf-release
         if: ${{ matrix.vm }}
-        run: otf-release build --package otf-release --target ${{ matrix.name }}/${{ matrix.arch }} --stage-only
+        run: release build --package otf-release --target ${{ matrix.name }}/${{ matrix.arch }} --stage-only
       - uses: actions/upload-artifact@v4
         with:
           name: otf-release-${{ matrix.name }}-${{ matrix.arch }}
@@ -112,15 +147,23 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: .artifacts
-      - name: Install otf-release
+      - name: Install release
         shell: bash
         env:
           OTF_RELEASE_VERSION: v0.32.0
         run: curl -fsSL https://raw.githubusercontent.com/Open-Tech-Foundation/release/v0.32.0/install.sh | bash
+      - name: Expose release command
+        shell: bash
+        run: |
+          if ! command -v release >/dev/null 2>&1; then
+            mkdir -p "$RUNNER_TEMP/release-cli"
+            cp "$(command -v otf-release)" "$RUNNER_TEMP/release-cli/release"
+            echo "$RUNNER_TEMP/release-cli" >> "$GITHUB_PATH"
+          fi
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: otf-release github-release --package otf-release --artifacts-dir .artifacts
+        run: release github-release --package otf-release --artifacts-dir .artifacts
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:

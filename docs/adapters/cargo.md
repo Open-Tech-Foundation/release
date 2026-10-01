@@ -126,7 +126,7 @@ package, and a `version` bump rolls the whole workspace from a root `CHANGELOG.m
 opts into `mode = "publish"` in [`release.toml`](../configuration.md). For a **binary** tool, the
 default `mode = "build-only"` makes [`init`](../commands/init.md) generate a workflow that
 cross-compiles a target matrix and attaches the binaries to a **GitHub Release** tagged from
-`release.toml`'s `tag_format` — no registry involved. That is how `otf-release` itself is distributed:
+`release.toml`'s `tag_format` — no registry involved. That is how `release` itself is distributed:
 download the artifact for your OS. See [ci-workflow.md](../ci-workflow.md).
 
 ## See also

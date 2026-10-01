@@ -29,7 +29,7 @@ use crate::discover::{
 };
 use crate::ui;
 
-/// The git tag of the `otf-release` that generated a workflow. Generated jobs pin to this rather
+/// The git tag of the `release` that generated a workflow. Generated jobs pin to this rather
 /// than tracking `main`/`latest`, so what runs in a consumer's CI changes only when they merge a
 /// regenerated workflow — never because we published something.
 ///
@@ -95,7 +95,17 @@ enum NpmTool {
 
 impl NpmTool {
     fn detect(root: &Path) -> Self {
-        if root.join("bun.lockb").exists() || root.join("bun.lock").exists() {
+        let pnpm_pin = std::fs::read_to_string(root.join("package.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .is_some_and(|manifest| {
+                manifest["packageManager"]
+                    .as_str()
+                    .is_some_and(|pm| pm.starts_with("pnpm@") && pm.len() > 5)
+            });
+        if pnpm_pin {
+            Self::Pnpm
+        } else if root.join("bun.lockb").exists() || root.join("bun.lock").exists() {
             Self::Bun
         } else if root.join("pnpm-lock.yaml").exists() {
             Self::Pnpm
@@ -106,7 +116,7 @@ impl NpmTool {
         }
     }
 
-    fn setup_node(self, s: &mut String, registry: bool) {
+    fn setup_node(self, s: &mut String, registry: bool, pnpm: Option<&PnpmSetup>) {
         match self {
             Self::Bun => {
                 s.push_str("      - uses: oven-sh/setup-bun@v2\n");
@@ -119,7 +129,11 @@ impl NpmTool {
             }
             Self::Pnpm => {
                 s.push_str("      - uses: pnpm/action-setup@v4\n");
-                s.push_str("        with:\n          version: latest\n");
+                if let Some(setup) = pnpm {
+                    setup.push_inputs(s);
+                } else {
+                    s.push_str("        with:\n          version: latest\n");
+                }
                 s.push_str("      - uses: actions/setup-node@v4\n");
                 s.push_str("        with:\n          node-version: 24\n");
                 if registry {
@@ -153,6 +167,71 @@ impl NpmTool {
     }
 }
 
+/// pnpm's exact version comes from packageManager. A lockfile only identifies a
+/// compatible major: pnpm 9 and 10, for example, both use lockfile format 9.0.
+#[derive(Debug, Clone)]
+struct PnpmSetup {
+    package_json: Option<String>,
+    version: Option<&'static str>,
+}
+
+impl PnpmSetup {
+    fn detect(dir: &Path, package_json: String) -> Self {
+        let manifest = std::fs::read_to_string(dir.join("package.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+        if manifest
+            .as_ref()
+            .and_then(|m| m["packageManager"].as_str())
+            .is_some_and(|pm| pm.starts_with("pnpm@") && pm.len() > 5)
+        {
+            // Let the action read the pin (including its integrity hash) at runtime.
+            return Self {
+                package_json: Some(package_json),
+                version: None,
+            };
+        }
+        let version = std::fs::read_to_string(dir.join("pnpm-lock.yaml"))
+            .ok()
+            .and_then(|text| yaml_rust2::YamlLoader::load_from_str(&text).ok())
+            .and_then(|docs| docs.first().map(|doc| doc["lockfileVersion"].clone()))
+            .and_then(|value| {
+                let format = match value {
+                    yaml_rust2::Yaml::String(v) | yaml_rust2::Yaml::Real(v) => v,
+                    yaml_rust2::Yaml::Integer(v) => v.to_string(),
+                    _ => return None,
+                };
+                match format.as_str() {
+                    "5.3" => Some("6"),
+                    "5.4" => Some("7"),
+                    "6" | "6.0" => Some("8"),
+                    "9" | "9.0" => Some("9"),
+                    _ => None,
+                }
+            });
+        Self {
+            package_json: None,
+            version,
+        }
+    }
+
+    fn push_inputs(&self, s: &mut String) {
+        if let Some(path) = &self.package_json {
+            if path != "package.json" {
+                s.push_str(&format!(
+                    "        with:\n          package_json_file: {}\n",
+                    serde_json::to_string(path).unwrap()
+                ));
+            }
+        } else {
+            s.push_str(&format!(
+                "        with:\n          version: {}\n",
+                self.version.unwrap_or("latest")
+            ));
+        }
+    }
+}
+
 /// Where the generated workflow installs npm dependencies.
 ///
 /// A repo whose members come from a root `workspaces` field (or `pnpm-workspace.yaml`) installs
@@ -172,6 +251,8 @@ struct NpmInstall {
     /// Tool per package name, detected from that package's own directory. Only consulted when
     /// `root` is `None`.
     per_package: HashMap<String, NpmTool>,
+    pnpm_root: Option<PnpmSetup>,
+    pnpm_packages: HashMap<String, PnpmSetup>,
 }
 
 impl NpmInstall {
@@ -180,12 +261,16 @@ impl NpmInstall {
         Self {
             root: Some(tool),
             per_package: HashMap::new(),
+            pnpm_root: None,
+            pnpm_packages: HashMap::new(),
         }
     }
 
     fn detect(config: &ReleaseConfig, root: &Path) -> Self {
         if config.discovery.npm.is_empty() {
-            return Self::rooted(NpmTool::detect(root));
+            let mut install = Self::rooted(NpmTool::detect(root));
+            install.pnpm_root = Some(PnpmSetup::detect(root, "package.json".into()));
+            return install;
         }
         let per_package = config
             .packages
@@ -199,9 +284,24 @@ impl NpmInstall {
                 (entry.name.clone(), NpmTool::detect(&dir))
             })
             .collect();
+        let pnpm_packages = config
+            .packages
+            .iter()
+            .filter(|entry| entry.adapter == Ecosystem::Npm)
+            .map(|entry| {
+                let manifest = entry
+                    .manifest
+                    .clone()
+                    .unwrap_or_else(|| "package.json".into());
+                let dir = root.join(package_workdir(entry).unwrap_or_else(|| ".".into()));
+                (entry.name.clone(), PnpmSetup::detect(&dir, manifest))
+            })
+            .collect();
         Self {
             root: None,
             per_package,
+            pnpm_root: None,
+            pnpm_packages,
         }
     }
 
@@ -213,6 +313,15 @@ impl NpmInstall {
             (None, Some(entry)) => self.tool_for(entry),
             (None, None) => NpmTool::Npm,
         }
+    }
+
+    fn setup_node(&self, s: &mut String, registry: bool, entry: Option<&PackageEntry>) {
+        let pnpm = if self.root.is_some() {
+            self.pnpm_root.as_ref()
+        } else {
+            entry.and_then(|entry| self.pnpm_packages.get(&entry.name))
+        };
+        self.setup_tool(entry).setup_node(s, registry, pnpm);
     }
 
     fn tool_for(&self, entry: &PackageEntry) -> NpmTool {
@@ -381,12 +490,10 @@ impl TagFormatSuggestion {
 /// A short, friendly preamble so a first-time dev knows what `init` will ask and that nothing is
 /// locked in — every answer has a default and is editable afterward.
 fn print_intro() {
-    ui::heading("otf-release init — configure releases for this repo");
+    ui::heading("release init — configure releases for this repo");
     ui::detail("writes release.toml (the editable source of truth) and a GitHub release workflow");
     ui::detail("Enter accepts the default in (parentheses); a hint sits under each prompt");
-    ui::detail(
-        "nothing is permanent — re-run init, edit release.toml, or use `otf-release config`",
-    );
+    ui::detail("nothing is permanent — re-run init, edit release.toml, or use `release config`");
     println!();
 }
 
@@ -952,7 +1059,7 @@ fn render_check_release_job(s: &mut String, config: &ReleaseConfig) {
         ));
     }
     s.push_str("    steps:\n");
-    // `fetch-depth: 0` so release tags are present locally for `otf-release check` to compare
+    // `fetch-depth: 0` so release tags are present locally for `release check` to compare
     // against — a shallow checkout carries no tags.
     s.push_str("      - uses: actions/checkout@v4\n");
     s.push_str("        with:\n");
@@ -964,14 +1071,14 @@ fn render_check_release_job(s: &mut String, config: &ReleaseConfig) {
     // never drift. It prints `true` when any configured package has an untagged version to release.
     s.push_str("      - id: check\n");
     s.push_str("        run: |\n");
-    s.push_str("          echo \"should_release=$(otf-release check");
+    s.push_str("          echo \"should_release=$(release check");
     for entry in &scheduled {
         s.push_str(&format!(" --exclude-package {}", entry.name));
     }
     s.push_str(")\" >> \"$GITHUB_OUTPUT\"\n");
     for entry in &scheduled {
         s.push_str(&format!(
-            "          echo \"{}=$(otf-release check --package {})\" >> \"$GITHUB_OUTPUT\"\n",
+            "          echo \"{}=$(release check --package {})\" >> \"$GITHUB_OUTPUT\"\n",
             release_output(&entry.name),
             entry.name
         ));
@@ -984,7 +1091,7 @@ fn render_check_release_job(s: &mut String, config: &ReleaseConfig) {
 /// Shape:
 /// - one `build-<pkg>` job per package that has a build command (matrix or single runner),
 /// - a single `publish` job (if any registry adapter is active) that sets up the needed
-///   toolchains and runs `otf-release publish` once — it publishes only `publish`-mode packages
+///   toolchains and runs `release publish` once — it publishes only `publish`-mode packages
 ///   across every enabled ecosystem (npm, crates.io, generic),
 /// - a `github-release` job if any package is `build-only` — attaches its artifacts to
 ///   GitHub Releases tagged from `tag_format`, idempotently. **No registry push for
@@ -1023,7 +1130,7 @@ fn render_snapshot_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmT
         s.push_str("        run: rustup update stable\n");
     }
     if config.adapters.contains(&Ecosystem::Npm) {
-        npm_tool.setup_node(&mut s, true);
+        npm_tool.setup_node(&mut s, true, None);
     }
 
     push_install_otf_release(&mut s, &workflow_pin(config));
@@ -1035,28 +1142,62 @@ fn render_snapshot_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmT
     if config.adapters.contains(&Ecosystem::Npm) {
         s.push_str(&npm_auth_env(config));
     }
-    s.push_str("        run: otf-release snapshot\n");
+    s.push_str("        run: release snapshot\n");
     s
 }
 
-/// Install `otf-release` on an ubuntu-only job: a single bash step, no `runner.os` guard. Every
+/// Older pinned installers expose otf-release. Copy it into the runner's PATH as
+/// release while preserving the reviewed installer and binary versions.
+fn push_legacy_cli_name(s: &mut String, windows: bool, cross_platform: bool) {
+    s.push_str("      - name: Expose release command\n");
+    if cross_platform {
+        s.push_str(if windows {
+            "        if: runner.os == 'Windows'\n"
+        } else {
+            "        if: runner.os != 'Windows'\n"
+        });
+    }
+    if windows {
+        s.push_str("        shell: pwsh\n        run: |\n");
+        s.push_str("          if (-not (Get-Command release -ErrorAction SilentlyContinue)) {\n");
+        s.push_str("            $cliDir = Join-Path $env:RUNNER_TEMP 'release-cli'\n");
+        s.push_str("            New-Item -ItemType Directory -Force -Path $cliDir | Out-Null\n");
+        s.push_str("            Copy-Item (Get-Command otf-release).Source (Join-Path $cliDir 'release.exe')\n");
+        s.push_str(
+            "          $cliDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append\n",
+        );
+        s.push_str("          }\n");
+    } else {
+        s.push_str("        shell: bash\n        run: |\n");
+        s.push_str("          if ! command -v release >/dev/null 2>&1; then\n");
+        s.push_str("            mkdir -p \"$RUNNER_TEMP/release-cli\"\n");
+        s.push_str(
+            "            cp \"$(command -v otf-release)\" \"$RUNNER_TEMP/release-cli/release\"\n",
+        );
+        s.push_str("            echo \"$RUNNER_TEMP/release-cli\" >> \"$GITHUB_PATH\"\n");
+        s.push_str("          fi\n");
+    }
+}
+
+/// Install `release` on an ubuntu-only job: a single bash step, no `runner.os` guard. Every
 /// generated job runs on `ubuntu-latest` except the build matrix fan-out, so this is the common case
 /// — the Windows branch would never fire here and is left out as dead YAML.
 fn push_install_otf_release(s: &mut String, pin: &str) {
-    s.push_str("      - name: Install otf-release\n");
+    s.push_str("      - name: Install release\n");
     s.push_str("        shell: bash\n");
     s.push_str(&install_version_env("        ", pin));
     s.push_str(&format!(
         "        run: curl -fsSL {} | bash\n",
         install_sh_url(pin)
     ));
+    push_legacy_cli_name(s, false, false);
 }
 
-/// Install `otf-release` on a job that may run on Windows (the build matrix fan-out, whose runner is
+/// Install `release` on a job that may run on Windows (the build matrix fan-out, whose runner is
 /// `${{ matrix.runner }}`): both the bash and PowerShell variants, each guarded by `runner.os` so
 /// exactly the right one fires per runner.
 fn push_install_otf_release_cross_platform(s: &mut String, pin: &str) {
-    s.push_str("      - name: Install otf-release\n");
+    s.push_str("      - name: Install release\n");
     s.push_str("        if: runner.os != 'Windows'\n");
     s.push_str("        shell: bash\n");
     s.push_str(&install_version_env("        ", pin));
@@ -1064,7 +1205,8 @@ fn push_install_otf_release_cross_platform(s: &mut String, pin: &str) {
         "        run: curl -fsSL {} | bash\n",
         install_sh_url(pin)
     ));
-    s.push_str("      - name: Install otf-release\n");
+    push_legacy_cli_name(s, false, true);
+    s.push_str("      - name: Install release\n");
     s.push_str("        if: runner.os == 'Windows'\n");
     s.push_str("        shell: pwsh\n");
     s.push_str(&install_version_env("        ", pin));
@@ -1072,6 +1214,7 @@ fn push_install_otf_release_cross_platform(s: &mut String, pin: &str) {
         "        run: irm {} | iex\n",
         install_ps1_url(pin)
     ));
+    push_legacy_cli_name(s, true, true);
 }
 
 pub fn render_workflow(config: &ReleaseConfig) -> String {
@@ -1127,7 +1270,7 @@ fn render_workflow_with_npm_install(config: &ReleaseConfig, npm: &NpmInstall) ->
             s.push_str("  attestations: write  # sign build provenance for release assets\n");
         }
     }
-    // Serialize release runs: two quick pushes to main must not run two `otf-release publish`
+    // Serialize release runs: two quick pushes to main must not run two `release publish`
     // pipelines at once. Every idempotency check in `publish` (`is_published`, `tag_exists`,
     // `release_exists`) is check-then-act, so concurrent runs can both read "not published" and
     // both push. `cancel-in-progress: false` is equally load-bearing: cancelling mid-publish
@@ -1400,8 +1543,8 @@ fn render_vm_build_step(s: &mut String, entry: &PackageEntry, os: &str, rust: bo
 }
 
 /// A matrix package builds as two jobs: a tiny `matrix-<slug>` job that emits the target matrix
-/// from `release.toml` via `otf-release matrix` (so the list never drifts), and a `build-<slug>`
-/// job that fans out over `fromJSON(...)` and calls `otf-release build` per target. The tool — not
+/// from `release.toml` via `release matrix` (so the list never drifts), and a `build-<slug>`
+/// job that fans out over `fromJSON(...)` and calls `release build` per target. The tool — not
 /// hand-written YAML — owns the triple/runner/cross/stage_as reconciliation, so there are no
 /// `# edit me` markers.
 fn render_matrix_build_jobs(
@@ -1431,7 +1574,7 @@ fn render_matrix_build_jobs(
     render_package_setup(s, config, entry, None, false);
     s.push_str("      - id: set\n");
     s.push_str(&format!(
-        "        run: echo \"matrix=$(otf-release matrix --package {name})\" >> \"$GITHUB_OUTPUT\"\n\n"
+        "        run: echo \"matrix=$(release matrix --package {name})\" >> \"$GITHUB_OUTPUT\"\n\n"
     ));
 
     // 2. Fan out over the matrix and build + stage each target.
@@ -1476,7 +1619,7 @@ fn render_matrix_build_jobs(
         s.push_str("        with:\n          targets: ${{ matrix.triple }}\n");
     }
     if node {
-        npm.setup_tool(Some(entry)).setup_node(s, false);
+        npm.setup_node(s, false, Some(entry));
         npm.push_install(s, Some(entry));
     }
     push_install_otf_release_cross_platform(s, pin);
@@ -1486,7 +1629,7 @@ fn render_matrix_build_jobs(
     s.push_str(&format!("      - name: Build {name}\n"));
     s.push_str(&host_only);
     s.push_str(&format!(
-        "        run: otf-release build --package {name} --target ${{{{ matrix.name }}}}/${{{{ matrix.arch }}}}\n"
+        "        run: release build --package {name} --target ${{{{ matrix.name }}}}/${{{{ matrix.arch }}}}\n"
     ));
 
     // One VM step per distinct guest OS: `uses:` cannot be templated, so the action reference has
@@ -1499,7 +1642,7 @@ fn render_matrix_build_jobs(
         s.push_str(&format!("      - name: Stage {name}\n"));
         s.push_str("        if: ${{ matrix.vm }}\n");
         s.push_str(&format!(
-            "        run: otf-release build --package {name} --target ${{{{ matrix.name }}}}/${{{{ matrix.arch }}}} --stage-only\n"
+            "        run: release build --package {name} --target ${{{{ matrix.name }}}}/${{{{ matrix.arch }}}} --stage-only\n"
         ));
     }
     s.push_str("      - uses: actions/upload-artifact@v4\n");
@@ -1534,7 +1677,7 @@ fn render_single_build_job(
             s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
         }
         Ecosystem::Npm => {
-            npm.setup_tool(Some(entry)).setup_node(s, false);
+            npm.setup_node(s, false, Some(entry));
             npm.push_install(s, Some(entry));
         }
         Ecosystem::Jsr => {
@@ -1570,7 +1713,7 @@ fn download_artifacts(s: &mut String, needs: &[String]) -> bool {
     true
 }
 
-/// The single registry publish job. Runs `otf-release publish` **once**; the tool loops every
+/// The single registry publish job. Runs `release publish` **once**; the tool loops every
 /// enabled adapter internally, so this one job covers npm + crates.io + generic. It sets up only
 /// the toolchains the active registries need; generic publish steps carry `# edit me` markers
 /// since the tool can't know your registry's toolchain or secret.
@@ -1631,7 +1774,7 @@ fn render_publish_job(
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
     if npm_enabled {
-        npm.setup_tool(None).setup_node(s, true);
+        npm.setup_node(s, true, None);
     }
     if cargo {
         s.push_str("      - uses: dtolnay/rust-toolchain@stable\n");
@@ -1650,7 +1793,7 @@ fn render_publish_job(
     // actually run, so `scope = "all"` matters most here.
     render_global_setup(s, config);
     s.push_str("      - name: Publish\n");
-    s.push_str("        run: otf-release publish");
+    s.push_str("        run: release publish");
     for package in excluded_packages {
         s.push_str(&format!(" --exclude-package {package}"));
     }
@@ -1893,7 +2036,7 @@ fn render_package_publish_job(
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
     match entry.adapter {
-        Ecosystem::Npm => npm.setup_tool(Some(entry)).setup_node(s, true),
+        Ecosystem::Npm => npm.setup_node(s, true, Some(entry)),
         Ecosystem::Cargo => s.push_str("      - uses: dtolnay/rust-toolchain@stable\n"),
         Ecosystem::Jsr => s.push_str("      - uses: denoland/setup-deno@v1\n"),
         Ecosystem::Generic => {}
@@ -1930,12 +2073,10 @@ fn render_package_publish_job(
     push_install_otf_release(s, pin);
     s.push_str("      - name: Publish\n");
     if inline {
-        s.push_str(&format!(
-            "        run: otf-release publish --package {name}\n"
-        ));
+        s.push_str(&format!("        run: release publish --package {name}\n"));
     } else {
         s.push_str(&format!(
-            "        run: otf-release publish --package {name} --artifacts-dir .artifacts\n"
+            "        run: release publish --package {name} --artifacts-dir .artifacts\n"
         ));
     }
     s.push_str("        env:\n");
@@ -1948,8 +2089,8 @@ fn render_package_publish_job(
     s.push_str("          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n\n");
 }
 
-/// The GitHub Release job for a `build-only` package: install `otf-release` and hand off to
-/// `otf-release github-release`, which reads the version, builds the notes, renames the staged
+/// The GitHub Release job for a `build-only` package: install `release` and hand off to
+/// `release github-release`, which reads the version, builds the notes, renames the staged
 /// binaries into OS/arch assets, and creates the Release — all in the binary, idempotently. The
 /// YAML stays a thin, stable call (no inline `gh`/`awk`/`jq`), exactly like the registry
 /// `publish` job. No registry push.
@@ -1979,12 +2120,12 @@ fn render_github_release(
     s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     if staged {
         s.push_str(&format!(
-            "        run: otf-release github-release --package {} --artifacts-dir .artifacts\n",
+            "        run: release github-release --package {} --artifacts-dir .artifacts\n",
             entry.name
         ));
     } else {
         s.push_str(&format!(
-            "        run: otf-release github-release --package {}\n",
+            "        run: release github-release --package {}\n",
             entry.name
         ));
     }
@@ -2043,7 +2184,7 @@ fn configure_generic(
         Vec::new()
     };
 
-    // `otf-release build` runs `rustup target add {triple}` itself and substitutes the placeholders,
+    // `release build` runs `rustup target add {triple}` itself and substitutes the placeholders,
     // so the commands here use `{triple}`/`{ext}`/`{bin}`, not GitHub `${{ matrix.* }}` expressions.
     let default_cmd = match (kind, matrix) {
         (Some("Rust / Cargo"), true) => "cargo build --release --target {triple}",
@@ -2377,7 +2518,7 @@ impl InitPrompt for StdinInitPrompt {
         };
 
         // A matrix package compiles one binary per target; ask its name and template the build so
-        // `otf-release build` can fill `{triple}`/`{ext}`/`{bin}` per target. An npm matrix package
+        // `release build` can fill `{triple}`/`{ext}`/`{bin}` per target. An npm matrix package
         // decompresses its staged binary at install time, so default to brotli; Release assets
         // (build-only) ship raw.
         let (bin_name, compress, default_cmd, default_artifacts) = if matrix {
@@ -2625,7 +2766,7 @@ impl InitPrompt for StdinInitPrompt {
 
         // A repo that needs one such tool often needs two — a task runner and the CLI its own
         // scripts are written in. Asking again is cheaper than sending someone to hand-edit the
-        // list, and the `targets` filter is left to `otf-release config`, which can show the
+        // list, and the `targets` filter is left to `release config`, which can show the
         // package's declared triples instead of asking them to be typed from memory.
         let mut steps = vec![self.prompt_one_setup()?];
         while Confirm::new("Another setup step?")
@@ -3042,7 +3183,7 @@ pub(crate) mod tests {
         assert!(out.contains("  id-token: write\n"), "{out}");
     }
 
-    /// A matrix package's setup runs on the host, before `otf-release build`, so an installer that
+    /// A matrix package's setup runs on the host, before `release build`, so an installer that
     /// writes `$GITHUB_PATH` reaches the build step the normal way.
     #[test]
     fn setup_runs_before_a_matrix_build() {
@@ -3261,7 +3402,7 @@ pub(crate) mod tests {
     }
 
     /// Every job, exactly once. Builds are not the only place the tool is needed: `pre_publish`
-    /// hooks and a generic package's `publish` command are executed by `otf-release publish`,
+    /// hooks and a generic package's `publish` command are executed by `release publish`,
     /// inside a publish job, and are themselves written in whatever this step installs.
     #[test]
     fn the_setup_step_reaches_every_job_exactly_once() {
@@ -3430,11 +3571,11 @@ pub(crate) mod tests {
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
         assert!(out.contains("          node-version: 24\n"));
         // The gate delegates to the binary — no hand-rolled inline version reads in the YAML.
-        assert!(out.contains("should_release=$(otf-release check)"));
+        assert!(out.contains("should_release=$(release check)"));
         assert!(!out.contains("version=\"$(node -p"));
         assert!(!out.contains("version=\"$(cargo metadata"));
-        assert!(out.contains("      - name: Install otf-release\n"));
-        assert!(out.contains("        run: otf-release publish\n"));
+        assert!(out.contains("      - name: Install release\n"));
+        assert!(out.contains("        run: release publish\n"));
         // No build steps, so no needs and no artifact download.
         assert!(out.contains("needs: [check-release]"));
         assert!(!out.contains("github-release"));
@@ -3487,7 +3628,7 @@ pub(crate) mod tests {
         // Cancelling would kill a run mid-publish, which is the failure it exists to prevent.
         assert!(!out.contains("cancel-in-progress: true"), "{out}");
         // No job here runs on Windows, so the PowerShell install branch is not emitted at all.
-        assert!(out.contains("      - name: Install otf-release\n        shell: bash\n"));
+        assert!(out.contains("      - name: Install release\n        shell: bash\n"));
         assert!(!out.contains("if: runner.os == 'Windows'"));
         assert!(!out.contains("install.ps1"));
     }
@@ -3626,11 +3767,11 @@ pub(crate) mod tests {
         // Check package-specific publish job for jsr-with-build
         assert!(out.contains("  publish-jsr-with-build:\n"));
         assert!(out.contains("      - uses: denoland/setup-deno@v1\n"));
-        assert!(out.contains("        run: otf-release publish --package jsr-with-build\n"));
+        assert!(out.contains("        run: release publish --package jsr-with-build\n"));
         // Check catch-all publish job for jsr-no-build
         assert!(out.contains("  publish:\n"));
         assert!(out.contains("      - uses: denoland/setup-deno@v1\n"));
-        assert!(out.contains("        run: otf-release publish --exclude-package jsr-with-build\n"));
+        assert!(out.contains("        run: release publish --exclude-package jsr-with-build\n"));
         assert!(out.contains("          JSR_TOKEN: ${{ secrets.JSR_TOKEN }}\n"));
     }
 
@@ -3680,6 +3821,108 @@ pub(crate) mod tests {
 
         std::fs::write(tmp.path().join("bun.lockb"), "").unwrap();
         assert_eq!(NpmTool::detect(tmp.path()), NpmTool::Bun);
+    }
+
+    #[test]
+    fn pnpm_workflows_honor_manifest_pin_before_lockfile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            packages: vec![npm_publish("docs-site")],
+            ..ReleaseConfig::default()
+        };
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"packageManager":"pnpm@10.11.0+sha512.abc"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("pnpm-lock.yaml"),
+            "lockfileVersion: '9.0'\n",
+        )
+        .unwrap();
+        let out = render_workflow_for_root(&config, tmp.path());
+        assert!(
+            out.contains("- uses: pnpm/action-setup@v4\n      - uses: actions/setup-node@v4"),
+            "{out}"
+        );
+        assert!(!out.contains("version: latest"));
+        assert!(!out.contains("version: 9\n"));
+        // A manifest pin selects pnpm even without a lockfile.
+        assert_eq!(NpmTool::detect(tmp.path()), NpmTool::Pnpm);
+    }
+
+    #[test]
+    fn pnpm_workflows_infer_compatible_major_from_lockfile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            packages: vec![npm_publish("docs-site")],
+            ..ReleaseConfig::default()
+        };
+        for (format, major) in [
+            ("5.3", "6"),
+            ("'5.4'", "7"),
+            ("6.0", "8"),
+            ("'9.0'", "9"),
+            ("9", "9"),
+        ] {
+            std::fs::write(
+                tmp.path().join("pnpm-lock.yaml"),
+                format!("lockfileVersion: {format}\n"),
+            )
+            .unwrap();
+            let out = render_workflow_for_root(&config, tmp.path());
+            assert!(
+                out.contains(&format!("          version: {major}\n")),
+                "{out}"
+            );
+            assert!(!out.contains("version: latest"));
+        }
+    }
+
+    #[test]
+    fn pnpm_workflows_read_pin_from_independent_package_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("packages/web")).unwrap();
+        std::fs::write(
+            tmp.path().join("packages/web/package.json"),
+            r#"{"packageManager":"pnpm@8.15.9"}"#,
+        )
+        .unwrap();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            discovery: crate::config::Discovery {
+                npm: vec!["packages/*".into()],
+            },
+            packages: vec![PackageEntry {
+                command: "pnpm run build".into(),
+                manifest: Some("packages/web/package.json".into()),
+                ..npm_publish("web")
+            }],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow_for_root(&config, tmp.path());
+        assert!(
+            out.contains("package_json_file: \"packages/web/package.json\""),
+            "{out}"
+        );
+        assert!(!out.contains("version: latest"));
+        assert!(out.contains("working-directory: packages/web"));
+    }
+
+    #[test]
+    fn old_installer_pins_expose_the_renamed_command_on_both_platforms() {
+        let mut out = String::new();
+        push_install_otf_release_cross_platform(&mut out, "v0.32.0");
+        assert!(out.contains("/v0.32.0/install.sh"));
+        assert!(out.contains("/v0.32.0/install.ps1"));
+        assert!(out.contains("$(command -v otf-release)"));
+        assert!(out.contains("(Get-Command otf-release).Source"));
+        assert!(out.contains("release-cli/release"));
+        let mut current = String::new();
+        push_install_otf_release(&mut current, &self_tag());
+        assert!(current.contains("if ! command -v release >/dev/null 2>&1; then"));
     }
 
     #[test]
@@ -3742,7 +3985,7 @@ pub(crate) mod tests {
         let out = render_workflow(&config);
         // A dynamic matrix emitted from release.toml (no hand-maintained, `# edit me` target list).
         assert!(out.contains("  matrix-opentf-release:\n"));
-        assert!(out.contains("        run: echo \"matrix=$(otf-release matrix --package opentf-release)\" >> \"$GITHUB_OUTPUT\"\n"));
+        assert!(out.contains("        run: echo \"matrix=$(release matrix --package opentf-release)\" >> \"$GITHUB_OUTPUT\"\n"));
         assert!(out.contains("  build-opentf-release:\n"));
         assert!(out.contains("    needs: [check-release, matrix-opentf-release]\n"));
         assert!(out.contains("    runs-on: ${{ matrix.runner }}\n"));
@@ -3750,7 +3993,7 @@ pub(crate) mod tests {
             "      matrix: ${{ fromJSON(needs.matrix-opentf-release.outputs.matrix) }}\n"
         ));
         // The tool drives the build + staging per target; no `# edit me`, no inline triple list.
-        assert!(out.contains("        run: otf-release build --package opentf-release --target ${{ matrix.name }}/${{ matrix.arch }}\n"));
+        assert!(out.contains("        run: release build --package opentf-release --target ${{ matrix.name }}/${{ matrix.arch }}\n"));
         assert!(!out.contains("      - name: Install cross toolchain\n"));
         assert!(!out.contains("# edit me: cross-compile"));
         assert!(!out.contains("# edit me: choose a runner"));
@@ -3761,7 +4004,7 @@ pub(crate) mod tests {
         assert!(out.contains("    needs: [check-release, build-opentf-release]\n"));
         // The release job is a thin call into the binary — the tool reads the version, builds the
         // notes, renames the staged binaries, and creates the release. No inline gh/awk/jq/flatten.
-        assert!(out.contains("        run: otf-release github-release --package opentf-release --artifacts-dir .artifacts\n"));
+        assert!(out.contains("        run: release github-release --package opentf-release --artifacts-dir .artifacts\n"));
         assert!(!out.contains("gh release create"));
         assert!(!out.contains("gh release view"));
         assert!(!out.contains("flat-artifacts"));
@@ -3773,9 +4016,7 @@ pub(crate) mod tests {
         assert!(out.contains(
             "  check-release:\n    runs-on: ubuntu-latest\n    outputs:\n      should_release:"
         ));
-        assert!(
-            out.contains("should_release=$(otf-release check --exclude-package opentf-release)")
-        );
+        assert!(out.contains("should_release=$(release check --exclude-package opentf-release)"));
         assert!(!out.contains("git ls-remote"));
         assert!(!out.contains("cargo publish"));
         assert!(!out.contains("crates.io"));
@@ -3838,7 +4079,7 @@ pub(crate) mod tests {
         assert!(out.contains("    needs: [check-release, build-opentf-web-compiler]\n"));
         assert!(out.contains("          pattern: opentf-web-compiler-*\n"));
         assert!(out.contains("          path: .artifacts/@opentf/web-compiler\n"));
-        assert!(out.contains("        run: otf-release publish --package @opentf/web-compiler --artifacts-dir .artifacts\n"));
+        assert!(out.contains("        run: release publish --package @opentf/web-compiler --artifacts-dir .artifacts\n"));
         // …and NOT to a cosmetic GitHub Release of raw binaries.
         assert!(!out.contains("  github-release:\n"));
         // A generated npm version read is confident — no stray `# edit me` hint.
@@ -3918,10 +4159,10 @@ pub(crate) mod tests {
         ));
         // The normal build step skips VM rows, and a stage-only step covers them instead.
         assert!(out.contains(
-            "      - name: Build esrun\n        if: ${{ !matrix.vm }}\n        run: otf-release build --package esrun --target ${{ matrix.name }}/${{ matrix.arch }}\n"
+            "      - name: Build esrun\n        if: ${{ !matrix.vm }}\n        run: release build --package esrun --target ${{ matrix.name }}/${{ matrix.arch }}\n"
         ));
         assert!(out.contains(
-            "      - name: Stage esrun\n        if: ${{ matrix.vm }}\n        run: otf-release build --package esrun --target ${{ matrix.name }}/${{ matrix.arch }} --stage-only\n"
+            "      - name: Stage esrun\n        if: ${{ matrix.vm }}\n        run: release build --package esrun --target ${{ matrix.name }}/${{ matrix.arch }} --stage-only\n"
         ));
     }
 
@@ -4020,7 +4261,7 @@ pub(crate) mod tests {
         assert!(out.contains("  matrix-opentf-web-compiler:\n"));
         assert!(out.contains("  build-opentf-web-compiler:\n"));
         assert!(out.contains(
-            "release_opentf_web_compiler=$(otf-release check --package @opentf/web-compiler)"
+            "release_opentf_web_compiler=$(release check --package @opentf/web-compiler)"
         ));
         assert!(
             out.contains("if: needs.check-release.outputs.release_opentf_web_compiler == 'true'")
@@ -4039,7 +4280,7 @@ pub(crate) mod tests {
             install_ps1_url(&self_tag())
         )));
         assert!(out
-            .contains("        run: otf-release build --package @opentf/web-compiler --target ${{ matrix.name }}/${{ matrix.arch }}\n"));
+            .contains("        run: release build --package @opentf/web-compiler --target ${{ matrix.name }}/${{ matrix.arch }}\n"));
 
         // The publish job merges each target's artifact back into `.artifacts/<package>` so the
         // staged `bin/<stage_as>/…` tree is whole before packing — the load-bearing fix.
@@ -4047,8 +4288,8 @@ pub(crate) mod tests {
         assert!(out.contains("          pattern: opentf-web-compiler-*\n"));
         assert!(out.contains("          path: .artifacts/@opentf/web-compiler\n"));
         assert!(out.contains("          merge-multiple: true\n"));
-        assert!(out.contains("        run: otf-release publish --package @opentf/web-compiler --artifacts-dir .artifacts\n"));
-        assert!(out.contains("run: otf-release publish --exclude-package @opentf/web-compiler\n"));
+        assert!(out.contains("        run: release publish --package @opentf/web-compiler --artifacts-dir .artifacts\n"));
+        assert!(out.contains("run: release publish --exclude-package @opentf/web-compiler\n"));
         // Hygiene: the npm auth secret is NPM_TOKEN, matching the snapshot workflow.
         assert!(out.contains("          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n"));
         assert!(!out.contains("secrets.NODE_AUTH_TOKEN"));
@@ -4060,7 +4301,7 @@ pub(crate) mod tests {
     #[test]
     fn github_release_job_is_a_thin_call_for_every_notes_mode() {
         // The release body source (curated changelog / configured package changelogs / semantic
-        // commits) is resolved inside `otf-release github-release`, so the *generated YAML* is the
+        // commits) is resolved inside `release github-release`, so the *generated YAML* is the
         // same thin call for every mode — no inline awk/jq/gh/grep. The notes behavior itself is
         // covered by the `github_release` module's orchestrate tests.
         for notes in [
@@ -4089,7 +4330,7 @@ pub(crate) mod tests {
             };
             let out = render_workflow(&config);
 
-            assert!(out.contains("        run: otf-release github-release --package otf-release --artifacts-dir .artifacts\n"));
+            assert!(out.contains("        run: release github-release --package otf-release --artifacts-dir .artifacts\n"));
             // None of the old inline notes/flatten bash survives in any mode.
             assert!(!out.contains("awk -v version"));
             assert!(!out.contains("changelog_files"));
@@ -4129,7 +4370,9 @@ pub(crate) mod tests {
         // Version, tag, notes, and asset renaming all happen inside the binary — the job is a thin
         // call, with no inline version read (`node -p`) or tag templating in the YAML.
         assert!(out.contains("  github-release-release:\n"));
-        assert!(out.contains("        run: otf-release github-release --package release --artifacts-dir .artifacts\n"));
+        assert!(out.contains(
+            "        run: release github-release --package release --artifacts-dir .artifacts\n"
+        ));
         assert!(!out.contains("node -p"));
         assert!(!out.contains("tag=\"release@$version\""));
         assert!(!out.contains("  publish:\n"));
@@ -4162,10 +4405,10 @@ pub(crate) mod tests {
         assert!(out.contains("  github-release-cli-a:\n"));
         assert!(out.contains("  github-release-cli-b:\n"));
         assert!(out.contains(
-            "        run: otf-release github-release --package cli-a --artifacts-dir .artifacts\n"
+            "        run: release github-release --package cli-a --artifacts-dir .artifacts\n"
         ));
         assert!(out.contains(
-            "        run: otf-release github-release --package cli-b --artifacts-dir .artifacts\n"
+            "        run: release github-release --package cli-b --artifacts-dir .artifacts\n"
         ));
         assert!(!out.contains("flat-artifacts"));
         assert!(!out.contains("tag=\"v${{ needs.check-release.outputs.version }}\""));
@@ -4194,12 +4437,12 @@ pub(crate) mod tests {
         };
         let out = render_workflow(&config);
         assert!(out.contains("  build-jsr-lib:\n"));
-        // A unified publish job runs `otf-release publish` (which runs the configured command).
+        // A unified publish job runs `release publish` (which runs the configured command).
         assert!(out.contains("  publish-jsr-lib:\n"));
         assert!(out.contains("    needs: [check-release, build-jsr-lib]\n"));
-        assert!(out.contains("      - name: Install otf-release\n"));
+        assert!(out.contains("      - name: Install release\n"));
         assert!(out.contains(
-            "        run: otf-release publish --package jsr-lib --artifacts-dir .artifacts\n"
+            "        run: release publish --package jsr-lib --artifacts-dir .artifacts\n"
         ));
         // The tool can't know a generic registry's toolchain/secret → edit-me markers.
         assert!(out.contains("# edit me: set up the toolchain your generic publish command needs"));
@@ -4232,16 +4475,16 @@ pub(crate) mod tests {
         assert!(out.contains("  build-web-compiler:\n"));
         assert!(out.contains("  github-release-web-compiler:\n"));
         assert!(out.contains("    needs: [check-release, build-web-compiler]\n"));
-        assert!(out.contains("        run: otf-release github-release --package web-compiler --artifacts-dir .artifacts\n"));
+        assert!(out.contains("        run: release github-release --package web-compiler --artifacts-dir .artifacts\n"));
         // npm publish builds inline in its own publish job — no separate build job, no staging.
         assert!(!out.contains("  build-docs-site:\n"));
         assert!(out.contains("  publish-docs-site:\n"));
         assert!(out.contains("      - name: Build docs-site\n"));
         assert!(out.contains("        run: npm run build\n"));
         // The inline npm publish reads no staged artifacts (no `--artifacts-dir`).
-        assert!(out.contains("        run: otf-release publish --package docs-site\n"));
+        assert!(out.contains("        run: release publish --package docs-site\n"));
         assert!(out.contains("      - uses: actions/setup-node@v4\n"));
-        assert!(out.contains("      - name: Install otf-release\n"));
+        assert!(out.contains("      - name: Install release\n"));
     }
 
     /// The ES-Runtime shape: a Cargo workspace whose binary crate is `build-only` while its library
@@ -4332,7 +4575,7 @@ pub(crate) mod tests {
         );
         assert!(out.contains(&expected), "{out}");
         // Signing runs after the release, so a signing outage cannot block shipping.
-        let release_at = out.find("otf-release github-release").unwrap();
+        let release_at = out.find("release github-release").unwrap();
         let attest_at = out.find("attest-build-provenance").unwrap();
         assert!(release_at < attest_at);
     }
@@ -4388,7 +4631,7 @@ pub(crate) mod tests {
         assert!(out.contains(&format!("/release/{tag}/install.ps1")));
 
         // Every install step pins which release it downloads.
-        let installs = out.matches("Install otf-release").count();
+        let installs = out.matches("Install release").count();
         let pins = out.matches(&format!("OTF_RELEASE_VERSION: {tag}")).count();
         assert!(installs > 0);
         assert_eq!(
@@ -4799,9 +5042,9 @@ pub(crate) mod tests {
         assert_eq!(cfg.packages[0].command, "npm run build");
         assert!(cfg.packages[0].builds_inline());
         let yml = fs::read_to_string(tmp.path().join(".github/workflows/release.yml")).unwrap();
-        assert!(yml.contains(
-            "should_release=$(otf-release check --exclude-package @opentf/web-compiler)"
-        ));
+        assert!(
+            yml.contains("should_release=$(release check --exclude-package @opentf/web-compiler)")
+        );
         assert!(!yml.contains("  build-opentf-web-compiler:\n"));
         assert!(!yml.contains("--artifacts-dir"));
         assert!(!yml.contains("workspaces"));

@@ -8,7 +8,7 @@ thin, stable call, exactly like the registry `publish` job. Implemented in
 `crates/core/src/github_release.rs`.
 
 ```
-otf-release github-release [--package <name>] [--artifacts-dir <dir>] [--dry-run]
+release github-release [--package <name>] [--artifacts-dir <dir>] [--dry-run]
 ```
 
 - `--package` — which build-only package to release. Optional when the repo has exactly one; the
@@ -124,7 +124,7 @@ to GitHub's attestation store, not onto the release, so ordering doesn't change 
 Consumers verify with:
 
 ```bash
-gh attestation verify otf-release-linux-x86-64.tar.gz --repo Open-Tech-Foundation/release
+gh attestation verify release-linux-x86-64.tar.gz --repo Open-Tech-Foundation/release
 ```
 
 > **Off by default.** Provenance needs the two extra scopes above, so enabling it silently on
@@ -150,12 +150,12 @@ github-release-<pkg>:
     - uses: actions/download-artifact@v4
       with:
         path: .artifacts
-    - name: Install otf-release
+    - name: Install release
       run: curl -fsSL .../install.sh | bash
     - name: Create GitHub Release
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: otf-release github-release --package <pkg> --artifacts-dir .artifacts
+      run: release github-release --package <pkg> --artifacts-dir .artifacts
 ```
 
 Auth: the default `GITHUB_TOKEN` with `contents: write`. The tag is created by the Release, on the

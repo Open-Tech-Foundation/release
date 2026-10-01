@@ -1,4 +1,4 @@
-//! Discovery run from a **relative** root — the shape `otf-release` actually uses.
+//! Discovery run from a **relative** root — the shape `release` actually uses.
 //!
 //! The CLI defaults `--root` to `.`, and `glob` drops that leading `./` from the paths it yields.
 //! Anything that compares a pattern string against an already-globbed path is therefore comparing

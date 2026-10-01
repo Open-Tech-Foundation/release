@@ -1,9 +1,9 @@
-# `otf-release self-update`
+# `release self-update`
 
 **Checks GitHub Releases and reinstalls when a newer CLI version is available.**
 
 ```
-otf-release self-update
+release self-update
 ```
 
 Implemented in `crates/cli/src/self_update.rs`.

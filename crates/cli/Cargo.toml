@@ -10,9 +10,9 @@ authors.workspace = true
 keywords = ["release", "monorepo", "changelog", "publishing", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
-# The published crate is `otf-release`; the binary on PATH is `otf-release`.
+# The published crate is `otf-release`; the binary on PATH is `release`.
 [[bin]]
-name = "otf-release"
+name = "release"
 path = "src/main.rs"
 
 [dependencies]

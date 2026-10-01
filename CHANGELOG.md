@@ -10,6 +10,9 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ### Changed
 
+- Rename the executable from `otf-release` to `release`. Update generated workflows, installers,
+  release asset names, and command documentation; retain support for older pinned installers and assets.
+
 - **A setup step has its own screen in `config`, and *Build setup* is one row per step.** Four rows
   per step turned a two-step list into eight near-identical lines that read as noise rather than as
   an ordered list. The screen already had the right idiom: a package is one summary row that opens a
@@ -23,6 +26,12 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
   list — rather than taking a typed list. Checking none, or all, writes no filter. Typing a triple
   from memory is the one way to produce a filter that silently never matches, which `doctor` can
   only report after the fact as `setup-targets-unknown`.
+
+### Fixed
+
+- Generated pnpm setup honors the repository's `packageManager` pin instead of forcing `latest`.
+  Without a pin, known lockfile formats select a compatible pnpm major, including independent
+  package directories. Applies to workflow generation through `init` and `upgrade`.
 
 ## [0.38.0] - 2026-08-15
 

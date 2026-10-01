@@ -1,6 +1,6 @@
 # OTF Release — Documentation
 
-Reference documentation for `otf-release`, the manual-bump, changelog-aware release CLI for
+Reference documentation for `release`, the manual-bump, changelog-aware release CLI for
 polyglot monorepos.
 
 > **Status:** The implemented command surface includes `init`, `version`, `check`, `publish`,
@@ -28,7 +28,7 @@ polyglot monorepos.
 | [commands/version.md](./commands/version.md) | The interactive, local `version` command. |
 | [commands/publish.md](./commands/publish.md) | The non-interactive, CI `publish` command. |
 | [commands/github-release.md](./commands/github-release.md) | The CI `github-release` command — attaches a build-only package's binaries to a GitHub Release. |
-| [commands/check.md](./commands/check.md) | The CI release gate (`otf-release check`). |
+| [commands/check.md](./commands/check.md) | The CI release gate (`release check`). |
 | [commands/matrix-build.md](./commands/matrix-build.md) | The `matrix` / `build` CI helpers for cross-compiled binary packages. |
 | [commands/init.md](./commands/init.md) | Interactive setup: writes `release.toml`, generates `release.yml`. |
 | [commands/config.md](./commands/config.md) | Interactive editor for `release.toml`. |
@@ -63,7 +63,7 @@ polyglot monorepos.
 
 ## Conventions used in these docs
 
-- The invoked binary is `otf-release`; the published npm package is `@opentf/release`.
+- The invoked binary is `release`; the published npm package is `@opentf/release`.
 - Code/identifier references point at `crates/<crate>/src/<module>.rs`.
 - "Current" = npm + cargo + generic adapters, config-driven via `release.toml`, local
   `version` → release PR → CI `publish`.

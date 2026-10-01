@@ -1,9 +1,9 @@
-# `otf-release publish`
+# `release publish`
 
 **Non-interactive. Run in CI. Stateless. Idempotent and resumable.**
 
 ```
-otf-release publish [--package <NAME>] [--artifacts-dir <DIR>] [--dry-run]
+release publish [--package <NAME>] [--artifacts-dir <DIR>] [--dry-run]
 ```
 
 | Flag | Effect |

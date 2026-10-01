@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $Repo = "Open-Tech-Foundation/release"
-$BinName = "otf-release"
+$BinName = "release"
 
 $Arch = (Get-WmiObject -Class Win32_Processor).Architecture
 if ($Arch -eq 9) {
@@ -21,6 +21,7 @@ $BareAssetNames = @(
     "${BinName}-windows-${PublicArchName}.exe",
     "windows-${ArchName}.exe",
     "win32-${ArchName}.exe",
+    "otf-release-windows-${PublicArchName}.exe",
     "otf-release-windows-${ArchName}.exe",
     "otf-release-windows-${LegacyArchName}.exe",
     "otf-release-win32-${ArchName}.exe",
@@ -189,6 +190,9 @@ try {
             Remove-Item -Path $ZipCopy -Force -ErrorAction SilentlyContinue
         }
         $Extracted = Get-ChildItem -Path $ExtractDir -Recurse -Filter "${BinName}.exe" | Select-Object -First 1
+        if (-not $Extracted) {
+            $Extracted = Get-ChildItem -Path $ExtractDir -Recurse -Filter "otf-release.exe" | Select-Object -First 1
+        }
         if (-not $Extracted) {
             Write-Error "Archive did not contain a ${BinName}.exe binary."
             exit 1

@@ -4,10 +4,10 @@
 
 <p align="center">
   <img src="assets/version-preview.png" width="820"
-       alt="otf-release version — the interactive Release Review: chosen bumps, dependency-rule cascades, dependency-range updates, and changed files, confirmed before the release PR is opened." />
+       alt="release version — the interactive Release Review: chosen bumps, dependency-rule cascades, dependency-range updates, and changed files, confirmed before the release PR is opened." />
 </p>
 
-`otf-release` is a single Rust binary that helps a repo move from curated release notes to a
+`release` is a single Rust binary that helps a repo move from curated release notes to a
 release PR, then to CI-driven publishing.
 
 > **Core rule**
@@ -49,7 +49,8 @@ irm https://raw.githubusercontent.com/Open-Tech-Foundation/release/main/install.
 cargo install --git https://github.com/Open-Tech-Foundation/release
 ```
 
-Already installed? Update with `otf-release self-update`.
+Already installed? Update with `release self-update`. If your older installation still uses
+`otf-release`, run `otf-release self-update` once to install the renamed `release` executable.
 
 Prebuilt binaries are published for **Linux** (x86-64, arm64), **macOS** (x86-64, arm64),
 **Windows** (x86-64), and **FreeBSD** (x86-64) — the last built natively in a VM, since GitHub
@@ -64,7 +65,7 @@ unable to check one (no `gh`, or an older release with no attestation) only prin
 `OTF_RELEASE_REQUIRE_ATTESTATION=1` to make those fatal too. To check a download by hand:
 
 ```bash
-gh attestation verify otf-release-linux-x86-64.tar.gz --repo Open-Tech-Foundation/release
+gh attestation verify release-linux-x86-64.tar.gz --repo Open-Tech-Foundation/release
 ```
 
 The attestation is what proves the binary came from this repo's workflow; a checksum alone only
@@ -74,7 +75,7 @@ proves the download wasn't corrupted. Your own releases can ship both — see
 ### 2. Set up the repo
 
 ```bash
-otf-release init   # writes release.toml and .github/workflows/release.yml
+release init   # writes release.toml and .github/workflows/release.yml
 ```
 
 ### 3. Cut a release
@@ -82,13 +83,13 @@ otf-release init   # writes release.toml and .github/workflows/release.yml
 Prepare release notes (curated `CHANGELOG.md` `[Unreleased]`, or let `version` generate them), then:
 
 ```bash
-otf-release version   # interactive bumps, cascades, changelog, opens the release PR
+release version   # interactive bumps, cascades, changelog, opens the release PR
 ```
 
 **Useful flag**
 
 ```bash
-otf-release version --dry-run   # preview the plan; no file edits, commits, or PR
+release version --dry-run   # preview the plan; no file edits, commits, or PR
 ```
 
 Curated changelog mode requires non-empty `[Unreleased]` notes in the configured scope: root

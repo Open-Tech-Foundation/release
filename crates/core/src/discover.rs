@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn dir_name_recovers_directory_for_a_rootless_relative_manifest() {
-        // The bug: `otf-release init` run from a repo root passes root = ".", so the root manifest is
+        // The bug: `release init` run from a repo root passes root = ".", so the root manifest is
         // `./Cargo.toml` — parent `.`, no `file_name()` — and an unnamed virtual workspace collapsed
         // to the literal "package". The canonicalize fallback recovers the real directory name.
         // `cargo test` runs with cwd at this crate's dir, which has a `Cargo.toml`.

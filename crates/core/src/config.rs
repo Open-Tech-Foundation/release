@@ -104,7 +104,7 @@ pub enum GithubReleaseNotes {
 /// What `publish`/CI does with a package after its build step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
-    /// Build, then publish to the ecosystem's registry (`otf-release publish`).
+    /// Build, then publish to the ecosystem's registry (`release publish`).
     #[serde(rename = "publish")]
     Publish,
     /// Build only — stage the artifacts and attach them to a GitHub Release. No registry push.
@@ -577,14 +577,14 @@ pub struct Hooks {
 ///
 /// The escape hatch for a pipeline that needs a tool the runner does not ship and no adapter knows
 /// about — a task runner, a bundler installed by its own `install.sh`, a private toolchain. Such a
-/// tool cannot be installed by a [hook](Hooks): hooks are executed by `otf-release publish` at
+/// tool cannot be installed by a [hook](Hooks): hooks are executed by `release publish` at
 /// runtime, which is *after* the build step in the same job, so nothing a hook does can provision
 /// what the build already needed. It is also the wrong way round — the hooks are themselves
 /// written in the tool a setup step installs.
 ///
 /// Folding the install into [`command`](PackageEntry::command) works — the string is emitted
 /// verbatim into `run:` — but it is the wrong home for it twice over. `command` is also what
-/// `otf-release build` runs on a contributor's machine, so an installer buried there executes
+/// `release build` runs on a contributor's machine, so an installer buried there executes
 /// outside CI; and everything crammed into one `run:` block cannot use `$GITHUB_PATH`, whose writes
 /// only reach *later* steps. A setup step is a step of its own that precedes the build, so
 /// `echo … >> "$GITHUB_PATH"` behaves normally and a composite action's PATH exports reach the
@@ -915,7 +915,7 @@ impl Discovery {
 pub struct ReleaseConfig {
     /// Ecosystems enabled for this repo.
     pub adapters: Vec<Ecosystem>,
-    /// Which `otf-release` release the generated workflow installs, as a git tag (e.g. `v0.25.0`).
+    /// Which `release` release the generated workflow installs, as a git tag (e.g. `v0.25.0`).
     ///
     /// Defaults to the version of the binary that generated the workflow, which for a normal repo
     /// is exactly right — you installed a released build, so it exists. Set it explicitly when that
@@ -1243,7 +1243,7 @@ impl ReleaseConfig {
         let path = Self::path(root);
         let text = fs::read_to_string(&path).with_context(|| {
             format!(
-                "reading {} — run `otf-release init` to create it",
+                "reading {} — run `release init` to create it",
                 path.display()
             )
         })?;
@@ -1847,6 +1847,6 @@ mod tests {
     fn load_missing_is_a_helpful_error() {
         let tmp = tempfile::tempdir().unwrap();
         let err = ReleaseConfig::load(tmp.path()).unwrap_err().to_string();
-        assert!(err.contains("otf-release init"));
+        assert!(err.contains("release init"));
     }
 }

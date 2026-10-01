@@ -8,7 +8,7 @@
 //!   in place with a targeted text replace, preserving the file's formatting. Works for any
 //!   `"version": "x.y.z"` / `version = "x.y.z"` style manifest (JSON, TOML, …).
 //! - **Publish** is an optional shell command (`publish`, e.g. `npx jsr publish`). When present
-//!   the package publishes through `otf-release publish` (which then tags + makes the GitHub
+//!   the package publishes through `release publish` (which then tags + makes the GitHub
 //!   Release); when absent the package is build-only.
 //! - **No dependency graph / ranges.** A generic package that versions a root `Cargo.toml`
 //!   refreshes `Cargo.lock` after version writes so Rust build-only releases stay consistent.
@@ -419,7 +419,7 @@ impl Adapter for GenericAdapter {
         let Some(command) = &cfg.publish else {
             bail!(
                 "generic package `{}` has no `publish` command — it is build-only and ships via \
-                 the workflow's GitHub Release, not `otf-release publish`.",
+                 the workflow's GitHub Release, not `release publish`.",
                 pkg.name
             );
         };

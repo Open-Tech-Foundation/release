@@ -63,7 +63,7 @@ Globs are relative to the repo root and name package **directories**, not manife
 list is non-empty it *is* the member set and the root `package.json` is never consulted — so it can
 also narrow a repo to a subset of what its package manager treats as members.
 
-`init` and `otf-release config` → *Ecosystems* write this list: they scan the repo, show every
+`init` and `release config` → *Ecosystems* write this list: they scan the repo, show every
 `package.json` carrying a `name` and a `version`, pre-check the publishable ones, and save what you
 confirm. The scan is a suggestion engine only. Discovery never walks the tree at release time,
 because a walk finds test fixtures and scaffolding templates just as happily as real packages, and
@@ -129,7 +129,7 @@ At `init`, for each publishable npm package:
 - **Auto-detect the build.** If `package.json` declares a `scripts.build`, `init` records an
   inline-build publish entry (`command = "npm run build"`) — no prompt. The generated
   `publish-<pkg>` job runs `npm run build` (scoped to the package's directory via
-  `working-directory`) and then `otf-release publish --package <name>` with **no `--artifacts-dir`**.
+  `working-directory`) and then `release publish --package <name>` with **no `--artifacts-dir`**.
   A package without a `build` script is published as-is by the catch-all `publish` job.
 - **Strip pack/publish lifecycle hooks.** Because the pipeline runs the build itself, `init` removes
   npm's `prepublish`, `prepublishOnly`, `prepack`, and `prepare` scripts from `package.json`
@@ -146,7 +146,7 @@ artifact path described below.
 Before `npm publish`, the contents of `.artifacts/<package>/` are copied into the package. For a
 matrix package that tree is `bin/<stage_as>/<bin><ext>[.br]`, where `<stage_as>` is the Node
 `process.platform-process.arch` directory the package's install-time resolver reads (`linux-arm64`,
-`darwin-x64`, `win32-x64`, …). `otf-release build` produces this layout per target and the workflow
+`darwin-x64`, `win32-x64`, …). `release build` produces this layout per target and the workflow
 merges every target's artifact back into `.artifacts/<package>/` before this step — so the published
 tarball carries a binary for each platform under the exact path the resolver expects.
 
@@ -205,7 +205,7 @@ pin would break `install` — and the lockfile refresh runs before publish. The 
 ## No `private:true` guard — and why
 
 The current pre-tool workflow sets `private: true` on asset packages purely to **hide them
-from `changeset publish`**, then flips the flag off to publish. `otf-release` understands asset
+from `changeset publish`**, then flips the flag off to publish. `release` understands asset
 packages natively:
 
 > Asset packages are **normal publishable packages** with a binary target. **No guard, no
@@ -223,7 +223,7 @@ This is the single biggest behavioral difference from the changesets workaround.
 | `--no-workspaces` | Private root workspace would otherwise skip the package. |
 | `--access public` | Scoped package first publish. |
 | `--tag <pre-id>` for prereleases | A snapshot never lands on `latest`. |
-| Brotli staging done by `otf-release build` | Compresses with the Rust `brotli` crate (max quality, window 22); the package decompresses with Node `zlib` at install — no runner-side CLI either way. |
+| Brotli staging done by `release build` | Compresses with the Rust `brotli` crate (max quality, window 22); the package decompresses with Node `zlib` at install — no runner-side CLI either way. |
 
 | Drop | Why |
 | --- | --- |

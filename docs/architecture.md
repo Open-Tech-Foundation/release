@@ -1,6 +1,6 @@
 # Architecture
 
-`otf-release` is a single static binary (Rust) split into a registry-agnostic **core** and
+`release` is a single static binary (Rust) split into a registry-agnostic **core** and
 one or more **adapters**. The core orchestrates a release; an adapter knows how one ecosystem
 reads manifests, formats version ranges, talks to a registry, and publishes.
 
@@ -40,7 +40,7 @@ crates/
       npm/          # npm workspace adapter
       cargo.rs      # Cargo workspace adapter
       generic.rs    # manifest + user-command adapter
-  cli/       opentf-release              # binary `otf-release` (clap)
+  cli/       opentf-release              # binary `release` (clap)
     src/
       main.rs
 ```

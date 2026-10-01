@@ -1,4 +1,4 @@
-//! `otf-release` — the CLI entry point.
+//! `release` — the CLI entry point.
 //!
 //! Wires command-line arguments to the orchestration in `opentf-release-core`. There is **no
 //! `--adapter` flag**: which ecosystems are active is read from `release.toml` (written by
@@ -112,7 +112,7 @@ fn generic_pkgs(config: &ReleaseConfig) -> Vec<GenericPkg> {
 
 /// Curated-changelog, manual-bump release CLI for polyglot monorepos.
 #[derive(Debug, Parser)]
-#[command(name = "otf-release", version, about)]
+#[command(name = "release", version, about)]
 struct Cli {
     /// Workspace root (defaults to the current directory).
     #[arg(long, global = true)]
@@ -218,7 +218,7 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Update otf-release to the latest version.
+    /// Update release to the latest version.
     SelfUpdate,
 }
 

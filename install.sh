@@ -2,7 +2,7 @@
 set -eu
 
 REPO="Open-Tech-Foundation/release"
-BIN_NAME="otf-release"
+BIN_NAME="release"
 
 # Which release to install. Unset means `latest` — right for a human running the curl
 # line by hand. Generated workflows set an exact tag (e.g. v0.26.0) so a pipeline builds
@@ -46,6 +46,12 @@ esac
 ASSET_NAMES="$ASSET_NAME ${PLATFORM_NAME}-${ARCH_NAME} ${BIN_NAME}-${PLATFORM_NAME}-${LEGACY_ARCH_NAME}"
 case "$OS" in
     darwin) ASSET_NAMES="$ASSET_NAMES darwin-${ARCH_NAME} ${BIN_NAME}-darwin-${LEGACY_ARCH_NAME}" ;;
+esac
+
+# Releases before the executable rename used otf-release asset/member names.
+ASSET_NAMES="$ASSET_NAMES otf-release-${PLATFORM_NAME}-${PUBLIC_ARCH_NAME} otf-release-${PLATFORM_NAME}-${ARCH_NAME} otf-release-${PLATFORM_NAME}-${LEGACY_ARCH_NAME}"
+case "$OS" in
+    darwin) ASSET_NAMES="$ASSET_NAMES otf-release-darwin-${LEGACY_ARCH_NAME}" ;;
 esac
 
 # Releases ship the binary inside a .tar.gz. Older releases attached the raw binary
@@ -206,6 +212,9 @@ case "$MAGIC" in
         EXTRACTED="$EXTRACT_DIR/$BIN_NAME"
         if [ ! -f "$EXTRACTED" ]; then
             EXTRACTED="$(find "$EXTRACT_DIR" -type f -name "$BIN_NAME" 2>/dev/null | head -n 1)"
+        fi
+        if [ -z "$EXTRACTED" ] || [ ! -f "$EXTRACTED" ]; then
+            EXTRACTED="$(find "$EXTRACT_DIR" -type f -name otf-release 2>/dev/null | head -n 1)"
         fi
         if [ -z "$EXTRACTED" ] || [ ! -f "$EXTRACTED" ]; then
             echo "Error: archive did not contain a '$BIN_NAME' binary." >&2
