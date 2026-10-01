@@ -29,6 +29,10 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ### Fixed
 
+- Preserve custom target definitions when selecting build targets, correctly resolve musl target
+  names, and edit hook commands, setup commands, and action inputs as separate entries so commas
+  inside values are preserved. Long picker lists now scroll to the focused option.
+
 - Expose npm publishing's **Provenance** toggle in the package config screen and preserve the
   reminder to run `release upgrade` after enabling signing. The saved setting enables
   `npm publish --provenance` and the generated workflow's `id-token: write` permission.

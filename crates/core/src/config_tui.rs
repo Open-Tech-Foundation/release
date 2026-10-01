@@ -115,7 +115,7 @@ impl SetupPart {
         match self {
             SetupPart::Uses => "an action run before the build, e.g. ./.github/actions/setup-tsr",
             SetupPart::With => "inputs for the action above, as key=value pairs",
-            SetupPart::Run => "shell commands run as one step, comma-separated",
+            SetupPart::Run => "shell commands run as one step, one command per entry",
             SetupPart::Targets => {
                 "triples this step is for, comma-separated; blank runs it on every matrix row"
             }
@@ -336,7 +336,7 @@ fn settings_entries(config: &ReleaseConfig, new_packages: &[String]) -> Vec<Entr
             stage.label(),
             list_or_none(commands),
             Field::Hook(stage),
-            "shell commands run around the release, comma-separated",
+            "shell commands run around the release, one command per entry",
         ));
     }
 
@@ -694,6 +694,13 @@ enum Modal {
         cursor: usize,
         field: Field,
     },
+    List {
+        title: String,
+        items: Vec<String>,
+        cursor: usize,
+        editing: Option<String>,
+        field: Field,
+    },
     /// Type a value.
     Text {
         title: String,
@@ -707,7 +714,8 @@ impl Modal {
         match self {
             Modal::Choice { title, .. }
             | Modal::Check { title, .. }
-            | Modal::Text { title, .. } => title,
+            | Modal::Text { title, .. }
+            | Modal::List { title, .. } => title,
         }
     }
 }
@@ -729,6 +737,16 @@ fn check(title: &str, options: Vec<String>, on: &[String], field: Field) -> Moda
         options,
         checked,
         cursor: 0,
+        field,
+    }
+}
+
+fn list(title: &str, items: &[String], field: Field) -> Modal {
+    Modal::List {
+        title: title.into(),
+        items: items.to_vec(),
+        cursor: 0,
+        editing: None,
         field,
     }
 }
@@ -1006,9 +1024,9 @@ fn open_editor(app: &mut App) -> Result<()> {
                 Field::SkipPublish,
             )
         }
-        Field::Hook(stage) => text(
-            &format!("{} commands (comma-separated)", stage.label()),
-            &hook_commands(config, *stage).join(", "),
+        Field::Hook(stage) => list(
+            stage.label(),
+            hook_commands(config, *stage),
             Field::Hook(*stage),
         ),
         Field::SetupAdd(scope) => {
@@ -1064,16 +1082,16 @@ fn open_editor(app: &mut App) -> Result<()> {
                     &step.uses.clone().unwrap_or_default(),
                     field,
                 ),
-                SetupPart::With => text(
-                    "Setup action inputs (key=value, comma-separated)",
-                    &step.format_with(),
+                SetupPart::With => list(
+                    "Action inputs (one key=value per entry)",
+                    &step
+                        .with
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>(),
                     field,
                 ),
-                SetupPart::Run => text(
-                    "Setup commands (comma-separated)",
-                    &step.run.join(", "),
-                    field,
-                ),
+                SetupPart::Run => list("Setup commands", &step.run, field),
             }
         }
         other => package_editor(app, other.clone())?,
@@ -1249,6 +1267,76 @@ fn handle_modal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     };
     match modal {
+        Modal::List {
+            items,
+            cursor,
+            editing,
+            ..
+        } => {
+            if let Some(buffer) = editing.as_mut() {
+                match key.code {
+                    KeyCode::Esc => *editing = None,
+                    KeyCode::Backspace => {
+                        buffer.pop();
+                    }
+                    KeyCode::Enter => {
+                        let value = editing.take().unwrap();
+                        if !value.is_empty() {
+                            if *cursor < items.len() {
+                                items[*cursor] = value;
+                            } else {
+                                items.push(value);
+                            }
+                        }
+                    }
+                    KeyCode::Char(c) => buffer.push(c),
+                    _ => {}
+                }
+            } else if key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.code == KeyCode::Char('s')
+            {
+                let modal = app.modal.take().unwrap();
+                apply(app, modal)?;
+            } else {
+                match key.code {
+                    KeyCode::Esc => app.modal = None,
+                    KeyCode::Enter => {
+                        *editing = Some(items.get(*cursor).cloned().unwrap_or_default())
+                    }
+                    KeyCode::Char('a') => {
+                        *cursor = items.len();
+                        *editing = Some(String::new());
+                    }
+                    KeyCode::Char('d') if *cursor < items.len() => {
+                        items.remove(*cursor);
+                        *cursor = cursor.saturating_sub(1);
+                    }
+                    KeyCode::Up
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && *cursor > 0
+                            && *cursor < items.len() =>
+                    {
+                        items.swap(*cursor, *cursor - 1);
+                        *cursor -= 1;
+                    }
+                    KeyCode::Down
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && *cursor + 1 < items.len() =>
+                    {
+                        items.swap(*cursor, *cursor + 1);
+                        *cursor += 1;
+                    }
+                    KeyCode::Down | KeyCode::Char('j') if !items.is_empty() => {
+                        *cursor = (*cursor + 1) % items.len()
+                    }
+                    KeyCode::Up | KeyCode::Char('k') if !items.is_empty() => {
+                        *cursor = (*cursor + items.len() - 1) % items.len()
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         Modal::Choice {
             options, cursor, ..
         } => match key.code {
@@ -1319,6 +1407,7 @@ fn optional(text: &str) -> Option<String> {
 /// correct, not a reason to lose the session.
 fn apply(app: &mut App, modal: Modal) -> Result<()> {
     match modal {
+        Modal::List { items, field, .. } => apply_list(app, field, items)?,
         Modal::Choice {
             options,
             cursor,
@@ -1344,6 +1433,51 @@ fn apply(app: &mut App, modal: Modal) -> Result<()> {
         Modal::Text { buffer, field, .. } => apply_text(app, field, buffer)?,
     }
     Ok(())
+}
+
+fn apply_list(app: &mut App, field: Field, items: Vec<String>) -> Result<()> {
+    match field {
+        Field::Hook(stage) => set_hook_commands(&mut app.config, stage, items),
+        Field::Setup(scope, index, part) => {
+            let mut inputs = std::collections::BTreeMap::new();
+            if part == SetupPart::With {
+                for item in &items {
+                    let Some((key, value)) = item.split_once('=') else {
+                        app.status = Some("Not saved: each input must be key=value".into());
+                        return Ok(());
+                    };
+                    if key.trim().is_empty()
+                        || inputs
+                            .insert(key.trim().to_string(), value.to_string())
+                            .is_some()
+                    {
+                        app.status =
+                            Some("Not saved: input names must be nonempty and unique".into());
+                        return Ok(());
+                    }
+                }
+            }
+            let Some(steps) = setup_list_mut(app, &scope) else {
+                return Ok(());
+            };
+            let backup = steps.clone();
+            let Some(step) = steps.steps_mut().get_mut(index) else {
+                return Ok(());
+            };
+            match part {
+                SetupPart::Run => step.run = items,
+                SetupPart::With => step.with = inputs,
+                _ => return Ok(()),
+            }
+            if let Err(err) = steps.validate("setup") {
+                *steps = backup;
+                app.status = Some(format!("Not saved: {err}"));
+                return Ok(());
+            }
+        }
+        _ => return Ok(()),
+    }
+    app.save()
 }
 
 fn apply_choice(app: &mut App, field: Field, picked: String) -> Result<()> {
@@ -1514,14 +1648,24 @@ fn apply_check(app: &mut App, field: Field, picked: Vec<String>) -> Result<()> {
             let View::Package(name) = app.view.clone() else {
                 return Ok(());
             };
-            let targets: Vec<Target> = picked
-                .iter()
-                .filter_map(|label| label.split_once('-'))
-                .map(|(name, arch)| Target::resolved(name, arch))
-                .collect();
             let Some(pkg) = app.config.packages.iter_mut().find(|p| p.name == name) else {
                 return Ok(());
             };
+            let targets = picked
+                .iter()
+                .filter_map(|label| {
+                    pkg.targets
+                        .iter()
+                        .find(|t| target_label(&t.name, &t.arch) == *label)
+                        .cloned()
+                        .or_else(|| {
+                            TARGET_REGISTRY
+                                .iter()
+                                .find(|t| target_label(t.name, t.arch) == *label)
+                                .map(|t| Target::resolved(t.name, t.arch))
+                        })
+                })
+                .collect::<Vec<_>>();
             pkg.matrix = !targets.is_empty();
             pkg.targets = targets;
         }
@@ -1799,6 +1943,31 @@ fn screen_lines(entries: &[Entry], cursor: usize) -> (Vec<Line<'static>>, Vec<us
 
 fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
     let body: Vec<Line<'static>> = match modal {
+        Modal::List {
+            items,
+            cursor,
+            editing,
+            ..
+        } => {
+            let mut lines = items
+                .iter()
+                .enumerate()
+                .map(|(i, value)| choice_line(&value.replace('\n', " ↵ "), i == *cursor))
+                .collect::<Vec<_>>();
+            if let Some(buffer) = editing {
+                lines.push(Line::raw(format!("Edit: {buffer}▏")));
+                lines.push(Line::raw("Enter: accept entry · Esc: cancel entry"));
+            } else {
+                if items.is_empty() {
+                    lines.push(Line::raw("(empty)"));
+                }
+                lines.push(Line::raw(
+                    "Enter: edit · a: add · d: delete · Ctrl+↑/↓: reorder",
+                ));
+                lines.push(Line::raw("Ctrl+s: save list · Esc: cancel"));
+            }
+            lines
+        }
         Modal::Choice {
             options, cursor, ..
         } => options
@@ -1836,8 +2005,22 @@ fn draw_modal(f: &mut Frame, modal: &Modal, area: Rect) {
     };
 
     f.render_widget(Clear, rect);
+    let focused = match modal {
+        Modal::Choice { cursor, .. } | Modal::Check { cursor, .. } => *cursor,
+        Modal::List {
+            cursor, editing, ..
+        } => {
+            if editing.is_some() {
+                body.len().saturating_sub(1)
+            } else {
+                *cursor
+            }
+        }
+        Modal::Text { .. } => 0,
+    };
+    let scroll = focused.saturating_sub(rect.height.saturating_sub(3) as usize) as u16;
     f.render_widget(
-        Paragraph::new(body).block(
+        Paragraph::new(body).scroll((scroll, 0)).block(
             Block::bordered()
                 .title(Span::styled(
                     format!(" {} ", modal.title()),
@@ -1974,6 +2157,119 @@ mod tests {
         fn publish(&self, _: &crate::adapter::Pkg, _: Option<&Path>) -> Result<()> {
             unreachable!()
         }
+    }
+
+    fn test_app(root: &Path, config: ReleaseConfig) -> App<'static> {
+        App {
+            root: root.to_path_buf(),
+            factory: &EmptyDiscovery,
+            config,
+            view: View::Package("@x/sdk".into()),
+            cursor: 0,
+            scroll: 0,
+            modal: None,
+            status: None,
+            new_packages: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn target_picker_preserves_overrides_and_resolves_musl_names() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = config();
+        let mut custom = Target::resolved("linux", "x86_64");
+        custom.runner = "self-hosted".into();
+        custom.triple = "custom-linux-triple".into();
+        custom.cross = true;
+        cfg.packages[0].targets = vec![custom.clone()];
+        let mut app = test_app(root.path(), cfg);
+        apply_check(
+            &mut app,
+            Field::PkgTargets,
+            vec![
+                target_label("linux", "x86_64"),
+                target_label("linux-musl", "x86_64"),
+            ],
+        )
+        .unwrap();
+        let saved = ReleaseConfig::load(root.path()).unwrap();
+        assert_eq!(
+            saved.packages[0].targets,
+            vec![custom, Target::resolved("linux-musl", "x86_64")]
+        );
+    }
+
+    #[test]
+    fn command_list_keyboard_edit_preserves_commas_and_can_cancel() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = test_app(root.path(), config());
+        app.modal = Some(list("pre_publish", &[], Field::Hook(HookStage::PrePublish)));
+        handle_modal_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        let command = "node -e 'console.log(1,2)'";
+        for c in command.chars() {
+            handle_modal_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            )
+            .unwrap();
+        }
+        handle_modal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+        handle_modal_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+        assert_eq!(
+            ReleaseConfig::load(root.path()).unwrap().hooks.pre_publish,
+            vec![command]
+        );
+        app.modal = Some(list(
+            "pre_publish",
+            &[command.into()],
+            Field::Hook(HookStage::PrePublish),
+        ));
+        handle_modal_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        handle_modal_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
+        assert_eq!(
+            ReleaseConfig::load(root.path()).unwrap().hooks.pre_publish,
+            vec![command]
+        );
+    }
+
+    #[test]
+    fn setup_list_preserves_shell_commands_and_input_values() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = config();
+        cfg.setup = Setup {
+            uses: Some("example/action@v1".into()),
+            ..Setup::default()
+        }
+        .into();
+        let mut app = test_app(root.path(), cfg);
+        let command = "printf '%s,%s' one two";
+        apply_list(
+            &mut app,
+            Field::Setup(SetupScope::Repo, 0, SetupPart::Run),
+            vec![command.into()],
+        )
+        .unwrap();
+        apply_list(
+            &mut app,
+            Field::Setup(SetupScope::Repo, 0, SetupPart::With),
+            vec!["values=one,two=three".into()],
+        )
+        .unwrap();
+        let saved = ReleaseConfig::load(root.path()).unwrap();
+        assert_eq!(saved.setup.steps()[0].run, vec![command]);
+        assert_eq!(saved.setup.steps()[0].with["values"], "one,two=three");
     }
 
     #[test]
