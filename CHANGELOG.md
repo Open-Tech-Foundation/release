@@ -48,6 +48,12 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ### Fixed
 
+- Cargo crates that were never published were reported as already published, so `publish` tagged
+  them and created GitHub Releases without uploading anything, and still exited successfully.
+  Run from the workspace root, `cargo info name@version` resolves the local workspace member and
+  succeeds; the probe now passes `--registry crates-io` and ignores any answer read from a local
+  path.
+
 - A new package merged to `main` is no longer published without going through `version`. `check`
   and `publish` now require a dated `## [version]` changelog section for the version, which only
   `version` writes; `publish` lists any package it held back. Snapshots are unaffected.

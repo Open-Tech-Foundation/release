@@ -509,10 +509,19 @@ impl Adapter for CargoAdapter {
         let spec = format!("{}@{}", pkg.name, version);
         // Retried for the same reason as npm's probe: this is a read, and a transient crates.io
         // failure must not take down a release that has published nothing yet.
-        let out =
-            crate::command::run_probe(self.runner.as_ref(), "cargo", &["info", &spec], &self.root)?;
+        // `--registry` is load-bearing. Run from the workspace root, a bare `cargo info` resolves a
+        // workspace member locally (`version: 0.1.0 (from ./crates/foo)`) and exits 0 — so every
+        // unpublished crate looked published, and `publish` tagged and "released" crates that never
+        // reached crates.io.
+        let out = crate::command::run_probe(
+            self.runner.as_ref(),
+            "cargo",
+            &["info", "--registry", "crates-io", &spec],
+            &self.root,
+        )?;
         if out.success {
-            return Ok(true);
+            // Belt and braces: an answer read from a local path is not the registry's.
+            return Ok(!out.stdout.contains("(from ./") && !out.stdout.contains("(from /"));
         }
         let stderr = out.stderr.to_lowercase();
         // `cargo info` was only stabilized in cargo 1.82. On older toolchains it is an unknown
@@ -919,6 +928,16 @@ mod tests {
         let adapter = CargoAdapter::with_runner("/repo", Box::new(found.clone()));
         let pkg = dummy_pkg("a", Path::new("/repo/crates/a/Cargo.toml"));
         assert!(adapter.is_published(&pkg, "1.0.0").unwrap());
+        assert_eq!(
+            found.calls.lock().unwrap()[0].0,
+            ["info", "--registry", "crates-io", "a@1.0.0"],
+            "the probe must ask the registry, not the local workspace"
+        );
+
+        // What a bare `cargo info` prints for an unpublished workspace member.
+        let local = FakeRunner::new(true, "a\nversion: 1.0.0 (from ./crates/a)\n", "");
+        let adapter = CargoAdapter::with_runner("/repo", Box::new(local));
+        assert!(!adapter.is_published(&pkg, "1.0.0").unwrap());
 
         let missing = FakeRunner::new(false, "", "error: could not find `a` in registry");
         let adapter = CargoAdapter::with_runner("/repo", Box::new(missing));
