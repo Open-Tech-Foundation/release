@@ -56,6 +56,7 @@ action's installer as `run` lines would fork the definition it exists to keep si
 | `with` | Inputs for `uses`, emitted as the step's `with:` block. Each is passed as a string — composite action inputs are strings even when declared `type: boolean`. |
 | `run` | Shell lines run as one step, for a repo with no composite action to point at. Emitted as a single multi-line `run:` block. |
 | `targets` | Target triples this step is for. Omit to run it on every row. See [Filtering matrix rows](#filtering-matrix-rows). |
+| `jobs` | Kinds of job this step is for: `check-release`, `matrix`, `build`, `publish`, `github-release`. Omit to run it in every job the list reaches. See [Scoping to a kind of job](#scoping-to-a-kind-of-job). |
 
 `uses` and `run` are independent: either alone, or both — the action first, then the script.
 
@@ -146,6 +147,34 @@ builds no triple and has no `matrix.triple` to test, so a step naming `targets` 
 jobs rather than emitted with a guard that could never be true. To drop a package's setup
 everywhere, use `setup = []` rather than an empty `targets`.
 
+## Scoping to a kind of job
+
+A list reaches every job it applies to, and those jobs differ. A package's list runs in its
+`matrix-<pkg>` planning job, its `build-<pkg>` job, its `publish-<pkg>` job and its
+`github-release-<pkg>` job — and only the build job of a matrix package has a `matrix` context. A
+step that reads `matrix.*` anywhere else gets an empty string, silently:
+
+```toml
+[[package.setup]]
+uses = "Swatinem/rust-cache@v2"
+with = { shared-key = "release-${{ matrix.triple }}", cache-directories = "target/${{ matrix.triple }}/release/gn_out" }
+jobs = ["build"]
+```
+
+`jobs` names the kinds of job the step belongs in. An inline-build npm package builds inside its
+publish job, so that job counts as both `build` and `publish`. The repo-wide list reaches the
+`check-release` gate and the catch-all `publish` job, plus the jobs of every package that inherits
+it.
+
+Before `jobs`, the way to keep such a step out of the jobs with no matrix was a `targets` filter
+naming every triple — it works, because a filtered step is left out of those jobs, but it says
+something else. `doctor` recognises that shape and suggests `jobs = ["build"]` in its place.
+
+Caching is deliberately an ordinary setup step rather than a built-in option. A release always bumps
+`Cargo.toml` and `Cargo.lock`, which invalidates `rust-cache`'s key, so a generic build cache rarely
+pays; whether one is worth it — say, to keep a large download like V8 in the build tree — is the
+repo's call.
+
 ### Combining with the VM guard
 
 For a matrix package, setup is also gated to host-side rows: a VM target builds inside the guest,
@@ -158,7 +187,7 @@ which installs its own toolchain through the VM step's `prepare:`. When both app
 
 ## What `doctor` checks
 
-All four are silent in CI, which is why they are checked here. See
+All of these are silent in CI, which is why they are checked here. See
 [`commands/doctor.md`](./commands/doctor.md).
 
 | Code | Severity | What it catches |
@@ -166,7 +195,8 @@ All four are silent in CI, which is why they are checked here. See
 | `setup-action-missing` | error | A `uses: ./…` path with no `action.yml` in the repo. GitHub resolves it against the checkout and fails the job at startup, before doing any work. A published `owner/repo@v1` is resolved by GitHub, so it is not checked against disk. |
 | `setup-targets-unknown` | warning | A `targets` triple that no package the step applies to builds. It never matches `matrix.triple`, so the step is skipped on every row and the build fails later, at the command that needed the tool. |
 | `setup-targets-never-runs` | warning | A `targets` filter on a step that no matrix package receives. It selects matrix rows, and there are none, so the step is emitted in no job at all. |
-| `setup-targets-redundant` | suggestion | A `targets` filter naming every triple those packages build, so it selects nothing. |
+| `setup-targets-redundant` | suggestion | A `targets` filter naming every triple those packages build, so it selects nothing. When the step reads `matrix.*`, the filter is what keeps it out of jobs with no matrix, so the suggestion is `jobs = ["build"]` instead of dropping it. |
+| `setup-matrix-outside-build` | warning | A step that reads `matrix.*` but also runs in jobs with no matrix, where the expression is an empty string. Add `jobs = ["build"]`. |
 
 ## Editing it
 

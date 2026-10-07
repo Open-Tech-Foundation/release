@@ -8,7 +8,7 @@ release upgrade [--force]
 
 | Flag | Effect |
 | --- | --- |
-| `--force` | Overwrite `release.yml` without prompting. |
+| `--force` | Overwrite `release.yml` without prompting. Hand edits are still listed — as what was discarded. |
 
 Implemented in `crates/core/src/upgrade.rs`. Does **not** edit `release.toml` — only the generated
 workflow.
@@ -33,11 +33,26 @@ From the changelog:
 
 1. Load `release.toml` from the workspace root.
 2. Re-render `.github/workflows/release.yml` with the same generator [`init`](./init.md) uses.
-3. If `release.yml` already exists and `--force` was not passed, prompt before overwrite; cancel
-   leaves the file unchanged.
+3. If the existing `release.yml` is byte-for-byte what would be written, say so and stop.
+4. If it was edited by hand since it was generated, list the lines regenerating it would discard.
+5. Without `--force`, ask before overwriting; cancel leaves the file unchanged.
 
-The generated file remains yours to edit afterward — `upgrade` does not try to manage it on every
-run. See [ci-workflow.md](../ci-workflow.md).
+## Hand edits
+
+The first line of a generated workflow is a stamp holding a SHA-256 of what was generated. A file
+that no longer matches its stamp was edited after generation, and `upgrade` prints the edited file's
+lines that the regenerated workflow does not contain before it asks. With `--force` it overwrites
+anyway and the list is the record of what was dropped. `release doctor` reports the same condition as
+`workflow-hand-edited`.
+
+The stamp is a hash, not a copy, so the list is "lines the new workflow does not have": it shows the
+hand edits, and may also show lines a newer `release` generates differently. A file with no stamp —
+hand-written, or generated before stamps existed — cannot be checked; `upgrade` says so and you
+should review `git diff` afterwards.
+
+A hand edit is a sign `release.toml` cannot express something yet. Move it there (`env`,
+`[[package.setup]]` with `jobs`, …) rather than re-applying it after every upgrade. See
+[ci-workflow.md](../ci-workflow.md).
 
 ## When to run it
 

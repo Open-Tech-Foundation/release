@@ -30,6 +30,7 @@ After changing generated workflow behavior, run `release upgrade`.
 | `tag_format`, `legacy_tag_formats`, `changelog` | Release identity → Tag format / Legacy tag formats / Changelog |
 | `version_field`, `publish` | Generic adapter → Version field / Publish command |
 | `setup` | Build setup → own/inherited step list; Use repository setup restores inheritance |
+| `env` | Build environment (KEY=value entries) |
 
 Release asset controls appear for effective build-only packages. npm provenance appears for effective
 npm publish packages, including matrix npm packages. Generic version and publish fields appear for
@@ -40,7 +41,7 @@ generic packages. These conditions follow how the release engine uses the settin
 | `targets[].name`, `arch` | Target details → OS name / Architecture |
 | `targets[].triple`, `runner`, `stage_as`, `ext` | Rust triple / Runner / Stage directory / Extension |
 | `targets[].cross`, `vm` | Cross compile / Build in VM; default retains registry behavior |
-| `setup[].uses`, `with`, `run`, `targets` | Setup step → Action / Action inputs / Script / Targets |
+| `setup[].uses`, `with`, `run`, `targets`, `jobs` | Setup step → Action / Action inputs / Script / Targets / Jobs |
 
 Known choices use pickers. Custom tag formats, target definitions, manifests, commands, and globs can
 be entered without editing TOML manually. Entry lists preserve embedded commas, command order, and

@@ -43,12 +43,14 @@ Severity is about **consequence**, not confidence.
 | `old-tool-pin` | suggestion | CI builds with an older tool than the binary you are running locally. |
 | `no-checksums` | suggestion | A build-only package ships assets with no `checksums.txt`, so a download cannot be verified as intact. |
 | `no-attestation` | suggestion | A build-only package ships assets with no signed provenance. A checksum can be replaced by whoever replaced the asset; an attestation cannot. |
+| `workflow-hand-edited` | warning | `.github/workflows/release.yml` no longer matches the hash stamped on it when it was generated. The next `release upgrade` discards the edit; express it in `release.toml` instead. |
 | `stale-workflow` | error | `.github/workflows/release.yml` has no job for a configured package. It will be versioned and tagged, then build nothing. Run `release upgrade --force`. |
 | `shared-legacy-tag-format` | warning | A repo-wide `legacy_tag_formats` entry has no `{name}` while several packages are released, so every package reads the same release history. |
 | `setup-action-missing` | error | A `[[setup]]` step points at `uses: ./…` with no `action.yml` in the repo. GitHub resolves the path against the checkout and fails the job at startup, before doing any work. A published `owner/repo@v1` is resolved by GitHub, so it is not checked against disk. See [build-setup.md](../build-setup.md). |
 | `setup-targets-unknown` | warning | A `setup.targets` triple that no package the step applies to builds. It never matches `matrix.triple`, so the step is skipped on every row and the build fails later, at the command that needed the tool. |
 | `setup-targets-never-runs` | warning | A `setup.targets` filter on a step no matrix package receives. The filter selects matrix rows and there are none, so the step is emitted in no job at all. |
-| `setup-targets-redundant` | suggestion | A `setup.targets` filter naming every triple those packages build, so it selects nothing. |
+| `setup-targets-redundant` | suggestion | A `setup.targets` filter naming every triple those packages build, so it selects nothing. For a step that reads `matrix.*` the filter is what keeps it out of jobs with no matrix, so the fix offered is `jobs = ["build"]`, not removal. |
+| `setup-matrix-outside-build` | warning | A setup step reads `matrix.*` but also runs in jobs with no matrix, where the expression is an empty string. Add `jobs = ["build"]`. |
 | `empty-ignore-paths` | suggestion | One or more `publish.ignore_paths` entries have an empty glob list, which does nothing. Reported once for all of them. |
 
 ## In CI
