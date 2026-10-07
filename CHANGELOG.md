@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-10-07
+
 ### Fixed
 
 - Cargo crates that were never published were reported as already published, so `publish` tagged
