@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-10-07
+
 ### Added
 
 - `version` can run on a feature branch: the release commit is added to that branch and its PR
