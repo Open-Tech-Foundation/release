@@ -266,9 +266,14 @@ pub fn run_publish_with(
 /// Whether the registry refused the request for rate, as opposed to failing it.
 fn is_rate_limited(stderr: &str) -> bool {
     let haystack = stderr.to_lowercase();
-    ["429", "too many requests", "rate limit", "too many new crates"]
-        .iter()
-        .any(|signal| haystack.contains(signal))
+    [
+        "429",
+        "too many requests",
+        "rate limit",
+        "too many new crates",
+    ]
+    .iter()
+    .any(|signal| haystack.contains(signal))
 }
 
 fn unix_now() -> u64 {
@@ -448,7 +453,10 @@ mod tests {
     #[test]
     fn a_rate_limited_publish_waits_and_retries() {
         let runner = ScriptedRunner::new(vec![
-            (false, "error: 429 Too Many Requests: You have published too many new crates"),
+            (
+                false,
+                "error: 429 Too Many Requests: You have published too many new crates",
+            ),
             (true, ""),
         ]);
         assert!(publish(&runner, false).success);

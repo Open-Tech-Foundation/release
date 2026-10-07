@@ -395,13 +395,10 @@ impl Adapter for NpmAdapter {
             args.push("--tag");
             args.push(tag);
         }
-        let out = crate::command::run_publish(
-            self.runner.as_ref(),
-            "npm",
-            &args,
-            pkg_dir,
-            &|| self.is_published(pkg, &pkg.version),
-        )?;
+        let out =
+            crate::command::run_publish(self.runner.as_ref(), "npm", &args, pkg_dir, &|| {
+                self.is_published(pkg, &pkg.version)
+            })?;
         if !out.success {
             bail!("`npm publish` for {} failed:\n{}", pkg.name, out.stderr);
         }
