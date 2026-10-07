@@ -1,3 +1,4 @@
+# Generated from release.toml by `release` · sha256:64933bc8e7f8e01678ead747cd2769a121f3cbdfb73b0d22da6a969e1932d3ca
 name: Release
 
 on:
@@ -112,7 +113,7 @@ jobs:
             $cliDir = Join-Path $env:RUNNER_TEMP 'release-cli'
             New-Item -ItemType Directory -Force -Path $cliDir | Out-Null
             Copy-Item (Get-Command otf-release).Source (Join-Path $cliDir 'release.exe')
-          $cliDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            $cliDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           }
       - name: Build otf-release
         if: ${{ !matrix.vm }}
