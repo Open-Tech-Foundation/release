@@ -145,6 +145,7 @@ pub fn audit(config: &ReleaseConfig, discovered: &[Discovered], root: &Path) -> 
 
     tag_collisions(config, &released, &mut findings);
     stale_workflow(config, root, &mut findings);
+    hand_edited_workflow(root, &mut findings);
     setup_actions(config, root, &mut findings);
     setup_targets(config, &mut findings);
     missing_blocks(config, &released, &mut findings);
@@ -211,6 +212,29 @@ fn stale_workflow(config: &ReleaseConfig, root: &Path, out: &mut Vec<Finding>) {
                 ),
             )
             .fix("run `release upgrade --force` and commit the regenerated workflow"),
+        );
+    }
+}
+
+/// A generated workflow changed since it was generated. The next `upgrade` overwrites it, so a
+/// hand edit — usually a workaround for something release.toml cannot yet say — is only ever
+/// temporary, and it is better found now than after it has been dropped.
+fn hand_edited_workflow(root: &Path, out: &mut Vec<Finding>) {
+    let Ok(workflow) = std::fs::read_to_string(root.join(".github/workflows/release.yml")) else {
+        return;
+    };
+    if crate::stamp::provenance(&workflow) == crate::stamp::Provenance::Edited {
+        out.push(
+            Finding::new(
+                Severity::Warning,
+                "workflow-hand-edited",
+                "`.github/workflows/release.yml` was edited by hand since it was generated. The \
+                 next `release upgrade` regenerates it from release.toml and discards the edit.",
+            )
+            .fix(
+                "express the change in release.toml (`env`, `[[package.setup]]`, …) and run \
+                 `release upgrade`; it lists the edited lines before overwriting them",
+            ),
         );
     }
 }
@@ -1428,6 +1452,23 @@ mod tests {
 
         let report = audit(&config, &[], tmp.path());
         assert!(!codes(&report, Severity::Error).contains(&"stale-workflow"));
+    }
+
+    #[test]
+    fn flags_a_generated_workflow_edited_by_hand() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ReleaseConfig::default();
+        let path = tmp.path().join(".github/workflows/release.yml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let generated = crate::stamp::stamp("name: Release\njobs: {}\n");
+
+        std::fs::write(&path, &generated).unwrap();
+        let report = audit(&config, &[], tmp.path());
+        assert!(!codes(&report, Severity::Warning).contains(&"workflow-hand-edited"));
+
+        std::fs::write(&path, generated.replace("{}", "{ hand: 1 }")).unwrap();
+        let report = audit(&config, &[], tmp.path());
+        assert!(codes(&report, Severity::Warning).contains(&"workflow-hand-edited"));
     }
 
     /// The mistake this catches is one I walked a user into: `legacy_tag_formats = ["v{version}"]`

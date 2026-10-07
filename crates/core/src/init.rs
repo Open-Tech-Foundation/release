@@ -932,6 +932,11 @@ pub fn orchestrate(
     // 2. Generate the workflow from it.
     let yaml = render_workflow_for_root(&config, root);
     let yml_path = root.join(".github/workflows/release.yml");
+    // Re-running `init` over a workflow someone edited loses the edits just as `upgrade` would, so
+    // it reports them the same way before asking.
+    if let Ok(current) = fs::read_to_string(&yml_path) {
+        crate::upgrade::report_hand_edits(&yml_path, &current, &yaml);
+    }
     if write_allowed(&yml_path, opts.force, prompt)? {
         fs::create_dir_all(yml_path.parent().unwrap())
             .with_context(|| format!("creating {}", yml_path.parent().unwrap().display()))?;
@@ -1222,8 +1227,13 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
     render_workflow_with_npm_tool(config, NpmTool::Npm)
 }
 
+/// The workflow as written to disk: rendered for the repo at `root`, then stamped so a later
+/// `upgrade` can tell whether it was edited by hand (see [`crate::stamp`]).
 pub(crate) fn render_workflow_for_root(config: &ReleaseConfig, root: &Path) -> String {
-    render_workflow_with_npm_install(config, &NpmInstall::detect(config, root))
+    crate::stamp::stamp(&render_workflow_with_npm_install(
+        config,
+        &NpmInstall::detect(config, root),
+    ))
 }
 
 fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> String {

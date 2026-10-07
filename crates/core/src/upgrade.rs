@@ -8,6 +8,7 @@ use inquire::Confirm;
 
 use crate::config::ReleaseConfig;
 use crate::init::render_workflow_for_root;
+use crate::stamp::{self, Provenance};
 use crate::ui;
 
 /// Options for an `upgrade` run.
@@ -18,18 +19,34 @@ pub struct UpgradeOptions {
 }
 
 /// Load the config and regenerate the workflow.
+///
+/// A workflow edited by hand since it was generated has its edits listed before anything is
+/// written: interactively, overwriting then needs a yes; with `--force` it goes ahead, and the
+/// list is what was discarded. Either way the loss is visible rather than silent.
 pub fn orchestrate(root: &Path, opts: &UpgradeOptions) -> Result<()> {
     let config = ReleaseConfig::load(root)
         .context("Could not load release.toml. Are you in an initialized repo?")?;
     let yaml = render_workflow_for_root(&config, root);
     let yml_path = root.join(".github/workflows/release.yml");
 
-    if yml_path.exists() && !opts.force {
-        let overwrite = Confirm::new(&format!("Overwrite {}?", yml_path.display()))
-            .with_default(false)
-            .prompt()?;
-        if !overwrite {
+    if let Ok(current) = fs::read_to_string(&yml_path) {
+        if current == yaml {
+            ui::ok(&format!("{} is already up to date", yml_path.display()));
             return Ok(());
+        }
+        let edited = report_hand_edits(&yml_path, &current, &yaml);
+        if !opts.force {
+            let question = if edited {
+                format!(
+                    "Overwrite {} and discard the lines above?",
+                    yml_path.display()
+                )
+            } else {
+                format!("Overwrite {}?", yml_path.display())
+            };
+            if !Confirm::new(&question).with_default(false).prompt()? {
+                return Ok(());
+            }
         }
     }
 
@@ -39,6 +56,36 @@ pub fn orchestrate(root: &Path, opts: &UpgradeOptions) -> Result<()> {
     ui::ok(&format!("Upgraded {}", yml_path.display()));
 
     Ok(())
+}
+
+/// If `current` was edited since it was generated, print the lines regenerating it to `new`
+/// would discard, and return true. An unstamped file — hand-written, or generated before stamps
+/// existed — has no record to compare against, so it is reported as unknown rather than clean.
+pub fn report_hand_edits(path: &Path, current: &str, new: &str) -> bool {
+    match stamp::provenance(current) {
+        Provenance::Generated => false,
+        Provenance::Unstamped => {
+            ui::info(&format!(
+                "{} carries no generation stamp, so hand edits cannot be told apart from older \
+                 generated output. Review `git diff` after this run.",
+                path.display()
+            ));
+            false
+        }
+        Provenance::Edited => {
+            let lines = stamp::discarded(current, new);
+            ui::warn(&format!(
+                "{} was edited by hand since it was generated. Regenerating it discards {} \
+                 line(s) the new workflow does not have — move what they do into release.toml:",
+                path.display(),
+                lines.len()
+            ));
+            for (number, line) in &lines {
+                ui::detail(&format!("{number:>5} | {line}"));
+            }
+            true
+        }
+    }
 }
 
 #[cfg(test)]
@@ -51,6 +98,39 @@ mod tests {
     };
 
     use super::*;
+
+    /// A generated workflow is stamped; editing it is detected, `--force` still overwrites, and the
+    /// regenerated file is stamped again — so the next upgrade starts clean.
+    #[test]
+    fn upgrade_detects_hand_edits_and_force_still_overwrites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            ..ReleaseConfig::default()
+        };
+        config.save(tmp.path()).unwrap();
+        let path = tmp.path().join(".github/workflows/release.yml");
+
+        orchestrate(tmp.path(), &UpgradeOptions { force: true }).unwrap();
+        let generated = fs::read_to_string(&path).unwrap();
+        assert_eq!(stamp::provenance(&generated), Provenance::Generated);
+        // Unchanged config, unchanged file: nothing to ask, nothing rewritten — even without
+        // `--force`, which would otherwise prompt.
+        orchestrate(tmp.path(), &UpgradeOptions { force: false }).unwrap();
+
+        let edited = generated.replace(
+            "    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n    env:\n      HAND_EDIT: \"1\"\n",
+        );
+        fs::write(&path, &edited).unwrap();
+        assert!(report_hand_edits(&path, &edited, &generated));
+        assert!(stamp::discarded(&edited, &generated)
+            .iter()
+            .any(|(_, line)| line.contains("HAND_EDIT")));
+
+        orchestrate(tmp.path(), &UpgradeOptions { force: true }).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), generated);
+    }
 
     #[test]
     fn upgrade_preserves_pnpm_manifest_pin_and_uses_lockfile_fallback() {

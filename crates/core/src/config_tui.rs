@@ -3135,13 +3135,25 @@ mod tests {
         let field = Field::Setup(scope.clone(), 0, SetupPart::Jobs);
         apply_check(&mut app, field.clone(), vec!["build".into()]).unwrap();
         let saved = ReleaseConfig::load(root.path()).unwrap();
-        let step = &saved.package("@x/sdk").unwrap().setup.as_ref().unwrap().steps()[0];
+        let step = &saved
+            .package("@x/sdk")
+            .unwrap()
+            .setup
+            .as_ref()
+            .unwrap()
+            .steps()[0];
         assert_eq!(step.jobs, vec![JobKind::Build]);
         assert_eq!(step_summary(step), "Swatinem/rust-cache@v2 · build only");
 
         apply_check(&mut app, field, selectable_jobs(&scope)).unwrap();
         let saved = ReleaseConfig::load(root.path()).unwrap();
-        let step = &saved.package("@x/sdk").unwrap().setup.as_ref().unwrap().steps()[0];
+        let step = &saved
+            .package("@x/sdk")
+            .unwrap()
+            .setup
+            .as_ref()
+            .unwrap()
+            .steps()[0];
         assert!(step.jobs.is_empty());
     }
 
@@ -3163,7 +3175,10 @@ mod tests {
         // A name no shell accepts is refused, and the saved value is left alone.
         apply_list(&mut app, Field::PkgEnv, vec!["9LIVES=1".into()]).unwrap();
         assert!(app.status.as_deref().unwrap().starts_with("Not saved"));
-        assert_eq!(ReleaseConfig::load(root.path()).unwrap().packages, saved.packages);
+        assert_eq!(
+            ReleaseConfig::load(root.path()).unwrap().packages,
+            saved.packages
+        );
     }
 
     #[test]
