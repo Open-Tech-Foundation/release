@@ -9,6 +9,16 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
+/// Subject prefix of the commit `version` creates. Commits carrying it only move versions, ranges,
+/// changelogs and lockfiles, so they are left out of "has this package changed since its tag":
+/// a release that updates a dev-dependency range in a package it does not bump must not leave that
+/// package looking changed-but-unnoted on the next run.
+pub const RELEASE_COMMIT_PREFIX: &str = "chore(release): ";
+
+/// `git log`/`rev-list` arguments that skip release commits. `(` is literal in git's default
+/// basic regex, so the prefix needs no escaping.
+const SKIP_RELEASE_COMMITS: [&str; 2] = ["--invert-grep", "--grep=^chore(release): "];
+
 /// Read-only repository state preflight needs.
 pub trait RepoState {
     /// The highest-versioned tag matching any configured tag format, or `None` if it has never
@@ -107,7 +117,10 @@ impl RepoState for GitRepo {
         // Use a repo-relative pathspec so git accepts it regardless of the cwd.
         let pathspec = repo_pathspec(&self.root, pkg_dir)?;
         let range = format!("{tag}..HEAD");
-        let stdout = run_git(&self.root, &["rev-list", "--count", &range, "--", pathspec])?;
+        let mut args = vec!["rev-list", "--count", &range];
+        args.extend(SKIP_RELEASE_COMMITS);
+        args.extend(["--", pathspec]);
+        let stdout = run_git(&self.root, &args)?;
         Ok(stdout.trim().parse().unwrap_or(0))
     }
 
@@ -139,10 +152,10 @@ impl RepoState for GitRepo {
             Some(t) => format!("{t}..HEAD"),
             None => "HEAD".to_string(),
         };
-        let stdout = run_git(
-            &self.root,
-            &["log", &range, "--pretty=format:* %s", "--", pathspec],
-        )?;
+        let mut args = vec!["log", &range, "--pretty=format:* %s"];
+        args.extend(SKIP_RELEASE_COMMITS);
+        args.extend(["--", pathspec]);
+        let stdout = run_git(&self.root, &args)?;
         Ok(stdout.trim().to_string())
     }
 }
@@ -383,6 +396,36 @@ mod tests {
             repo.changed_files_since("a@1.10.0", &pkg_dir).unwrap(),
             vec![PathBuf::from("index.js")]
         );
+    }
+
+    /// A release that only moved a dev-dependency range in `b` must not leave `b` looking
+    /// changed-but-unnoted on the next run.
+    #[test]
+    fn release_commits_do_not_count_as_package_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        git(root, &["init", "-q"]);
+        let pkg_dir = root.join("crates/b");
+        write(
+            pkg_dir.join("Cargo.toml"),
+            "[dev-dependencies]\na = \"0.1.0\"\n",
+        );
+        commit_all(root, "init b");
+        git(root, &["tag", "b@0.1.0"]);
+
+        write(
+            pkg_dir.join("Cargo.toml"),
+            "[dev-dependencies]\na = \"0.2.0\"\n",
+        );
+        commit_all(root, "chore(release): a@0.2.0");
+
+        let repo = GitRepo::new(root);
+        assert_eq!(repo.commit_count_since("b@0.1.0", &pkg_dir).unwrap(), 0);
+        assert_eq!(repo.commits_since(Some("b@0.1.0"), &pkg_dir).unwrap(), "");
+
+        write(pkg_dir.join("lib.rs"), "// code\n");
+        commit_all(root, "feat: change b");
+        assert_eq!(repo.commit_count_since("b@0.1.0", &pkg_dir).unwrap(), 1);
     }
 
     #[test]

@@ -85,11 +85,13 @@ nothing, so it installs nothing and only sets up node to reach the registry.
 
 ```
 PeerDep  => mirror(dep_bump)   // a peerDep dependent takes the same bump as its dependency
-else     => Patch              // Dep / DevDep dependents get a patch
+Dep      => Patch              // a regular dependent gets a patch
 ```
 
 A breaking change in a package forces a matching breaking bump in anything that lists it as a
-**peer** dependency; everything else only needs a patch to pick up the new internal range.
+**peer** dependency; a regular dependent only needs a patch to pick up the new internal range.
+A `devDependencies` edge is never cascaded (in any adapter): a dev-dependency does not ship to
+the dependent's users, so its range is updated but the dependent is not released.
 
 ## Registry check (`is_published`)
 

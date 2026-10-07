@@ -28,7 +28,10 @@ Implemented in `crates/core/src/version.rs`.
    `adapter.dependent_bump(dep_bump, kind)`. This is **transitive** (every newly bumped
    dependent is re-fed into the walk) and takes the **max** bump when a package is reached by
    multiple paths. The cascade **terminates at private packages** — they are graph leaves and
-   are never versioned or published. See [graph](../architecture.md#data-flow).
+   are never versioned or published — and **does not follow dev-dependency edges**: a package
+   that only dev-depends on a bumped one gets its range updated but is not released. Release
+   commits (`chore(release): …`) do not count as changes to a package, so that range edit never
+   makes it look changed-but-unnoted on the next run. See [graph](../architecture.md#data-flow).
 6. **Compute** new versions and the internal dependency-range updates
    (`adapter.format_range`).
 7. **Plan** — render the computed version and range changes. `--dry-run` stops here and writes

@@ -21,8 +21,12 @@ Cargo has **no peerDep concept**, so every internal dependent simply needs to pi
 version requirement:
 
 ```
-any kind => Patch
+[dependencies] / [build-dependencies] => Patch
+[dev-dependencies]                    => no bump (range updated only)
 ```
+
+A dev-dependency never reaches the crate's users, so a release of it does not release the
+dependent. The core cascade skips dev-dependency edges for every adapter.
 
 ## Registry check (`is_published`)
 

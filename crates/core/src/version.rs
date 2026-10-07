@@ -491,7 +491,7 @@ pub fn orchestrate_many(
         .map(|n| format!("{n}@{}", new_versions[n]))
         .collect();
     titles.sort();
-    let commit_title = format!("chore(release): {}", titles.join(", "));
+    let commit_title = format!("{}{}", crate::git::RELEASE_COMMIT_PREFIX, titles.join(", "));
     if !prompt.confirm(
         &plan,
         &git.diff_stat()?,

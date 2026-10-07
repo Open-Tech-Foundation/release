@@ -5,7 +5,8 @@
 //! **merges** bumps (via [`crate::adapter::Bump::merge`]) when a package is reached by multiple
 //! paths, so a prerelease reached alongside a stable bump keeps its prerelease intent instead of
 //! being masked by a numerically-larger stable bump. It **terminates at private packages**, which
-//! are graph leaves that are never versioned or published.
+//! are graph leaves that are never versioned or published, and does not follow dev-dependency
+//! edges, which never ship.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -137,6 +138,11 @@ impl<'a> Graph<'a> {
                 let dep_pkg = &self.packages[*dep_idx];
                 if !dep_pkg.publishable {
                     continue; // cascade terminates at private leaves
+                }
+                if *kind == DepKind::DevDep {
+                    // A dev-dependency never reaches the dependent's users, so it is no reason to
+                    // release the dependent. Its range is still updated so the workspace builds.
+                    continue;
                 }
                 let bump = adapter.dependent_bump(src_bump.clone(), kind);
                 if raise(&mut result, &dep_pkg.name, bump)? {
@@ -349,6 +355,26 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains('x'), "error should name the package: {err}");
+    }
+
+    #[test]
+    fn cascade_does_not_follow_dev_dependencies() {
+        let pkgs = vec![
+            pkg("core", true, &[]),
+            pkg("tests-only", true, &[("core", DepKind::DevDep)]),
+            // Reached both ways: the real dependency still bumps it.
+            pkg(
+                "both",
+                true,
+                &[("core", DepKind::DevDep), ("core", DepKind::Dep)],
+            ),
+        ];
+        let graph = Graph::build(&pkgs).unwrap();
+        let selected = HashMap::from([("core".to_string(), Bump::Minor)]);
+        let result = graph.cascade(&FakeAdapter, &selected).unwrap();
+
+        assert_eq!(result.get("tests-only"), None);
+        assert_eq!(result.get("both"), Some(&Bump::Patch));
     }
 
     #[test]
