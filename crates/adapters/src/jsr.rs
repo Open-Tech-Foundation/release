@@ -397,7 +397,13 @@ impl Adapter for JsrAdapter {
             args = vec!["publish"];
         }
 
-        let out = self.runner.run(program, &args, pkg_dir)?;
+        let out = crate::command::run_publish(
+            self.runner.as_ref(),
+            program,
+            &args,
+            pkg_dir,
+            &|| self.is_published(pkg, &pkg.version),
+        )?;
         if !out.success {
             bail!(
                 "`{} {}` for {} failed:\n{}",

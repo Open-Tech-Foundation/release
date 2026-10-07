@@ -36,12 +36,27 @@ Implemented in `crates/core/src/publish.rs`. Triggered by a merge to `main` (see
 
 ## Failure model — halt, never roll back
 
-Publishing is **not atomic** and is **irreversible**. If a package fails to publish:
+Publishing is **not atomic** and is **irreversible**. Before a failure counts, each registry
+publish is retried:
+
+- **Rate limits** (HTTP 429) are waited out — for the time the registry names (crates.io sends
+  `try again after <date>`), else 10 minutes — up to 12 times, at most an hour per wait. crates.io
+  lets 5 new crates through and then one every 10 minutes, so a first release of 11 crates takes
+  roughly an hour, unattended. GitHub's default 6-hour job timeout covers that; if you set
+  `timeout-minutes` on the publish job, keep it above the wait.
+- **Network failures and 5xx responses** are retried 4 times with a doubling backoff from 30s.
+- Before every retry the registry is asked whether the version already landed (a response lost
+  after the upload), and if so the package counts as published instead of being re-sent.
+- Anything else (a name already taken, a missing token, a build error) fails at once.
+
+If a package still fails to publish:
 
 - **Stop immediately.** Do not publish its dependents.
 - There is **no rollback.** A previously published package stays published.
 - **Re-running resumes forward**: `is_published` skips everything already shipped and the run
-  continues from where it stopped.
+  continues from where it stopped. In GitHub Actions that is **Re-run failed jobs** on the
+  release run; nothing needs to be cleaned up first. A package that published but whose tag or
+  GitHub Release was not created is finished off on the re-run without being published again.
 
 This is why the gating happens upstream — a failed build matrix means `publish` never runs at
 all (see [ci-workflow.md](../ci-workflow.md)).

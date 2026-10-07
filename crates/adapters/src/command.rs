@@ -149,6 +149,182 @@ pub fn run_probe_with(
     Ok(last)
 }
 
+/// How a failed publish is retried. See [`run_publish`].
+#[derive(Debug, Clone, Copy)]
+pub struct PublishRetry {
+    /// Total tries for a publish failing on the network or a 5xx.
+    pub attempts: u32,
+    /// Wait before the first transient retry; doubled after each one.
+    pub backoff: Duration,
+    /// How many registry rate limits are waited out before giving up.
+    pub rate_limit_waits: u32,
+    /// Wait for a rate limit whose response names no retry time.
+    pub rate_limit_wait: Duration,
+}
+
+impl PublishRetry {
+    /// crates.io lets a burst of 5 new crates through, then one every 10 minutes. Twelve waits
+    /// therefore carry a first release of ~17 crates through in one run; each wait is bounded by
+    /// [`RATE_LIMIT_MAX_WAIT`] so a misread retry time can't park the job for hours.
+    pub const DEFAULT: Self = Self {
+        attempts: 4,
+        backoff: Duration::from_secs(30),
+        rate_limit_waits: 12,
+        rate_limit_wait: Duration::from_secs(600),
+    };
+}
+
+/// Upper bound on a single rate-limit wait, whatever the registry asks for.
+const RATE_LIMIT_MAX_WAIT: Duration = Duration::from_secs(3600);
+
+/// Run a registry **publish**, retrying rate limits and transient failures.
+///
+/// Unlike [`run_probe`], a publish is not safe to repeat blindly: a response lost after the upload
+/// landed would make the retry fail with "version already exists". So before every retry the
+/// registry is asked through `already_published`; a version that made it is reported as success.
+/// A rate limit is waited out for the time the registry names (`try again after <date>`, as
+/// crates.io sends for new crates), or [`PublishRetry::rate_limit_wait`] when it names none. Any
+/// other failure is returned at once.
+pub fn run_publish(
+    runner: &dyn CommandRunner,
+    program: &str,
+    args: &[&str],
+    cwd: &Path,
+    already_published: &dyn Fn() -> Result<bool>,
+) -> Result<CommandOutput> {
+    run_publish_with(
+        runner,
+        program,
+        args,
+        cwd,
+        already_published,
+        PublishRetry::DEFAULT,
+        &thread::sleep,
+    )
+}
+
+pub fn run_publish_with(
+    runner: &dyn CommandRunner,
+    program: &str,
+    args: &[&str],
+    cwd: &Path,
+    already_published: &dyn Fn() -> Result<bool>,
+    policy: PublishRetry,
+    sleep: &dyn Fn(Duration),
+) -> Result<CommandOutput> {
+    let command = format!("{program} {}", args.join(" "));
+    let mut transient_failures = 0;
+    let mut rate_limit_waits = 0;
+    let mut backoff = policy.backoff;
+    loop {
+        let out = runner.run(program, args, cwd)?;
+        if out.success {
+            return Ok(out);
+        }
+        let wait = if is_rate_limited(&out.stderr) {
+            rate_limit_waits += 1;
+            if rate_limit_waits > policy.rate_limit_waits {
+                return Ok(out);
+            }
+            let wait = retry_after(&out.stderr, unix_now())
+                .unwrap_or(policy.rate_limit_wait)
+                .min(RATE_LIMIT_MAX_WAIT);
+            eprintln!(
+                "`{command}` was rate limited by the registry; waiting {}s before retry {rate_limit_waits}/{}",
+                wait.as_secs(),
+                policy.rate_limit_waits
+            );
+            wait
+        } else if is_transient(&out.stderr) {
+            transient_failures += 1;
+            if transient_failures >= policy.attempts {
+                return Ok(out);
+            }
+            let wait = backoff;
+            backoff = backoff.saturating_mul(2);
+            eprintln!(
+                "`{command}` failed transiently; waiting {}s before retry {}/{}",
+                wait.as_secs(),
+                transient_failures + 1,
+                policy.attempts
+            );
+            wait
+        } else {
+            return Ok(out);
+        };
+        sleep(wait);
+        if already_published()? {
+            eprintln!("`{command}` reached the registry despite the error; not publishing again");
+            return Ok(CommandOutput {
+                success: true,
+                ..out
+            });
+        }
+    }
+}
+
+/// Whether the registry refused the request for rate, as opposed to failing it.
+fn is_rate_limited(stderr: &str) -> bool {
+    let haystack = stderr.to_lowercase();
+    ["429", "too many requests", "rate limit", "too many new crates"]
+        .iter()
+        .any(|signal| haystack.contains(signal))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The wait a rate-limit response asks for: crates.io says `Please try again after
+/// Wed, 07 Oct 2026 14:23:11 GMT`. A few seconds of margin absorb clock skew with the registry.
+fn retry_after(stderr: &str, now: u64) -> Option<Duration> {
+    const MARKER: &str = "try again after ";
+    let lower = stderr.to_lowercase();
+    let start = lower.find(MARKER)? + MARKER.len();
+    let at = parse_http_date(&stderr[start..])?;
+    Some(Duration::from_secs(at.saturating_sub(now) + 5))
+}
+
+/// Parse the leading IMF-fixdate (`Wed, 07 Oct 2026 14:23:11 GMT`) of `text` to Unix seconds.
+fn parse_http_date(text: &str) -> Option<u64> {
+    let mut words = text.split_whitespace();
+    words.next()?; // weekday
+    let day: u64 = words.next()?.parse().ok()?;
+    let month = match words.next()? {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    };
+    let year: i64 = words.next()?.parse().ok()?;
+    let mut clock = words.next()?.split(':').map(|n| n.parse::<u64>().ok());
+    let (h, m, s) = (clock.next()??, clock.next()??, clock.next()??);
+    let days = u64::try_from(days_from_civil(year, month, day as i64)).ok()?;
+    Some(days * 86_400 + h * 3600 + m * 60 + s)
+}
+
+/// Days since the Unix epoch for a proleptic Gregorian date (Howard Hinnant's algorithm).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 /// Whether a failure looks like the network or the registry rather than an answer.
 ///
 /// Deliberately a denylist of transient signals, not an allowlist of permanent ones: misreading a
@@ -248,6 +424,78 @@ mod tests {
         assert!(!out.success);
         assert!(out.stderr.contains("ETIMEDOUT"));
         assert_eq!(runner.calls(), 3, "must not retry forever");
+    }
+
+    fn publish(runner: &ScriptedRunner, published_after_error: bool) -> CommandOutput {
+        let policy = PublishRetry {
+            attempts: 3,
+            backoff: Duration::ZERO,
+            rate_limit_waits: 2,
+            rate_limit_wait: Duration::ZERO,
+        };
+        run_publish_with(
+            runner,
+            "cargo",
+            &["publish"],
+            Path::new("."),
+            &|| Ok(published_after_error),
+            policy,
+            &|_| {},
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_rate_limited_publish_waits_and_retries() {
+        let runner = ScriptedRunner::new(vec![
+            (false, "error: 429 Too Many Requests: You have published too many new crates"),
+            (true, ""),
+        ]);
+        assert!(publish(&runner, false).success);
+        assert_eq!(runner.calls(), 2);
+    }
+
+    #[test]
+    fn rate_limit_waits_are_bounded() {
+        let runner = ScriptedRunner::new(vec![(false, "status 429 Too Many Requests")]);
+        assert!(!publish(&runner, false).success);
+        assert_eq!(runner.calls(), 3, "one try plus two waits");
+    }
+
+    /// The upload landed but the response was lost: publishing again would fail with "already
+    /// exists", so the registry's answer wins.
+    #[test]
+    fn a_publish_that_landed_despite_the_error_is_not_repeated() {
+        let runner = ScriptedRunner::new(vec![(false, "error: connection reset by peer")]);
+        assert!(publish(&runner, true).success);
+        assert_eq!(runner.calls(), 1);
+    }
+
+    #[test]
+    fn transient_publish_failures_are_retried_a_bounded_number_of_times() {
+        let runner = ScriptedRunner::new(vec![(false, "503 Service Unavailable")]);
+        assert!(!publish(&runner, false).success);
+        assert_eq!(runner.calls(), 3);
+    }
+
+    #[test]
+    fn a_permanent_publish_failure_is_not_retried() {
+        let runner = ScriptedRunner::new(vec![(false, "error: crate name is already taken")]);
+        assert!(!publish(&runner, false).success);
+        assert_eq!(runner.calls(), 1);
+    }
+
+    #[test]
+    fn retry_after_reads_the_crates_io_date() {
+        let msg = "You have published too many new crates in a short period of time. \
+                   Please try again after Wed, 07 Oct 2026 14:23:11 GMT and see \
+                   https://crates.io/docs/rate-limits for more details";
+        let at = parse_http_date("Wed, 07 Oct 2026 14:23:11 GMT").unwrap();
+        assert_eq!(at, 1_791_382_991);
+        assert_eq!(retry_after(msg, at - 60), Some(Duration::from_secs(65)));
+        // Already past: retry almost at once rather than not at all.
+        assert_eq!(retry_after(msg, at + 60), Some(Duration::from_secs(5)));
+        assert_eq!(retry_after("429 Too Many Requests", at), None);
     }
 
     #[test]

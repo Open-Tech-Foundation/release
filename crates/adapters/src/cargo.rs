@@ -540,10 +540,12 @@ impl Adapter for CargoAdapter {
         // PR), the tree is dirty and a plain `cargo publish` would abort mid-run — after earlier
         // crates in the graph already shipped, with no rollback. Allowing the dirty tree lets the
         // intended resolve edits through instead of stranding a partial release.
-        let out = self.runner.run(
+        let out = crate::command::run_publish(
+            self.runner.as_ref(),
             "cargo",
             &["publish", "-p", &pkg.name, "--allow-dirty"],
             &self.root,
+            &|| self.is_published(pkg, &pkg.version),
         )?;
         if !out.success {
             bail!("`cargo publish -p {}` failed:\n{}", pkg.name, out.stderr);
