@@ -15,6 +15,7 @@
 //! - [`version`]  — the interactive `version` command (local; produces a release PR).
 //! - [`publish`]  — the non-interactive `publish` command (CI; stateless, resumable).
 //! - [`init`]     — the interactive `release.yml` generator.
+//! - [`stamp`]    — the hash stamped on a generated `release.yml`, so hand edits are reported.
 //!
 //! See `docs/` at the repo root for the full design.
 
@@ -39,6 +40,7 @@ pub mod prompt;
 pub mod publish;
 pub mod review;
 pub mod snapshot;
+pub mod stamp;
 pub mod summary;
 pub mod ui;
 pub mod upgrade;

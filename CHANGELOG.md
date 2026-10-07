@@ -8,6 +8,35 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-10-07
+
+### Added
+
+- **Per-package build environment.** `env = { ES_RUNTIME_INSPECTOR = "1" }` on a `[[package]]` is
+  emitted as `env:` on its build steps — forwarded into the guest for VM targets — and set by a
+  local `release build`, so a local build and a CI build of the package match. Writing
+  `$GITHUB_ENV` from a setup step only ever affected CI.
+- **Setup steps can be scoped to a kind of job** with `jobs = ["build"]` (also `check-release`,
+  `matrix`, `publish`, `github-release`). A package's steps reach all of its jobs, and only a matrix
+  build has `matrix.triple`; a cache keyed on it no longer needs an every-triple `targets` filter to
+  stay out of the others.
+- **`upgrade` reports hand edits before overwriting them.** Generated workflows carry a SHA-256
+  stamp; a file edited since generation has the lines regeneration would discard listed, then
+  `upgrade` asks (or, with `--force`, overwrites and leaves the list as the record). `doctor`
+  reports the drift as `workflow-hand-edited`.
+- `doctor` warns (`setup-matrix-outside-build`) about a setup step that reads `matrix.*` but runs in
+  jobs with no matrix, where the expression is empty.
+
+### Fixed
+
+- `doctor` no longer suggests dropping an every-triple `targets` filter from a step that reads
+  `matrix.*` — the filter was what kept that step out of jobs with no matrix. It suggests
+  `jobs = ["build"]` instead.
+- A malformed setup step reports the actual field error rather than serde's "data did not match any
+  variant of untagged enum".
+- The generated Windows "Expose release command" step indents its `Out-File` line inside its `if`
+  block, like the lines around it.
+
 ## [0.40.0] - 2026-10-07
 
 ### Fixed

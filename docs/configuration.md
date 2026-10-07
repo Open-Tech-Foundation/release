@@ -51,6 +51,7 @@ with = { esdev = "true" }              # the action's inputs
 [[setup]]
 uses = "./.github/actions/setup-esdev"
 # targets = ["x86_64-unknown-linux-gnu"]  # only these matrix rows; omit for every row
+# jobs = ["build"]                         # only these kinds of job; omit for every job
 # run = ["curl -fsSL https://example.com/install.sh | bash",
 #        'echo "$HOME/.tool/bin" >> "$GITHUB_PATH"']
 
@@ -65,6 +66,7 @@ command   = "cargo build --release --target {triple}"   # {triple}/{ext}/{bin} e
 artifacts = "target/{triple}/release/otfwc{ext}"        # the binary this target produced
 bin_name  = "otfwc"                 # staged as bin/<stage_as>/otfwc<ext>[.br]  (matrix only)
 compress  = "brotli"                # decompressed at install time            (matrix only)
+env       = { ES_RUNTIME_INSPECTOR = "1" }  # set on the build in CI *and* by a local `release build`
 
 # Optional release identity: what this package overrides from the repo-wide settings above.
 tag_format = "{name}@{version}"     # this package's tag line, replacing the global tag_format
@@ -110,6 +112,7 @@ artifacts = "dist/**"
 | `skip_publish` | Package names never pushed to a registry, even when their manifests look publishable. They are still **versioned** in lockstep with the release — this only suppresses the publish. `init` fills this in automatically: when a repo has a `build-only` package alongside other discovered crates (a Cargo workspace's library crates, say, which carry no `publish = false`), it lists them and records your answer. |
 | `discovery.npm` | Optional. Globs naming npm package **directories**, relative to the repo root. Only for a repo that declares its members nowhere — neither a root `workspaces` field nor `pnpm-workspace.yaml` — typically a polyglot monorepo whose root is another ecosystem's workspace, where adding a root `package.json` with `workspaces` would change how npm/pnpm/bun install the repo. Non-empty ⇒ this *is* the member set and the root `package.json` is not consulted. Written by `init` and by `config` → *Ecosystems*, from a repo scan you confirm. See [npm adapter](./adapters/npm.md#repos-that-declare-no-npm-workspace). |
 | `secrets.npm` / `secrets.cargo` | Optional. Names of the repository secrets the generated workflow reads for registry auth. Default `NPM_TOKEN` / `CARGO_REGISTRY_TOKEN`. Change these instead of hand-editing generated YAML. |
+| `env` (per package) | Optional. Environment variables for the package's build, as `{ KEY = "value" }`. Emitted as `env:` on the generated build step (forwarded into the guest for VM targets) and set by `release build` when it runs locally, so the two builds match. Values are literal strings: a `${{ … }}` expression would mean something only in CI. Prefer this to writing `$GITHUB_ENV` from a setup step, which has no effect outside Actions. |
 | `provenance` (per package) | Optional, npm only. Publish with `--provenance`, signing the tarball with the workflow's OIDC identity. Off by default: it changes the workflow's permissions, so `upgrade` never enables it silently. |
 | `legacy_tag_formats` (per package) | Optional. Older formats to read as *this package's* history, replacing the repo-wide list. Use when the old format has no `{name}`. |
 | `publish.ignore_paths` | Optional per-package path globs. If a package has commits since its last tag, `[Unreleased]` is empty, and **every** changed file matches one of these globs, the release flow prints a warning and continues instead of aborting. |
@@ -119,6 +122,7 @@ artifacts = "dist/**"
 | `setup.uses` | Optional. An action to run, written exactly as a workflow would: `./.github/actions/setup-tsr` for a local composite action, `owner/repo@v1` for a published one. |
 | `setup.with` | Optional. Inputs for `setup.uses`, emitted as the step's `with:` block. Each is passed as a string, like every action input — composite action inputs are strings even when declared `type: boolean`. |
 | `setup.run` | Optional. Shell commands run as one step, for a repo with no composite action to point at. |
+| `setup.jobs` | Optional. Kinds of job this step runs in: `check-release`, `matrix`, `build`, `publish`, `github-release`. Omit to run it in every job. An inline-build publish job is both `build` and `publish`. Use `jobs = ["build"]` for a step that reads `matrix.*`, which only a matrix build job has. |
 | `setup.targets` | Optional. Target triples this step is for, emitted as a `contains(fromJSON(…), matrix.triple)` guard. Omit to run it on every row. It filters **matrix rows**, so a step that names any is not emitted in a job with no matrix. |
 | `[[package.setup]]` | Optional, repeatable. The setup steps for one package's jobs, **replacing** the repo-wide list rather than adding to it. `setup = []` opts that package's jobs out entirely — the escape for a package whose platforms the repo-wide installer does not support. |
 | `[[package]]` | One block per package this repo releases. `init` writes one for every publishable package it finds — a package that needs no build step gets a block carrying only its identity, so there is always somewhere to scope its settings. |

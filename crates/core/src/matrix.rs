@@ -82,6 +82,7 @@ mod tests {
             changelog: None,
             setup: None,
             include: Vec::new(),
+            env: Default::default(),
         }
     }
 

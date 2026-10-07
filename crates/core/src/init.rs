@@ -21,7 +21,7 @@ use inquire::{Confirm, MultiSelect, Select, Text};
 use crate::adapter::{Adapter, Pkg};
 use crate::config::{
     default_ignore_paths, ArchiveFormat, ChangelogScope, ChangelogStrategy, Discovery, Ecosystem,
-    GithubReleaseNotes, Mode, PackageEntry, ReleaseConfig, Setup, SetupSteps, Target,
+    GithubReleaseNotes, JobKind, Mode, PackageEntry, ReleaseConfig, Setup, SetupSteps, Target,
     COMMON_TAG_FORMATS, DEFAULT_TAG_FORMAT, DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
 };
 use crate::discover::{
@@ -816,6 +816,7 @@ pub fn orchestrate(
                 legacy_tag_formats: Vec::new(),
                 changelog: None,
                 setup: None,
+                env: Default::default(),
             });
         }
     }
@@ -931,6 +932,11 @@ pub fn orchestrate(
     // 2. Generate the workflow from it.
     let yaml = render_workflow_for_root(&config, root);
     let yml_path = root.join(".github/workflows/release.yml");
+    // Re-running `init` over a workflow someone edited loses the edits just as `upgrade` would, so
+    // it reports them the same way before asking.
+    if let Ok(current) = fs::read_to_string(&yml_path) {
+        crate::upgrade::report_hand_edits(&yml_path, &current, &yaml);
+    }
     if write_allowed(&yml_path, opts.force, prompt)? {
         fs::create_dir_all(yml_path.parent().unwrap())
             .with_context(|| format!("creating {}", yml_path.parent().unwrap().display()))?;
@@ -1065,7 +1071,7 @@ fn render_check_release_job(s: &mut String, config: &ReleaseConfig) {
     s.push_str("        with:\n");
     s.push_str("          fetch-depth: 0\n");
     push_install_otf_release(s, &pin);
-    render_global_setup(s, config);
+    render_global_setup(s, config, JobKind::CheckRelease);
     // The gate delegates to the binary, like every other job (`matrix`/`build`/`publish`): the tool
     // reads each package's version and tag with the *same* logic it publishes with, so the gate can
     // never drift. It prints `true` when any configured package has an untagged version to release.
@@ -1164,7 +1170,7 @@ fn push_legacy_cli_name(s: &mut String, windows: bool, cross_platform: bool) {
         s.push_str("            New-Item -ItemType Directory -Force -Path $cliDir | Out-Null\n");
         s.push_str("            Copy-Item (Get-Command otf-release).Source (Join-Path $cliDir 'release.exe')\n");
         s.push_str(
-            "          $cliDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append\n",
+            "            $cliDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append\n",
         );
         s.push_str("          }\n");
     } else {
@@ -1221,8 +1227,13 @@ pub fn render_workflow(config: &ReleaseConfig) -> String {
     render_workflow_with_npm_tool(config, NpmTool::Npm)
 }
 
+/// The workflow as written to disk: rendered for the repo at `root`, then stamped so a later
+/// `upgrade` can tell whether it was edited by hand (see [`crate::stamp`]).
 pub(crate) fn render_workflow_for_root(config: &ReleaseConfig, root: &Path) -> String {
-    render_workflow_with_npm_install(config, &NpmInstall::detect(config, root))
+    crate::stamp::stamp(&render_workflow_with_npm_install(
+        config,
+        &NpmInstall::detect(config, root),
+    ))
 }
 
 fn render_workflow_with_npm_tool(config: &ReleaseConfig, npm_tool: NpmTool) -> String {
@@ -1388,6 +1399,18 @@ fn render_setup_step(s: &mut String, setup: &Setup, guard: Option<&str>) {
     }
 }
 
+/// The package's `env` as the build step's `env:` block, quoted so `"1"` stays the string a
+/// process environment holds. The same map `release build` sets locally, so the two builds match.
+fn push_build_env(s: &mut String, entry: &PackageEntry) {
+    if entry.env.is_empty() {
+        return;
+    }
+    s.push_str("        env:\n");
+    for (key, value) in &entry.env {
+        s.push_str(&format!("          {key}: {}\n", yaml_quoted(value)));
+    }
+}
+
 /// The `if:` expression gating one setup step, or `None` for an unconditional one.
 ///
 /// Two independent reasons a setup step is conditional, and a job can have both: `host` is the
@@ -1417,9 +1440,18 @@ fn setup_guard(setup: &Setup, host: Option<&str>) -> Option<String> {
 /// test *and* no target being built for a triple-filtered installer to be needed by, so a step
 /// naming `targets` is left out rather than guarded. `doctor` reports a filter that leaves a step
 /// with nowhere to run, so this cannot silently swallow one.
-fn render_setup_steps(s: &mut String, steps: &SetupSteps, host: Option<&str>, matrix: bool) {
+///
+/// `kinds` is what this job is — one [`JobKind`], or two for an inline-build publish job — and a
+/// step scoped with `jobs` is emitted only where one of them matches.
+fn render_setup_steps(
+    s: &mut String,
+    steps: &SetupSteps,
+    host: Option<&str>,
+    matrix: bool,
+    kinds: &[JobKind],
+) {
     for step in steps.emitting() {
-        if !step.targets.is_empty() && !matrix {
+        if !step.runs_in(kinds) || (!step.targets.is_empty() && !matrix) {
             continue;
         }
         render_setup_steps_one(s, step, host);
@@ -1432,9 +1464,9 @@ fn render_setup_steps_one(s: &mut String, step: &Setup, host: Option<&str>) {
 
 /// The repo-wide setup steps, for a job that belongs to no package: the release gate and the
 /// catch-all publish. Both run hooks or commands the repo wrote, so they take the repo's list.
-fn render_global_setup(s: &mut String, config: &ReleaseConfig) {
+fn render_global_setup(s: &mut String, config: &ReleaseConfig, kind: JobKind) {
     if let Some(setup) = config.setup_step() {
-        render_setup_steps(s, setup, None, false);
+        render_setup_steps(s, setup, None, false, &[kind]);
     }
 }
 
@@ -1448,9 +1480,10 @@ fn render_package_setup(
     entry: &PackageEntry,
     host: Option<&str>,
     matrix: bool,
+    kinds: &[JobKind],
 ) {
     if let Some(setup) = config.setup_for(entry) {
-        render_setup_steps(s, setup, host, matrix);
+        render_setup_steps(s, setup, host, matrix, kinds);
     }
 }
 
@@ -1526,9 +1559,16 @@ fn render_vm_build_step(s: &mut String, entry: &PackageEntry, os: &str, rust: bo
         "        if: ${{{{ matrix.vm && matrix.name == '{os}' }}}}\n"
     ));
     s.push_str(&format!("        uses: vmactions/{os}-vm@v1\n"));
+    push_build_env(s, entry);
     s.push_str("        with:\n");
     s.push_str("          arch: ${{ matrix.arch }}\n");
     s.push_str("          usesh: true\n");
+    // The guest does not inherit the host step's environment; the action forwards the variables
+    // it is given by name.
+    if !entry.env.is_empty() {
+        let names = entry.env.keys().cloned().collect::<Vec<_>>().join(" ");
+        s.push_str(&format!("          envs: {}\n", yaml_quoted(&names)));
+    }
     // Bring the guest's build output back to the host so the staging step can find it.
     s.push_str("          copyback: true\n");
     if !pkgs.is_empty() {
@@ -1571,7 +1611,7 @@ fn render_matrix_build_jobs(
     s.push_str("    steps:\n");
     s.push_str("      - uses: actions/checkout@v4\n");
     push_install_otf_release(s, pin);
-    render_package_setup(s, config, entry, None, false);
+    render_package_setup(s, config, entry, None, false, &[JobKind::Matrix]);
     s.push_str("      - id: set\n");
     s.push_str(&format!(
         "        run: echo \"matrix=$(release matrix --package {name})\" >> \"$GITHUB_OUTPUT\"\n\n"
@@ -1625,12 +1665,13 @@ fn render_matrix_build_jobs(
     push_install_otf_release_cross_platform(s, pin);
     // Host-side only, like every toolchain step above it: a VM target's build runs inside the
     // guest, which installs what it needs through the VM step's own `prepare:`.
-    render_package_setup(s, config, entry, host_cond, true);
+    render_package_setup(s, config, entry, host_cond, true, &[JobKind::Build]);
     s.push_str(&format!("      - name: Build {name}\n"));
     s.push_str(&host_only);
     s.push_str(&format!(
         "        run: release build --package {name} --target ${{{{ matrix.name }}}}/${{{{ matrix.arch }}}}\n"
     ));
+    push_build_env(s, entry);
 
     // One VM step per distinct guest OS: `uses:` cannot be templated, so the action reference has
     // to be literal and the row is selected with a `matrix.name` guard.
@@ -1686,9 +1727,10 @@ fn render_single_build_job(
         // Generic is language-agnostic: no toolchain is assumed — the command sets up its own.
         Ecosystem::Generic => {}
     }
-    render_package_setup(s, config, entry, None, false);
+    render_package_setup(s, config, entry, None, false, &[JobKind::Build]);
     s.push_str(&format!("      - name: Build {}\n", entry.name));
     s.push_str(&format!("        run: {}\n", entry.command));
+    push_build_env(s, entry);
     s.push_str("      - uses: actions/upload-artifact@v4\n");
     s.push_str("        with:\n");
     s.push_str(&format!("          name: {art_slug}\n"));
@@ -1791,7 +1833,7 @@ fn render_publish_job(
     push_install_otf_release(s, pin);
     // This job is where `pre_publish`/`post_publish` hooks and every generic `publish` command
     // actually run, so `scope = "all"` matters most here.
-    render_global_setup(s, config);
+    render_global_setup(s, config, JobKind::Publish);
     s.push_str("      - name: Publish\n");
     s.push_str("        run: release publish");
     for package in excluded_packages {
@@ -1993,6 +2035,7 @@ fn publish_as_is_entry(pkg: &Pkg, adapter: Ecosystem, root: &Path) -> PackageEnt
         legacy_tag_formats: Vec::new(),
         changelog: None,
         setup: None,
+        env: Default::default(),
     }
 }
 
@@ -2046,12 +2089,21 @@ fn render_package_publish_job(
         // then publish. npm packs the freshly built output from this same runner — no artifact
         // upload/download, and npm's own pack/publish lifecycle hooks were stripped at init time.
         npm.push_install(s, Some(entry));
-        render_package_setup(s, config, entry, None, false);
+        // This one job is the package's build *and* its publish, so a step scoped to either runs.
+        render_package_setup(
+            s,
+            config,
+            entry,
+            None,
+            false,
+            &[JobKind::Build, JobKind::Publish],
+        );
         s.push_str(&format!("      - name: Build {name}\n"));
         s.push_str(&format!("        run: {}\n", entry.command));
         if let Some(dir) = package_workdir(entry) {
             s.push_str(&format!("        working-directory: {dir}\n"));
         }
+        push_build_env(s, entry);
     } else {
         s.push_str("      - uses: actions/download-artifact@v4\n");
         s.push_str("        with:\n");
@@ -2068,7 +2120,7 @@ fn render_package_publish_job(
         }
         // Only this branch: the inline branch already emitted the step before its build, and
         // installing the same tool twice in one job is wasted runtime.
-        render_package_setup(s, config, entry, None, false);
+        render_package_setup(s, config, entry, None, false, &[JobKind::Publish]);
     }
     push_install_otf_release(s, pin);
     s.push_str("      - name: Publish\n");
@@ -2115,7 +2167,7 @@ fn render_github_release(
     s.push_str("      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 0\n");
     let staged = download_artifacts(s, needs);
     push_install_otf_release(s, pin);
-    render_package_setup(s, config, entry, None, false);
+    render_package_setup(s, config, entry, None, false, &[JobKind::GithubRelease]);
     s.push_str("      - name: Create GitHub Release\n");
     s.push_str("        env:\n          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n");
     if staged {
@@ -2329,6 +2381,7 @@ fn configure_generic(
         legacy_tag_formats: Vec::new(),
         changelog: None,
         setup: None,
+        env: Default::default(),
     })
 }
 
@@ -2587,6 +2640,7 @@ impl InitPrompt for StdinInitPrompt {
             legacy_tag_formats: Vec::new(),
             changelog: None,
             setup: None,
+            env: Default::default(),
         })
     }
 
@@ -3077,6 +3131,7 @@ pub(crate) mod tests {
             legacy_tag_formats: Vec::new(),
             changelog: None,
             setup: None,
+            env: Default::default(),
         }
     }
 
@@ -3104,6 +3159,7 @@ pub(crate) mod tests {
             legacy_tag_formats: Vec::new(),
             changelog: None,
             setup: None,
+            env: Default::default(),
         }
     }
 
@@ -3135,6 +3191,7 @@ pub(crate) mod tests {
             legacy_tag_formats: Vec::new(),
             changelog: None,
             setup: None,
+            env: Default::default(),
         }
     }
 
@@ -3399,6 +3456,142 @@ pub(crate) mod tests {
             !gate.contains("./.github/actions/setup-esdev"),
             "a filtered step has no place in the gate: {gate}"
         );
+    }
+
+    /// A cache keyed on `matrix.triple` belongs in the build fan-out only. Every other job of the
+    /// package has no matrix, so the key would evaluate to an empty string there — `jobs` keeps the
+    /// step out of them without the every-triple `targets` filter that used to stand in for it.
+    #[test]
+    fn a_jobs_scoped_step_runs_only_in_the_jobs_it_names() {
+        let mut entry = cargo_build_only("cli");
+        entry.setup = Some(
+            Setup {
+                uses: Some("Swatinem/rust-cache@v2".into()),
+                with: [(
+                    "shared-key".to_string(),
+                    "release-${{ matrix.triple }}".to_string(),
+                )]
+                .into(),
+                jobs: vec![JobKind::Build],
+                ..Setup::default()
+            }
+            .into(),
+        );
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo],
+            packages: vec![entry],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+
+        let build = job_body(&out, "build-cli");
+        assert!(
+            build.contains("      - uses: Swatinem/rust-cache@v2\n"),
+            "{build}"
+        );
+        assert!(
+            build.contains("          shared-key: \"release-${{ matrix.triple }}\"\n"),
+            "{build}"
+        );
+        assert!(
+            !build.contains("matrix.triple)"),
+            "no targets guard: {build}"
+        );
+        for job in ["matrix-cli", "github-release-cli"] {
+            let body = job_body(&out, job);
+            assert!(!body.contains("rust-cache"), "{job}: {body}");
+        }
+    }
+
+    /// An inline-build package builds inside its publish job, so that one job is both kinds and a
+    /// step scoped to either reaches it.
+    #[test]
+    fn an_inline_publish_job_counts_as_a_build_job() {
+        let mut entry = npm_publish("@x/sdk");
+        entry.setup = Some(SetupSteps::from(vec![
+            Setup {
+                run: vec!["echo build-only".into()],
+                jobs: vec![JobKind::Build],
+                ..Setup::default()
+            },
+            Setup {
+                run: vec!["echo release-only".into()],
+                jobs: vec![JobKind::GithubRelease],
+                ..Setup::default()
+            },
+        ]));
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            packages: vec![entry],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+
+        let publish = job_body(&out, "publish-x-sdk");
+        assert!(publish.contains("echo build-only"), "{publish}");
+        assert!(!publish.contains("echo release-only"), "{publish}");
+    }
+
+    /// The repo-wide list reaches the gate and the catch-all publish; `jobs` picks between them.
+    #[test]
+    fn a_repo_wide_step_can_be_kept_out_of_the_gate() {
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Npm],
+            setup: Setup {
+                run: vec!["echo publish-tools".into()],
+                jobs: vec![JobKind::Publish],
+                ..Setup::default()
+            }
+            .into(),
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+
+        assert!(
+            !job_body(&out, "check-release").contains("publish-tools"),
+            "{out}"
+        );
+        assert!(job_body(&out, "publish").contains("publish-tools"), "{out}");
+    }
+
+    /// `env` lands on every step that runs the build — the host build, the VM build (which also
+    /// has to forward it into the guest by name), and a single-runner build — and nowhere else.
+    #[test]
+    fn the_package_env_is_set_on_every_build_step() {
+        let mut entry = cargo_build_only("cli");
+        entry
+            .targets
+            .push(crate::config::Target::resolved("freebsd", "x86_64"));
+        entry.env = [
+            ("ES_RUNTIME_INSPECTOR".to_string(), "1".to_string()),
+            ("RUSTFLAGS".to_string(), "-C debuginfo=0".to_string()),
+        ]
+        .into();
+        let mut single = generic_pkg("site", None);
+        single.env = [("NODE_ENV".to_string(), "production".to_string())].into();
+        let config = ReleaseConfig {
+            adapters: vec![Ecosystem::Cargo, Ecosystem::Generic],
+            packages: vec![entry, single],
+            ..ReleaseConfig::default()
+        };
+        let out = render_workflow(&config);
+
+        let env = concat!(
+            "        env:\n",
+            "          ES_RUNTIME_INSPECTOR: \"1\"\n",
+            "          RUSTFLAGS: \"-C debuginfo=0\"\n",
+        );
+        let build = job_body(&out, "build-cli");
+        assert_eq!(build.matches(env).count(), 2, "host and VM build: {build}");
+        assert!(
+            build.contains("          envs: \"ES_RUNTIME_INSPECTOR RUSTFLAGS\"\n"),
+            "{build}"
+        );
+        assert!(!job_body(&out, "matrix-cli").contains("ES_RUNTIME_INSPECTOR"));
+        assert!(!job_body(&out, "github-release-cli").contains("ES_RUNTIME_INSPECTOR"));
+        assert!(job_body(&out, "build-site")
+            .contains("        env:\n          NODE_ENV: \"production\"\n"));
+        assert!(yaml_rust2::YamlLoader::load_from_str(&out).is_ok(), "{out}");
     }
 
     /// Every job, exactly once. Builds are not the only place the tool is needed: `pre_publish`
@@ -3678,6 +3871,7 @@ pub(crate) mod tests {
                 legacy_tag_formats: Vec::new(),
                 changelog: None,
                 setup: None,
+                env: Default::default(),
             }],
         };
         let out = render_workflow(&config);
@@ -3735,6 +3929,7 @@ pub(crate) mod tests {
                     legacy_tag_formats: Vec::new(),
                     changelog: None,
                     setup: None,
+                    env: Default::default(),
                 },
                 PackageEntry {
                     name: "jsr-no-build".to_string(),
@@ -3759,6 +3954,7 @@ pub(crate) mod tests {
                     legacy_tag_formats: Vec::new(),
                     changelog: None,
                     setup: None,
+                    env: Default::default(),
                 },
             ],
         };
@@ -3920,6 +4116,10 @@ pub(crate) mod tests {
         assert!(out.contains("$(command -v otf-release)"));
         assert!(out.contains("(Get-Command otf-release).Source"));
         assert!(out.contains("release-cli/release"));
+        // Inside the `if` block, at the same depth as the lines before it.
+        assert!(out.contains(
+            "            Copy-Item (Get-Command otf-release).Source (Join-Path $cliDir 'release.exe')\n            $cliDir | Out-File"
+        ));
         let mut current = String::new();
         push_install_otf_release(&mut current, &self_tag());
         assert!(current.contains("if ! command -v release >/dev/null 2>&1; then"));
@@ -4068,6 +4268,7 @@ pub(crate) mod tests {
                 legacy_tag_formats: Vec::new(),
                 changelog: None,
                 setup: None,
+                env: Default::default(),
             }],
         };
         let out = render_workflow(&config);
@@ -4128,6 +4329,7 @@ pub(crate) mod tests {
                 legacy_tag_formats: Vec::new(),
                 changelog: None,
                 setup: None,
+                env: Default::default(),
             }],
         }
     }
@@ -4253,6 +4455,7 @@ pub(crate) mod tests {
                 legacy_tag_formats: Vec::new(),
                 changelog: None,
                 setup: None,
+                env: Default::default(),
             }],
         };
         let out = render_workflow(&config);

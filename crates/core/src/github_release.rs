@@ -736,6 +736,7 @@ mod tests {
             legacy_tag_formats: Vec::new(),
             changelog: None,
             setup: None,
+            env: Default::default(),
         }
     }
 
