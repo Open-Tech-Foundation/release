@@ -322,6 +322,22 @@ pub fn orchestrate_many(
             .collect();
         let graph = Graph::build(&ctx.packages)?;
         let mut bumps = graph.cascade(ctx.adapter, &selected_for_adapter)?;
+        // A never-released package ships its manifest version as-is. The cascade only knows that
+        // a dependency moved and hands the dependent a patch, which would skip the version the
+        // author wrote down (`0.1.0` -> `0.1.1`) — including for a dependent the user picked as
+        // Initial, since a patch outranks it in the merge. An explicit stable pick still wins, and
+        // a cascaded prerelease is kept so a dependent never ships stable against a beta.
+        for (name, bump) in bumps.iter_mut() {
+            let cascaded_stable = matches!(bump, Bump::Patch | Bump::Minor | Bump::Major)
+                && matches!(selected_for_adapter.get(name), None | Some(Bump::Initial));
+            if cascaded_stable
+                && repo
+                    .last_tag(name, &tag_formats.history_for(name))?
+                    .is_none()
+            {
+                *bump = Bump::Initial;
+            }
+        }
         // Lockstep crates share one version; reconcile their bumps so they can't diverge.
         reconcile_version_groups(&mut bumps, &ctx.adapter.version_groups()?)?;
         for (name, bump) in &bumps {
@@ -1446,6 +1462,81 @@ mod tests {
             [
                 ("crate-a".to_string(), "2.0.0".to_string()),
                 ("crate-b".to_string(), "2.0.0".to_string()),
+            ]
+        );
+    }
+
+    /// A repo where nothing has been tagged yet: every package is a first release.
+    struct UntaggedRepo;
+
+    impl RepoState for UntaggedRepo {
+        fn last_tag(&self, _: &str, _: &[String]) -> Result<Option<String>> {
+            Ok(None)
+        }
+
+        fn commit_count_since(&self, _: &str, _: &Path) -> Result<usize> {
+            Ok(0)
+        }
+
+        fn changed_files_since(&self, _: &str, _: &Path) -> Result<Vec<std::path::PathBuf>> {
+            Ok(Vec::new())
+        }
+
+        fn commits_since(&self, _: Option<&str>, _: &Path) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn first_release_dependents_ship_their_manifest_version_not_a_cascaded_patch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let core = test_pkg(root, "core");
+        let mut cli = test_pkg(root, "cli");
+        cli.internal_deps.push(crate::adapter::InternalDep {
+            name: "core".into(),
+            kind: DepKind::Dep,
+            range: "1.0.0".into(),
+        });
+        let adapter = FakeVersionAdapter::with_packages(vec![core, cli]);
+        let git = FakeGit::new();
+        let forge = FakeForge {
+            prs: RefCell::new(Vec::new()),
+        };
+        let prompt = ScriptedBumpPrompt {
+            bumps: HashMap::from([
+                ("core".to_string(), Bump::Initial),
+                ("cli".to_string(), Bump::Initial),
+            ]),
+        };
+        let config = crate::config::ReleaseConfig {
+            otf_release_version: None,
+            changelog_strategy: crate::config::ChangelogStrategy::Curated,
+            ..Default::default()
+        };
+
+        orchestrate_many(
+            &[&adapter],
+            &UntaggedRepo,
+            &git,
+            &forge,
+            &prompt,
+            root,
+            "2026-10-07",
+            &VersionOptions::default(),
+            &config,
+            &crate::hooks::fakes::FakeHookRunner::new(),
+        )
+        .unwrap();
+
+        // The cascade patch from `core` must not turn `cli`'s first release into 1.0.1.
+        let mut writes = adapter.writes.borrow().clone();
+        writes.sort();
+        assert_eq!(
+            writes,
+            [
+                ("cli".to_string(), "1.0.0".to_string()),
+                ("core".to_string(), "1.0.0".to_string()),
             ]
         );
     }

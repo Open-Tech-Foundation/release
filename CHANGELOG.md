@@ -35,6 +35,10 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ### Fixed
 
+- First releases that depend on each other now keep their manifest version. A crate picked as an
+  initial release was bumped to a patch (`0.1.0` -> `0.1.1`) when another unreleased crate it
+  depends on was released in the same run.
+
 - Preserve custom target definitions when selecting build targets, correctly resolve musl target
   names, and edit hook commands, setup commands, and action inputs as separate entries so commas
   inside values are preserved. Long picker lists now scroll to the focused option.
