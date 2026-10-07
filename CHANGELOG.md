@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Added
+
+- `version` can run on a feature branch: the release commit is added to that branch and its PR
+  (opened if it has none), so a feature and its version bump merge together. On the default
+  branch it still cuts `release/<date>`.
+- `version` fetches tags from `origin` before planning, so a clone missing the tags CI pushed no
+  longer offers an already-published version as a first release.
+- Registry publishes (cargo, npm, JSR) retry: rate limits are waited out for the time the
+  registry names, network failures and 5xx responses are retried with backoff, and the registry
+  is checked before each retry so a version that landed is never sent twice.
+
 ### Changed
 
 - Complete the config TUI's schema coverage with tool pins, secret names, npm discovery globs,

@@ -62,12 +62,8 @@ pub fn run_many(
         if !repo.is_clean()? {
             bail!("working tree is not clean; commit or stash first");
         }
-        let branch = repo.current_branch()?;
-        if branch != config.default_branch {
-            bail!(
-                "must be on `{}` to start a release (currently on `{branch}`)",
-                config.default_branch
-            );
+        if repo.current_branch()? == "HEAD" {
+            bail!("HEAD is detached; check out a branch to start a release");
         }
     }
     if std::process::Command::new("gh")
@@ -144,6 +140,17 @@ pub fn orchestrate_many(
     if adapters.is_empty() {
         ui::warn("Nothing to release: no adapters are enabled.");
         return Ok(());
+    }
+
+    // Tags are the release history: they decide what is a first release and what changed since
+    // the last one. A clone that never saw the tags CI pushed would offer an already-published
+    // version as "Initial", so refuse to plan from stale history.
+    let fetched = git.fetch_tags().context(
+        "fetching tags from `origin` failed; release history comes from tags, so the plan \
+         would be computed from a stale view",
+    )?;
+    if !fetched {
+        ui::warn("No `origin` remote: release history is read from local tags only.");
     }
 
     if !config.hooks.pre_version.is_empty() {
@@ -251,7 +258,7 @@ pub fn orchestrate_many(
         return Ok(());
     }
 
-    // Non-dry releases must start from a clean `main` before any interactive prompt. That way a
+    // Non-dry releases must start from a clean tree before any interactive prompt. That way a
     // dirty tree fails immediately instead of after the user has selected packages and bumps.
     let starting_branch = if opts.dry_run {
         None
@@ -260,11 +267,8 @@ pub fn orchestrate_many(
             bail!("working tree is not clean; commit or stash first");
         }
         let branch = git.current_branch()?;
-        if branch != config.default_branch {
-            bail!(
-                "must be on `{}` to start a release (currently on `{branch}`)",
-                config.default_branch
-            );
+        if branch == "HEAD" {
+            bail!("HEAD is detached; check out a branch to start a release");
         }
         Some(branch)
     };
@@ -421,10 +425,18 @@ pub fn orchestrate_many(
         return Ok(());
     }
 
-    // 7. Cut release/* from the already-validated starting branch.
+    // 7. On the default branch, cut release/* so nothing is committed to it directly (CI publishes
+    // from it). On any other branch, version in place: the release commit joins that branch and
+    // ships when its PR merges.
     let branch = starting_branch.expect("non-dry release should validate starting branch");
-    let release_branch = format!("release/{today}");
-    git.create_branch(&release_branch)?;
+    let in_place = branch != config.default_branch;
+    let release_branch = if in_place {
+        branch.clone()
+    } else {
+        let release_branch = format!("release/{today}");
+        git.create_branch(&release_branch)?;
+        release_branch
+    };
 
     // 8. Apply: versions, then internal ranges, then changelogs, then lockfiles.
     for (idx, ctx) in adapter_packages.iter().enumerate() {
@@ -500,7 +512,9 @@ pub fn orchestrate_many(
         &commit_title,
     )? {
         git.reset_hard()?;
-        git.checkout_branch(&branch)?;
+        if !in_place {
+            git.checkout_branch(&branch)?;
+        }
         ui::info("Cancelled. Generated release changes were discarded.");
         return Ok(());
     }
@@ -518,9 +532,21 @@ pub fn orchestrate_many(
         ui::detail(&format!(
             "open a PR for `{release_branch}` on GitHub by hand"
         ));
+    } else if in_place && forge.open_pr_exists(&release_branch)? {
+        ui::ok(&format!(
+            "Release commit added to the open PR for `{release_branch}`."
+        ));
     } else {
         forge.open_pr(&release_branch, &commit_title, &summary_text)?;
         ui::ok(&format!("PR opened from `{release_branch}`."));
+    }
+    if in_place {
+        // The branch is the user's own work: leave them on it and never delete it.
+        ui::detail(&format!(
+            "merging `{release_branch}` into `{}` publishes the release",
+            config.default_branch
+        ));
+        return Ok(());
     }
     if prompt.confirm_post_release_cleanup(&release_branch)? {
         git.return_to_default_branch(&branch)?;
@@ -796,6 +822,8 @@ mod tests {
         commits: RefCell<Vec<String>>,
         pushes: RefCell<Vec<String>>,
         deleted: RefCell<Vec<String>>,
+        fetches: RefCell<usize>,
+        fetch_fails: bool,
     }
 
     impl FakeGit {
@@ -807,6 +835,8 @@ mod tests {
                 commits: RefCell::new(Vec::new()),
                 pushes: RefCell::new(Vec::new()),
                 deleted: RefCell::new(Vec::new()),
+                fetches: RefCell::new(0),
+                fetch_fails: false,
             }
         }
 
@@ -819,6 +849,14 @@ mod tests {
     }
 
     impl GitOps for FakeGit {
+        fn fetch_tags(&self) -> Result<bool> {
+            if self.fetch_fails {
+                bail!("could not read from remote repository");
+            }
+            *self.fetches.borrow_mut() += 1;
+            Ok(true)
+        }
+
         fn is_clean(&self) -> Result<bool> {
             Ok(self.clean)
         }
@@ -1258,26 +1296,20 @@ mod tests {
         assert_eq!(git.current_branch().unwrap(), "trunk");
     }
 
-    #[test]
-    fn release_rejects_starting_from_the_wrong_branch() {
+    fn run_on_feature_branch(git: &FakeGit, forge: &dyn Forge) -> Result<()> {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let adapter = FakeVersionAdapter::new(test_pkg(root, "npm-lib"));
-        let git = FakeGit::new(); // on `main`
         let config = crate::config::ReleaseConfig {
             otf_release_version: None,
-            default_branch: "master".to_string(),
             changelog_strategy: crate::config::ChangelogStrategy::Curated,
             ..Default::default()
         };
-
-        let err = orchestrate_many(
+        orchestrate_many(
             &[&adapter],
             &FakeRepo,
-            &git,
-            &FakeForge {
-                prs: RefCell::new(Vec::new()),
-            },
+            git,
+            forge,
             &FakePrompt,
             root,
             "2026-06-28",
@@ -1285,10 +1317,83 @@ mod tests {
             &config,
             &crate::hooks::fakes::FakeHookRunner::new(),
         )
-        .unwrap_err()
-        .to_string();
+    }
 
-        assert!(err.contains("must be on `master`"), "got: {err}");
+    #[test]
+    fn a_feature_branch_is_versioned_in_place_and_gets_a_pr() {
+        let git = FakeGit::new();
+        *git.branch.borrow_mut() = "feat/parser".to_string();
+        let forge = FakeForge {
+            prs: RefCell::new(Vec::new()),
+        };
+        run_on_feature_branch(&git, &forge).unwrap();
+
+        assert!(
+            git.created.borrow().is_empty(),
+            "no release/* branch is cut"
+        );
+        assert_eq!(git.commits.borrow().len(), 1);
+        assert_eq!(git.pushes.borrow().as_slice(), ["feat/parser"]);
+        assert_eq!(forge.prs.borrow().as_slice(), ["feat/parser"]);
+        // The user's branch is theirs: they stay on it and it is never deleted.
+        assert_eq!(git.current_branch().unwrap(), "feat/parser");
+        assert!(git.deleted.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_feature_branch_with_an_open_pr_joins_it() {
+        struct OpenPrForge(RefCell<Vec<String>>);
+        impl Forge for OpenPrForge {
+            fn open_pr(&self, branch: &str, _: &str, _: &str) -> Result<()> {
+                self.0.borrow_mut().push(branch.to_string());
+                Ok(())
+            }
+            fn open_pr_exists(&self, _: &str) -> Result<bool> {
+                Ok(true)
+            }
+            fn create_release(&self, _: &str, _: &str, _: &str) -> Result<()> {
+                Ok(())
+            }
+            fn release_exists(&self, _: &str) -> Result<bool> {
+                Ok(false)
+            }
+        }
+        let git = FakeGit::new();
+        *git.branch.borrow_mut() = "feat/parser".to_string();
+        let forge = OpenPrForge(RefCell::new(Vec::new()));
+        run_on_feature_branch(&git, &forge).unwrap();
+
+        assert_eq!(git.pushes.borrow().as_slice(), ["feat/parser"]);
+        assert!(forge.0.borrow().is_empty(), "no second PR for the branch");
+    }
+
+    #[test]
+    fn a_detached_head_cannot_start_a_release() {
+        let git = FakeGit::new();
+        *git.branch.borrow_mut() = "HEAD".to_string();
+        let forge = FakeForge {
+            prs: RefCell::new(Vec::new()),
+        };
+        let err = run_on_feature_branch(&git, &forge).unwrap_err().to_string();
+        assert!(err.contains("detached"), "got: {err}");
+    }
+
+    #[test]
+    fn tags_are_fetched_before_planning_and_a_failed_fetch_stops_the_run() {
+        let git = FakeGit::new();
+        let forge = FakeForge {
+            prs: RefCell::new(Vec::new()),
+        };
+        run_on_feature_branch(&git, &forge).unwrap();
+        assert_eq!(*git.fetches.borrow(), 1);
+
+        let offline = FakeGit {
+            fetch_fails: true,
+            ..FakeGit::new()
+        };
+        let err = run_on_feature_branch(&offline, &forge).unwrap_err();
+        assert!(format!("{err:#}").contains("fetching tags"), "got: {err:#}");
+        assert!(offline.commits.borrow().is_empty());
     }
 
     #[test]

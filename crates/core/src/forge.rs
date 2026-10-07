@@ -18,6 +18,12 @@ pub enum ReleaseNotes {
 /// A code-hosting forge that can open a pull request and publish a release.
 pub trait Forge {
     fn open_pr(&self, branch: &str, title: &str, body: &str) -> Result<()>;
+    /// Whether `branch` already has an open pull request. A release versioned on a feature branch
+    /// joins that branch's PR instead of trying to open a second one.
+    fn open_pr_exists(&self, branch: &str) -> Result<bool> {
+        let _ = branch;
+        Ok(false)
+    }
     fn create_release(&self, tag: &str, title: &str, notes: &str) -> Result<()>;
     /// Whether a release for this tag already exists. Keeps `publish`'s release step idempotent
     /// so a forward-resume doesn't fail trying to recreate a release that already shipped.
@@ -70,6 +76,17 @@ impl Forge for GhForge {
             );
         }
         Ok(())
+    }
+
+    fn open_pr_exists(&self, branch: &str) -> Result<bool> {
+        let out = Command::new("gh")
+            .args(["pr", "view", branch, "--json", "state", "--jq", ".state"])
+            .current_dir(&self.root)
+            .output()
+            .context("failed to run `gh pr view`")?;
+        // `gh pr view` fails when the branch has no PR at all; a closed or merged one is reported
+        // with its state, and a new PR is still needed for those.
+        Ok(out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "OPEN")
     }
 
     fn create_release(&self, tag: &str, title: &str, notes: &str) -> Result<()> {

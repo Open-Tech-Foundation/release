@@ -171,6 +171,10 @@ fn repo_pathspec<'a>(root: &Path, path: &'a Path) -> Result<&'a str> {
 
 /// Mutating git operations used by the `version` command's branch/commit/push flow.
 pub trait GitOps {
+    /// Bring local tags up to date with `origin`. Release history is read from tags, so a clone
+    /// missing the tags CI pushed would see shipped packages as first releases. Returns `false`
+    /// when there is no `origin` to fetch from, leaving local tags as the only history.
+    fn fetch_tags(&self) -> Result<bool>;
     fn is_clean(&self) -> Result<bool>;
     fn current_branch(&self) -> Result<String>;
     fn create_branch(&self, name: &str) -> Result<()>;
@@ -192,6 +196,14 @@ pub trait GitOps {
 }
 
 impl GitOps for GitRepo {
+    fn fetch_tags(&self) -> Result<bool> {
+        if run_git(&self.root, &["remote", "get-url", "origin"]).is_err() {
+            return Ok(false);
+        }
+        run_git(&self.root, &["fetch", "--quiet", "--tags", "origin"])?;
+        Ok(true)
+    }
+
     fn is_clean(&self) -> Result<bool> {
         Ok(run_git(&self.root, &["status", "--porcelain"])?
             .trim()
@@ -396,6 +408,41 @@ mod tests {
             repo.changed_files_since("a@1.10.0", &pkg_dir).unwrap(),
             vec![PathBuf::from("index.js")]
         );
+    }
+
+    #[test]
+    fn fetch_tags_pulls_tags_that_exist_only_on_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote.git");
+        let root = tmp.path().join("work");
+        fs::create_dir_all(&root).unwrap();
+        git(
+            tmp.path(),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        git(&root, &["init", "-q"]);
+        write(root.join("f"), "x");
+        commit_all(&root, "init");
+
+        let repo = GitRepo::new(&root);
+        // No remote yet: nothing to fetch, local tags stand.
+        assert!(!repo.fetch_tags().unwrap());
+
+        git(
+            &root,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git(&root, &["tag", "a@0.1.0"]);
+        git(
+            &root,
+            &["push", "-q", "origin", "HEAD:refs/heads/main", "--tags"],
+        );
+        // The clone lost the tag CI pushed (the "first release" trap).
+        git(&root, &["tag", "-d", "a@0.1.0"]);
+        assert!(!repo.tag_exists("a@0.1.0").unwrap());
+
+        assert!(repo.fetch_tags().unwrap());
+        assert!(repo.tag_exists("a@0.1.0").unwrap());
     }
 
     /// A release that only moved a dev-dependency range in `b` must not leave `b` looking

@@ -101,6 +101,9 @@ struct FakeGit {
     fail_create_tag_once: RefCell<bool>,
 }
 impl GitOps for FakeGit {
+    fn fetch_tags(&self) -> Result<bool> {
+        Ok(true)
+    }
     fn is_clean(&self) -> Result<bool> {
         Ok(true)
     }

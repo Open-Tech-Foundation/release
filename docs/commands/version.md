@@ -14,6 +14,11 @@ Implemented in `crates/core/src/version.rs`.
 
 ## What it does, step by step
 
+0. **Fetch tags** — `git fetch --tags origin`. Tags are the release history: they decide which
+   packages are first releases and what changed since the last one, so a clone missing the tags
+   CI pushed would offer an already-published version again. A failed fetch (offline, auth, a
+   local tag that conflicts with the remote) stops the run; a repo with no `origin` warns and
+   uses local tags.
 1. **Discover** packages via the adapter; build the internal dependency graph.
 2. **Strict preflight** ([preflight.md](../preflight.md)) — abort the entire run on *any*
    violation, **before mutating anything**. All violations are printed at once.
@@ -36,9 +41,11 @@ Implemented in `crates/core/src/version.rs`.
    (`adapter.format_range`).
 7. **Plan** — render the computed version and range changes. `--dry-run` stops here and writes
    nothing.
-8. **Branch** — assert a clean working tree and that you are on `main`, then
-   `git checkout -b release/<date-or-versions>`. Release changes are **never** committed onto
-   `main` directly (CI publish triggers on `main`).
+8. **Branch** — assert a clean working tree and a checked-out branch (not a detached HEAD).
+   - On the default branch: `git checkout -B release/<date>`. Release changes are **never**
+     committed onto `main` directly (CI publish triggers on `main`).
+   - On any other branch (a feature branch): version **in place**. The release commit lands on
+     that branch, so the feature and its version bump merge together.
 9. **Apply** on the branch:
    - `adapter.write_version` for every affected **publishable** package.
    - `adapter.update_dep_range` for every changed internal range — **including private apps**
@@ -51,10 +58,12 @@ Implemented in `crates/core/src/version.rs`.
 10. **Final review / confirm** — print the actual `git diff --stat`, then ask
     whether to commit, push, and open the PR. On cancel, generated release-branch changes are
     discarded and the command returns to the original branch.
-11. **Commit** (`chore(release): …`), **push**, and **open a PR** via `gh`.
-12. **Offer post-release cleanup** — ask whether to switch back to `main`, pull tags, and delete
-    only the local `release/*` branch after the pushed PR branch exists. If declined, print the
-    commands to run manually.
+11. **Commit** (`chore(release): …`), **push**, and **open a PR** via `gh`. On a feature branch
+    that already has an open PR, the release commit simply joins it and no second PR is opened.
+12. **Offer post-release cleanup** (release branches only) — ask whether to switch back to
+    `main`, pull tags, and delete only the local `release/*` branch after the pushed PR branch
+    exists. If declined, print the commands to run manually. A feature branch is left checked out
+    and never deleted.
 
 Merging that PR is what triggers CI [`publish`](./publish.md).
 
@@ -107,7 +116,8 @@ manifest may legitimately run ahead of its last tag, and a tag must never pull a
 - Private apps: ranges updated, **never** bumped or published.
 - Packages listed in `skip_publish` are treated like private apps by the release tool even if their
   manifest is publishable.
-- The working tree must be clean and on `main`; all release writes land on `release/*`.
+- The working tree must be clean. Started on `main`, all release writes land on `release/*`;
+  started on another branch, they land on that branch. Nothing is ever committed to `main`.
 - Preflight runs to completion (and can abort) before the first prompt.
 
 ## See also
