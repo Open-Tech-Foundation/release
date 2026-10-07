@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-10-07
+
 ### Added
 
 - **Per-package build environment.** `env = { ES_RUNTIME_INSPECTOR = "1" }` on a `[[package]]` is
