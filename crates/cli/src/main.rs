@@ -485,6 +485,7 @@ fn run() -> Result<()> {
                     package,
                     exclude_packages,
                     tag_releases: true,
+                    require_release_section: true,
                 },
                 &config.hooks,
             )?;

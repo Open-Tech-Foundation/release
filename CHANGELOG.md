@@ -46,6 +46,10 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ### Fixed
 
+- A new package merged to `main` is no longer published without going through `version`. `check`
+  and `publish` now require a dated `## [version]` changelog section for the version, which only
+  `version` writes; `publish` lists any package it held back. Snapshots are unaffected.
+
 - Dev-dependencies no longer trigger releases. A package that only dev-depends on a bumped one gets
   its range updated without being released, and release commits no longer count as changes to a
   package.

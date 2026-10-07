@@ -1,7 +1,8 @@
 # `check` — the CI release gate
 
 A non-interactive helper that answers one question: **does this commit release anything?** It prints
-`true` when at least one configured package has a real version whose tag doesn't exist yet, else
+`true` when at least one configured package has a version that `release version` cut and whose tag
+doesn't exist yet, else
 `false`. The generated `release.yml` uses it as the `check-release` job so an ordinary push to `main`
 (a doc fix, a chore) doesn't spin up the cross-platform build matrix. Implemented in
 `crates/core/src/check.rs`.
@@ -35,7 +36,10 @@ A package makes the gate return `true` when **all** of these hold:
 
 1. it is publishable — private apps and `skip_publish` packages are excluded (CI never releases them);
 2. its version is not the `0.0.0` unreleased sentinel;
-3. its `{name}@{version}` tag does **not** exist yet.
+3. its `{name}@{version}` tag does **not** exist yet;
+4. its changelog has a dated `## [version] - …` section for that version — the mark
+   `release version` leaves. A crate merged to `main` straight from `cargo new` (at `0.1.0`, no
+   tag, only `[Unreleased]` notes) is therefore not a release until it goes through `version`.
 
 Every package is evaluated against *its own* version and *its own* tag, so a repo where only one
 package bumped (while the others are unchanged and already tagged) still releases — the bug the

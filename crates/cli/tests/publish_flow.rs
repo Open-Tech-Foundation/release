@@ -584,3 +584,70 @@ fn matrix_package_without_staged_binaries_is_refused() {
     assert!(runner.publish_log.lock().unwrap().is_empty());
     assert!(git.tags.borrow().is_empty());
 }
+
+/// A package merged to `main` without going through `version` (no dated changelog section for its
+/// version) is held back; the package `version` cut still ships, and a snapshot is not gated.
+#[test]
+fn a_package_that_never_went_through_version_is_not_published() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root.join("package.json"),
+        r#"{ "name": "root", "private": true, "workspaces": ["packages/*"] }"#,
+    );
+    write(
+        root.join("packages/cut/package.json"),
+        "{\n  \"name\": \"@x/cut\",\n  \"version\": \"1.0.0\"\n}\n",
+    );
+    write(
+        root.join("packages/cut/CHANGELOG.md"),
+        "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2024-01-01\n- notes\n",
+    );
+    write(
+        root.join("packages/fresh/package.json"),
+        "{\n  \"name\": \"@x/fresh\",\n  \"version\": \"0.1.0\"\n}\n",
+    );
+    write(
+        root.join("packages/fresh/CHANGELOG.md"),
+        "# Changelog\n\n## [Unreleased]\n\n- work in progress\n",
+    );
+
+    let runner = PubRunner::new(&[]);
+    let adapter = NpmAdapter::with_runner(root, Box::new(runner.clone()));
+    let git = FakeGit::default();
+    let forge = FakeForge::default();
+    let hooks = otf_release_core::config::Hooks::default();
+    let hook_runner = otf_release_core::hooks::fakes::FakeHookRunner::new();
+    let opts = PublishOptions {
+        tags: TagFormats::global("{name}@{version}"),
+        ..PublishOptions::default()
+    };
+
+    orchestrate(&adapter, &git, &forge, root, &opts, &hooks, &hook_runner).unwrap();
+    assert_eq!(
+        runner.publish_log.lock().unwrap().as_slice(),
+        ["@x/cut@1.0.0"]
+    );
+    assert_eq!(git.tags.borrow().as_slice(), ["@x/cut@1.0.0"]);
+
+    let snapshot = PublishOptions {
+        tag_releases: false,
+        require_release_section: false,
+        ..opts
+    };
+    orchestrate(
+        &adapter,
+        &git,
+        &forge,
+        root,
+        &snapshot,
+        &hooks,
+        &hook_runner,
+    )
+    .unwrap();
+    assert!(runner
+        .publish_log
+        .lock()
+        .unwrap()
+        .contains(&"@x/fresh@0.1.0".to_string()));
+}

@@ -49,6 +49,11 @@ pub struct PublishOptions {
     /// silently zeroes `commit_count_since` and takes the package out of every future release.
     /// A snapshot is addressable by its registry version, which already carries the commit hash.
     pub tag_releases: bool,
+    /// Publish only versions with a dated `## [version]` changelog section, which only `version`
+    /// writes. A crate merged to `main` at `0.1.0` straight from `cargo new` — or a version edited
+    /// by hand — has none, and is held back instead of shipping as a side effect of the merge.
+    /// False for `snapshot`, whose per-commit versions never get a changelog section.
+    pub require_release_section: bool,
 }
 
 /// Wire up the real git/forge and run the flow.
@@ -73,6 +78,7 @@ impl Default for PublishOptions {
             require_staged: Vec::new(),
             changelog: ChangelogLayout::default(),
             tag_releases: true,
+            require_release_section: true,
         }
     }
 }
@@ -132,6 +138,7 @@ pub fn orchestrate_many(
     hook_runner: &dyn crate::hooks::HookRunner,
 ) -> Result<()> {
     let mut plans = Vec::with_capacity(adapters.len());
+    let mut unversioned = Vec::new();
 
     for adapter in adapters {
         // Build the graph from *every* discovered package so internal dependency edges always
@@ -173,6 +180,12 @@ pub fn orchestrate_many(
             if published && tagged {
                 continue;
             }
+            if opts.require_release_section
+                && !changelog::has_release_section(&pkg.changelog_path, &pkg.version)?
+            {
+                unversioned.push(format!("{}@{}", pkg.name, pkg.version));
+                continue;
+            }
             pending.push(Pending {
                 pkg: pkg.clone(),
                 tag,
@@ -184,6 +197,14 @@ pub fn orchestrate_many(
             adapter: *adapter,
             pending,
         });
+    }
+
+    if !unversioned.is_empty() {
+        ui::warn("Not released: no dated changelog section, so `release version` never cut it.");
+        for name in &unversioned {
+            ui::detail(name);
+        }
+        ui::detail("run `release version` and merge its PR to release these");
     }
 
     let has_work = plans.iter().any(|plan| !plan.pending.is_empty());

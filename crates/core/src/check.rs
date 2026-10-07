@@ -14,7 +14,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::adapter::{Adapter, Pkg};
+use crate::adapter::{apply_changelog_layout, Adapter, Pkg};
+use crate::changelog;
 use crate::config::{ReleaseConfig, TagFormats};
 use crate::git::{GitOps, GitRepo};
 
@@ -38,6 +39,7 @@ pub fn run_many_for_package(
     let mut packages = Vec::new();
     for adapter in adapters {
         let mut discovered = adapter.discover_packages()?;
+        apply_changelog_layout(root, &config.changelog_layout(), &mut discovered);
         // Fold `skip_publish` into `publishable = false` so the decision below excludes both those
         // and private apps with one check — matching how `publish` treats them.
         config.apply_publish_skips(&mut discovered);
@@ -47,24 +49,32 @@ pub fn run_many_for_package(
         discovered.retain(|pkg| !exclude_packages.contains(&pkg.name));
         packages.extend(discovered);
     }
-    any_pending(&packages, &config.tag_formats(), |tag| repo.tag_exists(tag))
+    any_pending(
+        &packages,
+        &config.tag_formats(),
+        |tag| repo.tag_exists(tag),
+        |pkg| changelog::has_release_section(&pkg.changelog_path, &pkg.version),
+    )
 }
 
 /// The pure gate decision: `true` when at least one publishable package has a real version whose
-/// `tag_format` tag is absent — i.e. a release is pending. Non-publishable packages (private apps
-/// and `skip_publish`) and the `0.0.0` unreleased sentinel are ignored. `tag_exists` is injected so
-/// this is unit-testable without a live repo, and so `run_many` owns the one git dependency.
+/// `tag_format` tag is absent and that `version` cut (it has a dated changelog section) — i.e. a
+/// release is pending. A new package merged at `0.1.0` without going through `version` is not a
+/// release. Non-publishable packages (private apps and `skip_publish`) and the `0.0.0` unreleased
+/// sentinel are ignored. `tag_exists` and `has_release_section` are injected so this is
+/// unit-testable without a live repo or changelogs on disk.
 pub fn any_pending(
     packages: &[Pkg],
     tags: &TagFormats,
     tag_exists: impl Fn(&str) -> Result<bool>,
+    has_release_section: impl Fn(&Pkg) -> Result<bool>,
 ) -> Result<bool> {
     for pkg in packages {
         if !pkg.publishable || pkg.version == UNRELEASED_VERSION {
             continue;
         }
         let tag = tags.tag_for(&pkg.name, &pkg.version)?;
-        if !tag_exists(&tag)? {
+        if !tag_exists(&tag)? && has_release_section(pkg)? {
             return Ok(true);
         }
     }
@@ -92,6 +102,24 @@ mod tests {
         move |tag: &str| Ok(existing.contains(&tag))
     }
 
+    /// Every package went through `version`.
+    fn versioned(_: &Pkg) -> Result<bool> {
+        Ok(true)
+    }
+
+    #[test]
+    fn a_package_that_never_went_through_version_is_not_a_release() {
+        // `cargo new` leaves 0.1.0 with no tag; merging it to main must not release it.
+        let pkgs = vec![pkg("new-crate", "0.1.0", true)];
+        let gate = any_pending(
+            &pkgs,
+            &TagFormats::global("{name}@{version}"),
+            tags(&[]),
+            |_| Ok(false),
+        );
+        assert!(!gate.unwrap());
+    }
+
     #[test]
     fn true_when_a_bumped_package_has_no_tag_yet() {
         let pkgs = vec![
@@ -101,7 +129,8 @@ mod tests {
         assert!(any_pending(
             &pkgs,
             &TagFormats::global("{name}@{version}"),
-            tags(&["@x/web-compiler@0.2.0"])
+            tags(&["@x/web-compiler@0.2.0"]),
+            versioned
         )
         .unwrap());
     }
@@ -113,7 +142,13 @@ mod tests {
             pkg("@x/web-compiler", "0.2.0", true),
         ];
         let existing = tags(&["@x/web@0.7.0", "@x/web-compiler@0.2.0"]);
-        assert!(!any_pending(&pkgs, &TagFormats::global("{name}@{version}"), existing).unwrap());
+        assert!(!any_pending(
+            &pkgs,
+            &TagFormats::global("{name}@{version}"),
+            existing,
+            versioned
+        )
+        .unwrap());
     }
 
     #[test]
@@ -124,7 +159,13 @@ mod tests {
             pkg("@x/create-web", "0.0.0", true),   // sentinel: never released
             pkg("@x/private-app", "9.9.9", false), // private / skip_publish
         ];
-        assert!(!any_pending(&pkgs, &TagFormats::global("{name}@{version}"), tags(&[])).unwrap());
+        assert!(!any_pending(
+            &pkgs,
+            &TagFormats::global("{name}@{version}"),
+            tags(&[]),
+            versioned
+        )
+        .unwrap());
     }
 
     #[test]
@@ -132,6 +173,12 @@ mod tests {
         // A cargo CLI shipped via GitHub Release is publishable in `Pkg` terms; `publish` skips it
         // but the gate must not — a release where only it bumped still needs to run.
         let pkgs = vec![pkg("otf-release", "0.15.0", true)];
-        assert!(any_pending(&pkgs, &TagFormats::global("{name}@{version}"), tags(&[])).unwrap());
+        assert!(any_pending(
+            &pkgs,
+            &TagFormats::global("{name}@{version}"),
+            tags(&[]),
+            versioned
+        )
+        .unwrap());
     }
 }

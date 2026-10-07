@@ -23,6 +23,10 @@ Implemented in `crates/core/src/publish.rs`. Triggered by a merge to `main` (see
    - `!pkg.publishable` → **skip** (private apps and packages listed in `skip_publish` are always excluded).
    - `adapter.is_published(pkg, pkg.version)` is `true` → **skip** (already published →
      idempotent / resumable).
+   - no dated `## [version]` section in its changelog → **skip with a warning**. Only
+     `release version` writes that section, so a new package merged to `main` (or a version edited
+     by hand) is held back instead of shipping as a side effect of the merge. `snapshot` is exempt:
+     its per-commit versions never get a changelog section.
 3. **Topological sort** over the internal graph — dependencies before dependents. **Error on
    cycles.**
 4. For each package, in order:

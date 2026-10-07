@@ -109,6 +109,7 @@ pub fn run(
             // A snapshot ships to the registry only. See `PublishOptions::tag_releases`: tagging
             // one version per commit would bury — and outrank — the release tags `last_tag` reads.
             tag_releases: false,
+            require_release_section: false,
         },
         &config.hooks,
     )?;

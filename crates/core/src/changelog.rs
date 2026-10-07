@@ -118,6 +118,16 @@ pub fn dated_section_notes(changelog_path: &Path, version: &str) -> Result<Optio
     Ok(section_notes(&content, version))
 }
 
+/// Whether the changelog has a dated `## [version]` section — the mark `version` leaves on every
+/// version it releases. A missing changelog has none.
+pub fn has_release_section(changelog_path: &Path, version: &str) -> Result<bool> {
+    match fs::read_to_string(changelog_path) {
+        Ok(content) => Ok(section_notes(&content, version).is_some()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).with_context(|| format!("reading {}", changelog_path.display())),
+    }
+}
+
 fn read(path: &Path) -> Result<String> {
     fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
 }
