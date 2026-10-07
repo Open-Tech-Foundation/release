@@ -24,7 +24,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::adapter::{Adapter, Pkg};
-use crate::config::{Ecosystem, PackageEntry, ReleaseConfig, SetupSteps};
+use crate::config::{Ecosystem, JobKind, PackageEntry, ReleaseConfig, SetupSteps};
 use crate::init::slug;
 use crate::ui;
 
@@ -320,6 +320,29 @@ fn check_setup_targets(
         .map(|target| target.triple.as_str())
         .collect();
 
+    for step in setup.emitting() {
+        // With no `targets`, the step reaches every job its `jobs` allows; only a build job has a
+        // matrix. A `matrix.*` expression anywhere else evaluates to an empty string, silently —
+        // a cache keyed on `matrix.triple` then shares one key across unrelated jobs.
+        if step.targets.is_empty() && step.reads_matrix() && step.jobs != [JobKind::Build] {
+            let label = step
+                .uses
+                .clone()
+                .unwrap_or_else(|| "the script step".to_string());
+            out.push(
+                Finding::new(
+                    Severity::Warning,
+                    "setup-matrix-outside-build",
+                    format!(
+                        "{context}: `{label}` reads `matrix.*`, but it also runs in jobs that have \
+                         no matrix, where the expression is an empty string."
+                    ),
+                )
+                .fix("add `jobs = [\"build\"]` to the step"),
+            );
+        }
+    }
+
     for step in setup.emitting().filter(|step| !step.targets.is_empty()) {
         let label = step
             .uses
@@ -378,7 +401,21 @@ fn check_setup_targets(
                 .iter()
                 .all(|triple| step.targets.iter().any(|t| t == triple))
         {
-            out.push(
+            // Listing every triple does select every *row* — but it also keeps the step out of
+            // every job with no matrix. For a step that reads `matrix.*` that second effect is the
+            // point, and "drop it" would move the step into jobs where the expression is empty.
+            let finding = if step.reads_matrix() && step.jobs.is_empty() {
+                Finding::new(
+                    Severity::Suggestion,
+                    "setup-targets-redundant",
+                    format!(
+                        "{context}: `{label}` lists every target the packages it applies to build. \
+                         It selects no rows, but it is what keeps this step — which reads \
+                         `matrix.*` — out of jobs that have no matrix."
+                    ),
+                )
+                .fix("replace `targets` with `jobs = [\"build\"]`, which says that directly")
+            } else {
                 Finding::new(
                     Severity::Suggestion,
                     "setup-targets-redundant",
@@ -387,8 +424,9 @@ fn check_setup_targets(
                          so the filter selects nothing."
                     ),
                 )
-                .fix("drop `targets` — the step already runs on every row".to_string()),
-            );
+                .fix("drop `targets` — the step already runs on every row")
+            };
+            out.push(finding);
         }
     }
 }
@@ -1351,6 +1389,65 @@ mod tests {
                 .findings
                 .iter()
                 .any(|f| f.code == "setup-targets-redundant"),
+            "{report:?}"
+        );
+    }
+
+    /// The repo's actual workaround: a cache keyed on `matrix.triple`, filtered to every triple so
+    /// it stays out of jobs with no matrix. Dropping the filter, as the plain suggestion says,
+    /// would break it — so the advice is to say the same thing with `jobs`.
+    #[test]
+    fn an_every_triple_filter_on_a_matrix_reading_step_suggests_jobs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = |targets: Vec<String>, jobs: Vec<JobKind>| Setup {
+            uses: Some("Swatinem/rust-cache@v2".into()),
+            with: [(
+                "shared-key".to_string(),
+                "release-${{ matrix.triple }}".to_string(),
+            )]
+            .into(),
+            targets,
+            jobs,
+            ..Setup::default()
+        };
+        let audit_with = |step: Setup| {
+            let mut pkg = matrix_entry("cli");
+            pkg.setup = Some(step.into());
+            let config = ReleaseConfig {
+                adapters: vec![Ecosystem::Cargo],
+                packages: vec![pkg],
+                ..ReleaseConfig::default()
+            };
+            audit(&config, &[], tmp.path())
+        };
+
+        let every = vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-pc-windows-msvc".to_string(),
+        ];
+        let report = audit_with(cache(every, vec![]));
+        let redundant = report
+            .findings
+            .iter()
+            .find(|f| f.code == "setup-targets-redundant")
+            .expect("still reported");
+        assert!(
+            redundant
+                .fix
+                .as_deref()
+                .unwrap()
+                .contains("jobs = [\"build\"]"),
+            "{redundant:?}"
+        );
+
+        // Unfiltered, it reaches the publish and release jobs with an empty key.
+        let report = audit_with(cache(vec![], vec![]));
+        assert!(codes(&report, Severity::Warning).contains(&"setup-matrix-outside-build"));
+
+        // Scoped with `jobs`, there is nothing to say.
+        let report = audit_with(cache(vec![], vec![JobKind::Build]));
+        assert!(
+            !report.findings.iter().any(|f| f.code.starts_with("setup-")),
             "{report:?}"
         );
     }
