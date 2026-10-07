@@ -475,6 +475,16 @@ pub struct PackageEntry {
     /// would leave every package undoing a step it never asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<SetupSteps>,
+    /// Environment variables for this package's build, e.g. `{ ES_RUNTIME_INSPECTOR = "1" }`.
+    ///
+    /// Applied in both places the build runs: emitted as `env:` on the build step of the
+    /// generated workflow, and set by `release build` around the build command on a
+    /// contributor's machine. Declaring them here rather than appending to `$GITHUB_ENV` from a
+    /// setup step is what keeps a local build and a CI build of the same package identical —
+    /// a `$GITHUB_ENV` write only exists inside Actions. Values are literal strings for that
+    /// reason: a `${{ … }}` expression would mean one thing in CI and nothing locally.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 }
 
 impl PackageEntry {
@@ -634,6 +644,68 @@ pub struct Setup {
     /// — `doctor` reports a filter that leaves a step with nowhere to run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<String>,
+    /// The kinds of job this step is for, e.g. `["build"]`. Empty — the default — means every
+    /// job the list reaches.
+    ///
+    /// A package's setup list is emitted into all of that package's jobs, but the jobs are not
+    /// alike: only a matrix build job has `matrix.triple`, so a cache step keyed on it is wrong
+    /// in the matrix-planning, publish and GitHub Release jobs. Before this field the only way to
+    /// keep such a step out of them was a `targets` filter naming every triple — which works
+    /// because a filtered step is left out of jobs with no matrix, but says something else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<JobKind>,
+}
+
+/// Whether `name` can be an environment variable on every runner OS: letters, digits and `_`,
+/// not starting with a digit.
+pub fn is_env_name(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| !c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// A kind of job in the generated workflow, for scoping a [`Setup`] step with `jobs`.
+///
+/// One name per job shape, not per job: every package's build job is `build`, whichever package
+/// it belongs to. An inline-build npm package builds inside its publish job, so that one job is
+/// both `build` and `publish`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JobKind {
+    /// The `check-release` gate. Repo-wide `[[setup]]` only.
+    CheckRelease,
+    /// A matrix package's `matrix-<pkg>` job, which plans the rows its build fans out over.
+    Matrix,
+    /// A `build-<pkg>` job — the matrix fan-out or the single-runner build.
+    Build,
+    /// A `publish-<pkg>` job, or the catch-all `publish` job.
+    Publish,
+    /// A build-only package's `github-release-<pkg>` job.
+    GithubRelease,
+}
+
+impl JobKind {
+    pub const ALL: [JobKind; 5] = [
+        JobKind::CheckRelease,
+        JobKind::Matrix,
+        JobKind::Build,
+        JobKind::Publish,
+        JobKind::GithubRelease,
+    ];
+
+    /// The name written in `release.toml`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JobKind::CheckRelease => "check-release",
+            JobKind::Matrix => "matrix",
+            JobKind::Build => "build",
+            JobKind::Publish => "publish",
+            JobKind::GithubRelease => "github-release",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<JobKind> {
+        JobKind::ALL.into_iter().find(|kind| kind.as_str() == name)
+    }
 }
 
 impl Setup {
@@ -693,6 +765,14 @@ impl Setup {
                 bail!("{context}: `targets` lists `{triple}` twice");
             }
         }
+        if !self.jobs.is_empty() && self.is_empty() {
+            bail!("{context}: `jobs` scopes a step, but this one has no `uses` and no `run`");
+        }
+        for (i, kind) in self.jobs.iter().enumerate() {
+            if self.jobs[..i].contains(kind) {
+                bail!("{context}: `jobs` lists `{}` twice", kind.as_str());
+            }
+        }
         Ok(())
     }
 
@@ -700,6 +780,21 @@ impl Setup {
     /// every row.
     pub fn covers(&self, triple: &str) -> bool {
         self.targets.is_empty() || self.targets.iter().any(|t| t == triple)
+    }
+
+    /// Whether this step belongs in a job that is each of `kinds` — usually one kind, two for an
+    /// inline-build publish job. A step with no `jobs` belongs in every job.
+    pub fn runs_in(&self, kinds: &[JobKind]) -> bool {
+        self.jobs.is_empty() || self.jobs.iter().any(|kind| kinds.contains(kind))
+    }
+
+    /// Whether the step's inputs or script read the `matrix` context, which only a matrix build
+    /// job has. Anywhere else the expression evaluates to an empty string, silently.
+    pub fn reads_matrix(&self) -> bool {
+        self.with
+            .values()
+            .chain(self.run.iter())
+            .any(|value| value.contains("matrix."))
     }
 }
 
@@ -785,19 +880,37 @@ impl From<Vec<Setup>> for SetupSteps {
 
 impl<'de> Deserialize<'de> for SetupSteps {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> std::result::Result<Self, D::Error> {
-        /// A table is the pre-list spelling of a one-step setup; a list is the list. Neither shape
-        /// can deserialize as the other, so the untagged pick is unambiguous.
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum OneOrMany {
-            One(Setup),
-            Many(Vec<Setup>),
+        use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
+
+        /// A table is the pre-list spelling of a one-step setup; a list is the list. The shape is
+        /// picked before the step is parsed — not with `#[serde(untagged)]`, which would replace a
+        /// precise error like "unknown variant `buld`" with "did not match any variant".
+        struct OneOrMany;
+
+        impl<'de> serde::de::Visitor<'de> for OneOrMany {
+            type Value = SetupSteps;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a setup table or a list of setup tables")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> std::result::Result<SetupSteps, A::Error> {
+                Setup::deserialize(MapAccessDeserializer::new(map))
+                    .map(|step| SetupSteps(vec![step]))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                seq: A,
+            ) -> std::result::Result<SetupSteps, A::Error> {
+                Vec::<Setup>::deserialize(SeqAccessDeserializer::new(seq)).map(SetupSteps)
+            }
         }
 
-        Ok(match OneOrMany::deserialize(de)? {
-            OneOrMany::One(step) => SetupSteps(vec![step]),
-            OneOrMany::Many(steps) => SetupSteps(steps),
-        })
+        de.deserialize_any(OneOrMany)
     }
 }
 
@@ -1379,6 +1492,15 @@ impl ReleaseConfig {
         self.setup.validate("[setup]")?;
         for pkg in &self.packages {
             pkg.validate_release_identity()?;
+            for key in pkg.env.keys() {
+                if !is_env_name(key) {
+                    bail!(
+                        "package `{}`: `env` key `{key}` is not a valid environment variable name \
+                         (letters, digits and `_`, not starting with a digit)",
+                        pkg.name
+                    );
+                }
+            }
             if let Some(setup) = &pkg.setup {
                 setup.validate(&format!("package `{}`: [package.setup]", pkg.name))?;
             }
@@ -1567,6 +1689,7 @@ mod tests {
             changelog: None,
             setup: None,
             executable: None,
+            env: Default::default(),
         };
 
         // Unset + raw binary ⇒ executable.
@@ -1632,6 +1755,7 @@ mod tests {
                     legacy_tag_formats: Vec::new(),
                     changelog: None,
                     setup: None,
+                    env: Default::default(),
                 },
                 PackageEntry {
                     name: "docs-site".into(),
@@ -1656,6 +1780,7 @@ mod tests {
                     legacy_tag_formats: Vec::new(),
                     changelog: None,
                     setup: None,
+                    env: Default::default(),
                 },
             ],
         };
@@ -1873,6 +1998,7 @@ mod tests {
             legacy_tag_formats: Vec::new(),
             changelog: None,
             setup: None,
+            env: Default::default(),
         }
     }
 
@@ -2147,6 +2273,47 @@ mod tests {
         assert_eq!(custom.default_branch, "trunk");
         let text = toml::to_string_pretty(&custom).unwrap();
         assert!(text.contains("default_branch = \"trunk\""));
+    }
+
+    /// The shape the release-tool feedback asked for parses as written, round-trips, and the
+    /// mistakes that would generate a broken workflow are rejected at load time.
+    #[test]
+    fn package_env_and_setup_jobs_parse_and_validate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good = "adapters = []\n\
+            [[package]]\nname = \"esdev\"\nadapter = \"generic\"\nmode = \"build-only\"\n\
+            env = { ES_RUNTIME_INSPECTOR = \"1\" }\n\
+            [[package.setup]]\nuses = \"Swatinem/rust-cache@v2\"\n\
+            with = { shared-key = \"release-${{ matrix.triple }}\" }\njobs = [\"build\"]\n";
+        fs::write(ReleaseConfig::path(tmp.path()), good).unwrap();
+        let cfg = ReleaseConfig::load(tmp.path()).unwrap();
+        let pkg = &cfg.packages[0];
+        assert_eq!(pkg.env["ES_RUNTIME_INSPECTOR"], "1");
+        let step = &pkg.setup.as_ref().unwrap().steps()[0];
+        assert_eq!(step.jobs, vec![JobKind::Build]);
+        assert!(step.reads_matrix());
+        assert!(step.runs_in(&[JobKind::Build, JobKind::Publish]));
+        assert!(!step.runs_in(&[JobKind::Matrix]));
+
+        cfg.save(tmp.path()).unwrap();
+        let back = ReleaseConfig::load(tmp.path()).unwrap();
+        assert_eq!(back.packages, cfg.packages);
+
+        for (bad, expect) in [
+            (good.replace("[\"build\"]", "[\"buld\"]"), "unknown variant"),
+            (
+                good.replace("[\"build\"]", "[\"build\", \"build\"]"),
+                "twice",
+            ),
+            (
+                good.replace("ES_RUNTIME_INSPECTOR =", "\"1BAD\" ="),
+                "environment variable",
+            ),
+        ] {
+            fs::write(ReleaseConfig::path(tmp.path()), bad).unwrap();
+            let err = ReleaseConfig::load(tmp.path()).unwrap_err();
+            assert!(format!("{err:#}").contains(expect), "{err:#}");
+        }
     }
 
     #[test]

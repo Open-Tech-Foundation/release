@@ -22,9 +22,9 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::config::{
-    format_tag, ArchiveFormat, ChangelogScope, ChangelogStrategy, Ecosystem, GithubReleaseNotes,
-    Mode, PackageEntry, ReleaseConfig, Setup, SetupSteps, Target, COMMON_TAG_FORMATS, CONFIG_FILE,
-    DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
+    format_tag, is_env_name, ArchiveFormat, ChangelogScope, ChangelogStrategy, Ecosystem,
+    GithubReleaseNotes, JobKind, Mode, PackageEntry, ReleaseConfig, Setup, SetupSteps, Target,
+    COMMON_TAG_FORMATS, CONFIG_FILE, DEFAULT_VERSION_FIELD, TARGET_REGISTRY,
 };
 use crate::init::{
     adopt_package, sync_package_blocks, unconfigured_packages, AdapterFactory, UnconfiguredPackage,
@@ -58,6 +58,7 @@ pub enum Field {
     PkgCompress,
     PkgArchive,
     PkgInclude,
+    PkgEnv,
     PkgExecutable,
     PkgLegacyTags,
     Provider,
@@ -159,6 +160,7 @@ pub enum SetupPart {
     With,
     Run,
     Targets,
+    Jobs,
 }
 
 impl SetupPart {
@@ -168,6 +170,7 @@ impl SetupPart {
             SetupPart::With => "Action inputs",
             SetupPart::Run => "Script",
             SetupPart::Targets => "Targets",
+            SetupPart::Jobs => "Jobs",
         }
     }
 
@@ -179,14 +182,18 @@ impl SetupPart {
             SetupPart::Targets => {
                 "triples this step is for, comma-separated; blank runs it on every matrix row"
             }
+            SetupPart::Jobs => {
+                "kinds of job this step runs in, e.g. build; none picked runs it in every job"
+            }
         }
     }
 
-    const ALL: [SetupPart; 4] = [
+    const ALL: [SetupPart; 5] = [
         SetupPart::Uses,
         SetupPart::With,
         SetupPart::Run,
         SetupPart::Targets,
+        SetupPart::Jobs,
     ];
 }
 
@@ -685,6 +692,12 @@ fn package_entries(config: &ReleaseConfig, name: &str) -> Vec<Entry> {
         Field::PkgManifest,
         "repo-relative manifest path; also determines the npm build working directory",
     ));
+    out.push(row(
+        "Build environment",
+        list_or_none(&env_entries(pkg)),
+        Field::PkgEnv,
+        "KEY=value variables set on the build, in CI and by a local release build",
+    ));
     out.push(Entry::Header("Build setup".into()));
     // A package with no list of its own shows what it inherits, labelled as inherited so the rows
     // cannot be read as settings this package has made.
@@ -884,6 +897,9 @@ fn step_summary(step: &Setup) -> String {
             n => format!(" · {n} targets"),
         });
     }
+    if !step.jobs.is_empty() {
+        summary.push_str(&format!(" · {} only", job_names(&step.jobs).join("/")));
+    }
     summary
 }
 
@@ -909,6 +925,11 @@ fn setup_step_entries(config: &ReleaseConfig, scope: &SetupScope, index: usize) 
                 "all".to_string()
             } else {
                 step.targets.join(", ")
+            }),
+            SetupPart::Jobs => Some(if step.jobs.is_empty() {
+                "all".to_string()
+            } else {
+                job_names(&step.jobs).join(", ")
             }),
         };
         out.push(row(
@@ -1489,6 +1510,16 @@ fn open_editor(app: &mut App) -> Result<()> {
                     field,
                 ),
                 SetupPart::Run => list("Setup commands", &step.run, field),
+                // Picked, like targets: a typo here would be an unknown job kind.
+                SetupPart::Jobs => {
+                    let on = job_names(&step.jobs);
+                    check(
+                        "Jobs this step runs in (none checked = all of them)",
+                        selectable_jobs(scope),
+                        &on,
+                        field,
+                    )
+                }
             }
         }
         other => package_editor(app, other.clone())?,
@@ -1558,6 +1589,11 @@ fn package_editor(app: &App, field: Field) -> Result<Modal> {
             field,
         ),
         Field::PkgInclude => list("Included paths and globs", &pkg.include, field),
+        Field::PkgEnv => list(
+            "Build environment (one KEY=value per entry)",
+            &env_entries(pkg),
+            field,
+        ),
         Field::PkgLegacyTags => list("Package legacy tag formats", &pkg.legacy_tag_formats, field),
 
         Field::PkgMode => choice(
@@ -1687,6 +1723,30 @@ fn target_label(name: &str, arch: &str) -> String {
 /// union of what those build. Anything already on the step stays on the list even if no package
 /// declares it any more — dropping it silently would edit the config just by opening the row, and
 /// `doctor`'s `setup-targets-unknown` is what reports it.
+/// The job kinds a scope's steps can reach. The repo-wide list runs in the gate and the catch-all
+/// publish; a package's list runs in its own jobs, which never include the gate.
+fn selectable_jobs(scope: &SetupScope) -> Vec<String> {
+    let kinds: &[JobKind] = match scope {
+        SetupScope::Repo => &[JobKind::CheckRelease, JobKind::Publish],
+        SetupScope::Package(_) => &[
+            JobKind::Matrix,
+            JobKind::Build,
+            JobKind::Publish,
+            JobKind::GithubRelease,
+        ],
+    };
+    job_names(kinds)
+}
+
+fn job_names(kinds: &[JobKind]) -> Vec<String> {
+    kinds.iter().map(|kind| kind.as_str().to_string()).collect()
+}
+
+/// A package's `env` as the `KEY=value` lines its editor shows and reads back.
+fn env_entries(pkg: &PackageEntry) -> Vec<String> {
+    pkg.env.iter().map(|(k, v)| format!("{k}={v}")).collect()
+}
+
 fn selectable_triples(
     config: &ReleaseConfig,
     scope: &SetupScope,
@@ -1948,6 +2008,29 @@ fn apply_list(app: &mut App, field: Field, items: Vec<String>) -> Result<()> {
         }
 
         Field::Hook(stage) => set_hook_commands(&mut app.config, stage, items),
+        Field::PkgEnv => {
+            let mut env = std::collections::BTreeMap::new();
+            for item in &items {
+                let Some((key, value)) = item.split_once('=') else {
+                    app.status = Some("Not saved: each variable must be KEY=value".into());
+                    return Ok(());
+                };
+                let key = key.trim();
+                if !is_env_name(key) || env.insert(key.to_string(), value.to_string()).is_some() {
+                    app.status = Some(format!(
+                        "Not saved: `{key}` is not a unique environment variable name"
+                    ));
+                    return Ok(());
+                }
+            }
+            let name = view_package(&app.view).unwrap().to_string();
+            app.config
+                .packages
+                .iter_mut()
+                .find(|p| p.name == name)
+                .unwrap()
+                .env = env;
+        }
         Field::Setup(scope, index, part) => {
             let mut inputs = std::collections::BTreeMap::new();
             if part == SetupPart::With {
@@ -2175,6 +2258,24 @@ fn apply_check(app: &mut App, field: Field, picked: Vec<String>) -> Result<()> {
                 }
             }
             app.config.legacy_tag_formats = picked;
+        }
+        Field::Setup(scope, index, SetupPart::Jobs) => {
+            // As with targets, every kind checked means the same as none: drop the scope.
+            let picked = if picked.len() == selectable_jobs(&scope).len() {
+                Vec::new()
+            } else {
+                picked
+                    .iter()
+                    .filter_map(|name| JobKind::parse(name))
+                    .collect()
+            };
+            let Some(list) = setup_list_mut(app, &scope) else {
+                return Ok(());
+            };
+            let Some(step) = list.steps_mut().get_mut(index) else {
+                return Ok(());
+            };
+            step.jobs = picked;
         }
         Field::Setup(scope, index, SetupPart::Targets) => {
             // Checking every option and checking none both mean "every row", so the filter is
@@ -2468,6 +2569,12 @@ fn apply_setup_text(
                 .lines()
                 .filter(|line| !line.is_empty())
                 .map(str::to_string)
+                .collect()
+        }
+        SetupPart::Jobs => {
+            step.jobs = buffer
+                .split([',', '\n'])
+                .filter_map(|name| JobKind::parse(name.trim()))
                 .collect()
         }
     }
@@ -2830,6 +2937,7 @@ mod tests {
             legacy_tag_formats: Vec::new(),
             changelog: None,
             setup: None,
+            env: Default::default(),
         }
     }
 
@@ -3007,6 +3115,55 @@ mod tests {
         let saved = ReleaseConfig::load(root.path()).unwrap();
         assert_eq!(saved.setup.steps()[0].run, vec![command]);
         assert_eq!(saved.setup.steps()[0].with["values"], "one,two=three");
+    }
+
+    /// `jobs` is picked from the kinds the scope can reach, and picking all of them is the same as
+    /// picking none, so it is not written out.
+    #[test]
+    fn setup_jobs_are_picked_and_saved() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cfg = config();
+        cfg.packages[0].setup = Some(
+            Setup {
+                uses: Some("Swatinem/rust-cache@v2".into()),
+                ..Setup::default()
+            }
+            .into(),
+        );
+        let mut app = test_app(root.path(), cfg);
+        let scope = SetupScope::Package("@x/sdk".into());
+        let field = Field::Setup(scope.clone(), 0, SetupPart::Jobs);
+        apply_check(&mut app, field.clone(), vec!["build".into()]).unwrap();
+        let saved = ReleaseConfig::load(root.path()).unwrap();
+        let step = &saved.package("@x/sdk").unwrap().setup.as_ref().unwrap().steps()[0];
+        assert_eq!(step.jobs, vec![JobKind::Build]);
+        assert_eq!(step_summary(step), "Swatinem/rust-cache@v2 · build only");
+
+        apply_check(&mut app, field, selectable_jobs(&scope)).unwrap();
+        let saved = ReleaseConfig::load(root.path()).unwrap();
+        let step = &saved.package("@x/sdk").unwrap().setup.as_ref().unwrap().steps()[0];
+        assert!(step.jobs.is_empty());
+    }
+
+    #[test]
+    fn build_env_is_edited_as_key_value_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = test_app(root.path(), config());
+        apply_list(
+            &mut app,
+            Field::PkgEnv,
+            vec!["ES_RUNTIME_INSPECTOR=1".into(), "FLAGS=a=b".into()],
+        )
+        .unwrap();
+        let saved = ReleaseConfig::load(root.path()).unwrap();
+        let env = &saved.package("@x/sdk").unwrap().env;
+        assert_eq!(env["ES_RUNTIME_INSPECTOR"], "1");
+        assert_eq!(env["FLAGS"], "a=b");
+
+        // A name no shell accepts is refused, and the saved value is left alone.
+        apply_list(&mut app, Field::PkgEnv, vec!["9LIVES=1".into()]).unwrap();
+        assert!(app.status.as_deref().unwrap().starts_with("Not saved"));
+        assert_eq!(ReleaseConfig::load(root.path()).unwrap().packages, saved.packages);
     }
 
     #[test]
@@ -3255,9 +3412,9 @@ mod tests {
         let schema = include_str!("config.rs");
         for (structure, expected) in [
             ("ReleaseConfig", "adapters otf_release_version skip_publish hooks setup publish secrets discovery packages snapshot_tag tag_format legacy_tag_formats provider default_branch changelog_strategy changelog_scope github_release_notes"),
-            ("PackageEntry", "name adapter mode matrix targets command artifacts bin_name compress manifest version_field publish archive attest provenance checksums include executable tag_format legacy_tag_formats changelog setup"),
+            ("PackageEntry", "name adapter mode matrix targets command artifacts bin_name compress manifest version_field publish archive attest provenance checksums include executable tag_format legacy_tag_formats changelog setup env"),
             ("Target", "name arch triple runner stage_as ext cross vm"),
-            ("Setup", "uses with run targets"),
+            ("Setup", "uses with run targets jobs"),
             ("Hooks", "pre_version post_version pre_publish post_publish"),
             ("Secrets", "npm cargo"), ("PublishConfig", "ignore_paths"), ("Discovery", "npm"),
         ] {

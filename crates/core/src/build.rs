@@ -3,7 +3,7 @@
 //!
 //! Runs inside a single CI matrix leg. It:
 //!   1. (for cargo builds) installs the Rust target with `rustup target add`,
-//!   2. sets the cross linker env var for `cross` targets,
+//!   2. sets the cross linker env var for `cross` targets, and the package's own `env`,
 //!   3. runs the package's templated build command (`{triple}`/`{ext}`/`{bin}` expanded),
 //!   4. copies — optionally brotli-compressing — the produced binary to
 //!      `.artifacts/<package>/bin/<stage_as>/<bin><ext>[.br]`.
@@ -17,6 +17,7 @@
 //! `publish` copies into the package before packing. Getting the layout right here is what stops a
 //! "published, but no install can find the binary" bug.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -58,7 +59,7 @@ pub fn run(
             rustup_add_target(&target.triple());
         }
         let command = target.render(&entry.command, bin);
-        run_build_command(root, &command, target)?;
+        run_build_command(root, &command, target, &entry.env)?;
     }
 
     let artifact =
@@ -117,15 +118,22 @@ fn rustup_add_target(triple: &str) {
         .status();
 }
 
-/// Run the templated build command, exporting the cross linker env var for `cross` targets.
-fn run_build_command(root: &Path, command: &str, target: &Target) -> Result<()> {
+/// Run the templated build command, exporting the cross linker env var for `cross` targets and
+/// the package's `env` — the same variables the generated workflow puts on its build step, so a
+/// local build and a CI build come out the same.
+fn run_build_command(
+    root: &Path,
+    command: &str,
+    target: &Target,
+    env: &BTreeMap<String, String>,
+) -> Result<()> {
     let (shell, flag) = if cfg!(windows) {
         ("powershell", "-Command")
     } else {
         ("sh", "-c")
     };
     let mut cmd = Command::new(shell);
-    cmd.arg(flag).arg(command).current_dir(root);
+    cmd.arg(flag).arg(command).current_dir(root).envs(env);
     if target.is_cross() {
         cmd.env(
             linker_env_var(&target.triple()),
@@ -328,6 +336,7 @@ mod tests {
             provenance: false,
             executable: None,
             include: Vec::new(),
+            env: Default::default(),
         };
         let config = ReleaseConfig {
             otf_release_version: None,
@@ -343,6 +352,63 @@ mod tests {
 
         // Without the flag the same config runs the command, which fails.
         assert!(run(&config, root, "esrun", "freebsd/x86_64", false).is_err());
+    }
+
+    /// The package's `env` reaches the build command on a contributor's machine, not just in CI —
+    /// otherwise a local `release build` produces a different binary than the workflow does.
+    #[cfg(unix)]
+    #[test]
+    fn the_package_env_reaches_a_local_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let entry = PackageEntry {
+            name: "esdev".into(),
+            adapter: crate::config::Ecosystem::Cargo,
+            mode: crate::config::Mode::BuildOnly,
+            matrix: true,
+            targets: vec![Target::resolved("linux", "x86_64")],
+            command: "mkdir -p out && printf %s \"$ES_RUNTIME_INSPECTOR\" > out/{bin}".into(),
+            artifacts: "out/{bin}".into(),
+            bin_name: Some("esdev".into()),
+            env: [("ES_RUNTIME_INSPECTOR".to_string(), "1".to_string())].into(),
+            ..blank_entry()
+        };
+        let config = ReleaseConfig {
+            packages: vec![entry],
+            ..Default::default()
+        };
+
+        run(&config, root, "esdev", "linux/x86_64", false).unwrap();
+        assert_eq!(std::fs::read(root.join("out/esdev")).unwrap(), b"1");
+    }
+
+    #[cfg(unix)]
+    fn blank_entry() -> PackageEntry {
+        PackageEntry {
+            name: String::new(),
+            adapter: crate::config::Ecosystem::Cargo,
+            mode: crate::config::Mode::BuildOnly,
+            matrix: false,
+            targets: Vec::new(),
+            command: String::new(),
+            artifacts: String::new(),
+            bin_name: None,
+            tag_format: None,
+            legacy_tag_formats: Vec::new(),
+            changelog: None,
+            setup: None,
+            compress: None,
+            manifest: None,
+            version_field: None,
+            publish: None,
+            archive: None,
+            checksums: false,
+            attest: false,
+            provenance: false,
+            executable: None,
+            include: Vec::new(),
+            env: Default::default(),
+        }
     }
 
     #[test]

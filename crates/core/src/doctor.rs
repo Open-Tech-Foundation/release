@@ -1049,6 +1049,7 @@ mod tests {
             legacy_tag_formats: Vec::new(),
             changelog: None,
             setup: None,
+            env: Default::default(),
         }
     }
 
@@ -1206,6 +1207,7 @@ mod tests {
                     with: Setup::parse_with("quiet=false").unwrap(),
                     run: vec!["echo hi".into()],
                     targets: vec!["x86_64-unknown-linux-gnu".into()],
+                    jobs: Vec::new(),
                 },
             ]
             .into(),
