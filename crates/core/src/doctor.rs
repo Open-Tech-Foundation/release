@@ -143,7 +143,7 @@ pub fn audit(config: &ReleaseConfig, discovered: &[Discovered], root: &Path) -> 
         .filter(|d| d.pkg.publishable && !config.skip_publish.contains(&d.pkg.name))
         .collect();
 
-    tag_collisions(config, &released, &mut findings);
+    tag_collisions(config, &released, root, &mut findings);
     stale_workflow(config, root, &mut findings);
     hand_edited_workflow(root, &mut findings);
     setup_actions(config, root, &mut findings);
@@ -433,8 +433,37 @@ fn check_setup_targets(
 
 /// Two packages that format to the same tag is the quietest failure this tool has: nothing errors,
 /// and the second package's GitHub Release is skipped as "already shipped" with no assets attached.
-fn tag_collisions(config: &ReleaseConfig, released: &[&Discovered], out: &mut Vec<Finding>) {
+///
+/// The one exception is a lockstep group of registry packages: same version, one changelog, and
+/// `mode = "publish"`. Sharing a tag is then the intent — one tag and one GitHub Release for the
+/// whole group — and `publish` already handles it: the first package creates the tag and release,
+/// the rest find them and only push to their registry. A `build-only` member still collides,
+/// because its assets need a release of its own.
+fn tag_collisions(
+    config: &ReleaseConfig,
+    released: &[&Discovered],
+    root: &Path,
+    out: &mut Vec<Finding>,
+) {
     let tags = config.tag_formats();
+    let layout = config.changelog_layout();
+    let one_release = |names: &[&str]| {
+        let group: Vec<&&Discovered> = released
+            .iter()
+            .filter(|d| names.contains(&d.pkg.name.as_str()))
+            .collect();
+        let versions: HashSet<&str> = group.iter().map(|d| d.pkg.version.as_str()).collect();
+        let changelogs: HashSet<_> = group
+            .iter()
+            .map(|d| changelog_path(&layout, root, d))
+            .collect();
+        let registry_only = group.iter().all(|d| {
+            config
+                .package(&d.pkg.name)
+                .is_some_and(|e| e.mode == crate::config::Mode::Publish)
+        });
+        versions.len() == 1 && changelogs.len() == 1 && registry_only
+    };
 
     // Same *format* without `{name}`: latent, and independent of what the versions happen to be
     // today. Two packages sharing such a format collide the moment their versions meet.
@@ -446,7 +475,7 @@ fn tag_collisions(config: &ReleaseConfig, released: &[&Discovered], out: &mut Ve
             .push(d.pkg.name.as_str());
     }
     for (format, mut names) in by_format {
-        if format.contains("{name}") || names.len() < 2 {
+        if format.contains("{name}") || names.len() < 2 || one_release(&names) {
             continue;
         }
         names.sort();
@@ -478,7 +507,7 @@ fn tag_collisions(config: &ReleaseConfig, released: &[&Discovered], out: &mut Ve
         }
     }
     for (tag, mut names) in by_tag {
-        if names.len() < 2 {
+        if names.len() < 2 || one_release(&names) {
             continue;
         }
         names.sort();
@@ -626,6 +655,23 @@ fn empty_discovery_globs(
     }
 }
 
+/// The changelog a package's notes go to. In package scope the layout defers to the adapter, whose
+/// path is absolute in a real run; a relative one resolves against the root so both shapes name the
+/// same file.
+fn changelog_path(
+    layout: &crate::config::ChangelogLayout,
+    root: &Path,
+    d: &Discovered,
+) -> std::path::PathBuf {
+    layout.path_for(root, &d.pkg.name).unwrap_or_else(|| {
+        if d.pkg.changelog_path.is_absolute() {
+            d.pkg.changelog_path.clone()
+        } else {
+            root.join(&d.pkg.changelog_path)
+        }
+    })
+}
+
 /// Curated notes are the source of truth for what ships, so a released package whose changelog file
 /// does not exist can never be released: its `[Unreleased]` is empty by definition.
 fn changelog_files(
@@ -644,15 +690,7 @@ fn changelog_files(
     let mut missing: Vec<String> = Vec::new();
 
     for d in released {
-        // In package scope the layout defers to the adapter, whose path is absolute in a real
-        // run; resolve a relative one against the root so both shapes check the same file.
-        let path = layout.path_for(root, &d.pkg.name).unwrap_or_else(|| {
-            if d.pkg.changelog_path.is_absolute() {
-                d.pkg.changelog_path.clone()
-            } else {
-                root.join(&d.pkg.changelog_path)
-            }
-        });
+        let path = changelog_path(&layout, root, d);
         if !path.exists() {
             missing.push(format!("{} ({})", d.pkg.name, rel(root, &path)));
         }
@@ -1691,6 +1729,51 @@ mod tests {
         let report = audit(&config, &discovered, Path::new("/repo"));
         let errors = codes(&report, Severity::Error);
         assert!(errors.contains(&"tag-collision-now"), "{report:?}");
+    }
+
+    #[test]
+    fn a_lockstep_group_of_registry_crates_may_share_one_tag() {
+        let mut config = ReleaseConfig {
+            tag_format: "v{version}".to_string(),
+            changelog_scope: ChangelogScope::Root,
+            packages: vec![
+                entry("pdf", Ecosystem::Cargo),
+                entry("pdf-font", Ecosystem::Cargo),
+                entry("pdf-text", Ecosystem::Cargo),
+            ],
+            ..ReleaseConfig::default()
+        };
+        let discovered = vec![
+            found(
+                Ecosystem::Cargo,
+                pkg("pdf", "0.1.0", "crates/pdf/Cargo.toml"),
+                None,
+            ),
+            found(
+                Ecosystem::Cargo,
+                pkg("pdf-font", "0.1.0", "crates/font/Cargo.toml"),
+                None,
+            ),
+            found(
+                Ecosystem::Cargo,
+                pkg("pdf-text", "0.1.0", "crates/text/Cargo.toml"),
+                None,
+            ),
+        ];
+
+        // One version, one changelog, registry-only: one tag and one release is the intent.
+        let report = audit(&config, &discovered, Path::new("/repo"));
+        let errors = codes(&report, Severity::Error);
+        assert!(!errors.contains(&"tag-collision"), "{report:?}");
+        assert!(!errors.contains(&"tag-collision-now"), "{report:?}");
+
+        // A build-only member needs a release of its own for its assets.
+        config.packages[2].mode = Mode::BuildOnly;
+        let report = audit(&config, &discovered, Path::new("/repo"));
+        assert!(
+            codes(&report, Severity::Error).contains(&"tag-collision"),
+            "{report:?}"
+        );
     }
 
     #[test]

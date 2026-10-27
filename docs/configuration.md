@@ -291,6 +291,14 @@ tag. If `tag_format` has no `{name}`, that means at most one package may use it 
 one. The symptom of getting this wrong is a release that "succeeds" with nothing attached, not an
 error.
 
+**When one tag is the point.** A lockstep group — crates that inherit one `[workspace.package]
+version` and write to one root `CHANGELOG.md` — can deliberately share a nameless format such as
+`tag_format = "v{version}"`. Every crate still publishes to its registry, but the release gets one
+tag and one GitHub Release whose notes come from the shared changelog: the first crate creates them,
+and the rest find them and only publish. `doctor` accepts this when every package on the shared tag
+has the same version, the same changelog, and `mode = "publish"`. A `build-only` member still needs
+a tag of its own, because its assets go on its own release.
+
 ### Blocks for packages with no build step
 
 `init` writes a `[[package]]` block for every publishable package, including those their adapter

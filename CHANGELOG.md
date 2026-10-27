@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+### Changed
+
+- **A lockstep crate group can share one tag.** `doctor` no longer reports `tag-collision` when
+  every package on a nameless `tag_format` (such as `v{version}`) has the same version, writes to
+  the same changelog, and is `mode = "publish"`. Such a workspace releases as one tag and one GitHub
+  Release while each crate still publishes to crates.io. A `build-only` member still collides,
+  because its assets need a release of its own.
+
 ## [0.41.0] - 2026-10-07
 
 ### Added
