@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/). Work in progress lives un
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-10-27
+
 ### Changed
 
 - **A lockstep crate group can share one tag.** `doctor` no longer reports `tag-collision` when
